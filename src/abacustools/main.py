@@ -7,6 +7,7 @@ import sys
 from typing import Optional, Sequence
 
 from abacustools import __version__
+from abacustools.commands.file import register_parser as register_file_parser
 
 
 def _version_command(args: argparse.Namespace) -> int:
@@ -39,6 +40,7 @@ def _create_parser(prog: str) -> argparse.ArgumentParser:
         help="Show the installed abacustools version.",
     )
     version_parser.set_defaults(handler=_version_command)
+    register_file_parser(subparsers)
 
     return parser
 
