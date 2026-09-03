@@ -1,0 +1,69 @@
+constants:
+  hartree2ev: 27.21138386
+  bohr2ang: 0.529177249
+
+abacus:
+  version: "3.10.1LTS"
+  default_basis: "lcao"
+
+input_templates:
+  scf:
+    calculation: "scf"
+    symmetry: 1
+    scf_thr: 1e-7
+    scf_nmax: 100
+    smearing_method: "gaussian"
+    smearing_sigma: 0.015
+    mixing_type: "broyden"
+    mixing_beta: 0.8
+  relax:
+    calculation: "relax"
+    symmetry: 0
+    scf_thr: 1e-7
+    scf_nmax: 100
+    smearing_method: "gaussian"
+    smearing_sigma: 0.015
+    mixing_type: "broyden"
+    mixing_beta: 0.8
+    relax_method: "bfgs"
+    relax_nmax: 100
+    cal_force: 1
+    force_thr_ev: 0.02
+  cell-relax:
+    calculation: "cell_relax"
+    symmetry: 0
+    scf_thr: 1e-7
+    scf_nmax: 100
+    smearing_method: "gaussian"
+    smearing_sigma: 0.015
+    mixing_type: "broyden"
+    mixing_beta: 0.8
+    relax_method: "cg"
+    relax_nmax: 100
+    cal_force: 1
+    force_thr_ev: 0.02
+    cal_stress: 1
+    stress_thr: 0.5
+  md:
+    calculation: "md"
+    symmetry: 0
+    scf_thr: 1e-7
+    scf_nmax: 100
+    smearing_method: "gaussian"
+    smearing_sigma: 0.015
+    mixing_type: "broyden"
+    mixing_beta: 0.8
+    md_type: "nvt"
+    md_nstep: 1000
+    md_dt: 1.0
+    md_tfirst: 300.0
+
+basis_settings:
+  lcao:
+    basis_type: "lcao"
+    ks_solver: "genelpa"
+  pw:
+    basis_type: "pw"
+    ks_solver: "dav_subspace"
+    pw_diag_ndim: 2
+    pw_diag_nmax: 20

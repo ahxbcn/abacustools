@@ -26,6 +26,7 @@ classifiers = [
     "Environment :: Console",
 ]
 requires-python = ">=3.9"
+dependencies = ["numpy"]
 
 [project.scripts]
 abacustools = "abacustools.main:main"
@@ -34,4 +35,4 @@ abacustools = "abacustools.main:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-abacustools = ["io/input-params.json"]
+abacustools = ["io/input-params.json", "core/default_config.yaml"]
