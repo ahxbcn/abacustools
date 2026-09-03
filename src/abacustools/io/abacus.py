@@ -36,6 +36,7 @@ def ReadInput(INPUTf: str = None, input_lines: str = None) -> Dict[str, Any]:
                 return float(s)
             except:
                 pass
+            return s
 
     input_content = {}
 
