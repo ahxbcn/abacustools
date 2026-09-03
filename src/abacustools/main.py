@@ -1,13 +1,92 @@
-"""Command line interface for abacustools."""
+"""Command-line entry point and subcommand dispatcher for abacustools.
+
+Subcommands follow the convention used by ``conda``: an executable named
+``abacustools-<command>`` on ``PATH`` is invoked as
+``abacustools <command>``. This keeps optional tools independent from the
+top-level package and lets third-party packages add commands through normal
+console-script entry points.
+"""
+
+from __future__ import annotations
 
 import argparse
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+from typing import Optional, Sequence
 
 from abacustools import __version__
 
 
-def main() -> None:
-    """Entry point of the abacustools command line interface."""
-    parser = argparse.ArgumentParser(prog="abacustools", description="Tools for accompanying using ABACUS")
+COMMAND_PREFIX = "abacustools-"
+_COMMAND_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+
+
+def find_commands(path: Optional[str] = None) -> list[str]:
+    """Return the names of executable ``abacustools-*`` commands on ``PATH``.
+
+    Args:
+        path: Search path in the same format as the ``PATH`` environment
+            variable. Omitting it searches the current process ``PATH``.
+
+    The result is sorted and de-duplicated so it can be used directly in help
+    output. A command occurring in more than one directory remains listed
+    only once, just as only the first one would be run by :func:`shutil.which`.
+    """
+    search_path = os.environ.get("PATH", os.defpath) if path is None else path
+    commands: set[str] = set()
+
+    for directory in search_path.split(os.pathsep):
+        # An empty PATH entry represents the current working directory.
+        command_directory = Path(directory or os.curdir)
+        try:
+            entries = command_directory.iterdir()
+            for entry in entries:
+                if (
+                    entry.name.startswith(COMMAND_PREFIX)
+                    and entry.name != COMMAND_PREFIX
+                    and _COMMAND_NAME_PATTERN.fullmatch(
+                        entry.name[len(COMMAND_PREFIX) :]
+                    )
+                    and entry.is_file()
+                    and os.access(entry, os.X_OK)
+                ):
+                    commands.add(entry.name[len(COMMAND_PREFIX) :])
+        except OSError:
+            # A stale or inaccessible PATH entry should not make --help fail.
+            continue
+
+    return sorted(commands)
+
+
+def find_executable(command: str, path: Optional[str] = None) -> Optional[str]:
+    """Find the executable implementing an ``abacustools`` subcommand."""
+    if not _COMMAND_NAME_PATTERN.fullmatch(command):
+        return None
+    return shutil.which(f"{COMMAND_PREFIX}{command}", path=path)
+
+
+def _create_parser(prog: str, commands: Sequence[str]) -> argparse.ArgumentParser:
+    """Create the top-level parser, including dynamically discovered commands."""
+    command_list = "\n".join(f"  {command}" for command in commands) or "  (none found)"
+    parser = argparse.ArgumentParser(
+        prog=prog,
+        description="Tools for accompanying using ABACUS.",
+        epilog=(
+            "Built-in subcommands:\n"
+            "  commands  List discovered external subcommands.\n"
+            "  help      Show top-level or subcommand help.\n"
+            "  version   Show the installed abacustools version.\n\n"
+            "Available external subcommands:\n"
+            f"{command_list}\n\n"
+            "Install an executable named 'abacustools-<command>' to make it "
+            "available as 'abacustools <command>'."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("command", nargs="?", metavar="COMMAND", help="subcommand to run")
     parser.add_argument(
@@ -80,4 +159,4 @@ def main(
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
