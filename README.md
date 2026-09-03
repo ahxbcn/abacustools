@@ -35,3 +35,11 @@ split into multiple tables with repeated headers rather than being truncated
 or wrapped by the terminal. A result that does not apply to a job is shown as
 `-`. Large array results such as `force` and `stress` are omitted from this
 summary.
+
+Complex calculation workflows are organized by task and stage. The BSSE
+workflow currently provides the preparation and postprocessing framework:
+
+```text
+abacustools workflow bsse prepare
+abacustools workflow bsse postprocess
+```

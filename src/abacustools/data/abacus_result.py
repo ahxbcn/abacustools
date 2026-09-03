@@ -20,6 +20,9 @@ grouped_params = {
         "force",
         "stress",
     ],
+    "vdw_results": [
+        "vdw_energy",
+    ],
     "relax_results": [
         "largest_force",
         "largest_stress",
@@ -234,6 +237,30 @@ def collect_scf_results(job_dir: str, metrics: List[str]) -> Dict[str, Any]:
     return {metric: available[metric] for metric in param_groups["scf_results"]}
 
 
+def collect_vdw_results(job_dir: str, metrics: List[str]) -> Dict[str, Any]:
+    """Collect the final DFT-D dispersion energy in eV."""
+    param_groups = split_param_by_group(metrics)
+    if "vdw_results" not in param_groups:
+        return {}
+
+    job_path = Path(job_dir)
+    inputs = _job_input(job_path)
+    output_path = _output_directory(job_path, inputs)
+    calculation = _calculation(inputs, output_path)
+    log_path = _log_file(output_path, calculation)
+
+    vdw_energies: List[float] = []
+    for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if "e_vdw" in line.lower():
+            values = _numbers(line)
+            if values:
+                # ABACUS prints the dispersion energy in Rydberg and eV.
+                vdw_energies.append(values[-1])
+
+    available = {"vdw_energy": vdw_energies[-1] if vdw_energies else None}
+    return {metric: available[metric] for metric in param_groups["vdw_results"]}
+
+
 def collect_relax_results(job_dir: str, metrics: List[str]) -> Dict[str, Any]:
     """Collect ionic relaxation results from the final relaxation step."""
     param_groups = split_param_by_group(metrics)
@@ -294,6 +321,8 @@ def get_result_from_job(
 
     if "scf_results" in param_groups:
         results.update(collect_scf_results(job_dir, param_groups["scf_results"]))
+    if "vdw_results" in param_groups:
+        results.update(collect_vdw_results(job_dir, param_groups["vdw_results"]))
     if "relax_results" in param_groups:
         results.update(collect_relax_results(job_dir, param_groups["relax_results"]))
     return results
