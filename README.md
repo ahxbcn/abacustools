@@ -20,3 +20,18 @@ abacustools --help
 abacustools file --help
 abacustools file input --help
 ```
+
+Calculation results can be collected from one or more completed ABACUS jobs:
+
+```text
+abacustools postprocess result -j JOB -p energy force stress
+```
+
+Use `abacustools postprocess result --help` to see all supported result
+parameters. If `--param` is omitted, the command selects the results relevant
+to the job's calculation type and displays scalar results as compact,
+borderless tables. If the result columns do not fit the terminal, they are
+split into multiple tables with repeated headers rather than being truncated
+or wrapped by the terminal. A result that does not apply to a job is shown as
+`-`. Large array results such as `force` and `stress` are omitted from this
+summary.

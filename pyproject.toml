@@ -26,7 +26,7 @@ classifiers = [
     "Environment :: Console",
 ]
 requires-python = ">=3.9"
-dependencies = ["numpy"]
+dependencies = ["numpy", "rich"]
 
 [project.scripts]
 abacustools = "abacustools.main:main"

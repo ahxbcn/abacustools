@@ -8,6 +8,9 @@ from typing import Optional, Sequence
 
 from abacustools import __version__
 from abacustools.commands.file import register_parser as register_file_parser
+from abacustools.commands.postprocess import (
+    register_parser as register_postprocess_parser,
+)
 
 
 def _version_command(args: argparse.Namespace) -> int:
@@ -41,6 +44,7 @@ def _create_parser(prog: str) -> argparse.ArgumentParser:
     )
     version_parser.set_defaults(handler=_version_command)
     register_file_parser(subparsers)
+    register_postprocess_parser(subparsers)
 
     return parser
 
