@@ -1,7 +1,6 @@
-"""
-Manage default settings for abacustools.
-"""
+"""Manage default settings for abacustools."""
 
+from copy import deepcopy
 from typing import Any
 from pathlib import Path
 
@@ -13,6 +12,17 @@ def read_config_file(config_file: Path) -> dict[str, Any]:
     
     with open(config_file, "r") as f:
         config = yaml.safe_load(f)
+    return config
+
+
+def _merge_config(default: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
+    """Merge user settings over the packaged defaults recursively."""
+    config = deepcopy(default)
+    for key, value in overrides.items():
+        if isinstance(config.get(key), dict) and isinstance(value, dict):
+            config[key] = _merge_config(config[key], value)
+        else:
+            config[key] = deepcopy(value)
     return config
 
 def generate_default_config(override: bool=False):
@@ -33,10 +43,14 @@ def generate_default_config(override: bool=False):
             yaml.dump(default_config, f)
 
 
+_DEFAULT_CONFIG_FILE = Path(__file__).parent / "default_config.yaml"
 config_file = Path.home() / ".abacustools" / "config.yaml"
 if not config_file.exists():
     generate_default_config()
-CONFIG = read_config_file(Path.home() / ".abacustools" / "config.yaml")
+CONFIG = _merge_config(
+    read_config_file(_DEFAULT_CONFIG_FILE),
+    read_config_file(config_file),
+)
 
 if __name__ == "__main__":
     generate_default_config()

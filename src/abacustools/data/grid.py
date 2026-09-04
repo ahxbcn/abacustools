@@ -5,7 +5,12 @@ import numpy as np
 
 from ase.data import atomic_numbers
 
-from abacustools.core.constant import BOHR_TO_ANG, RY_TO_EV
+from abacustools.core.constant import (
+    BOHR_TO_ANG,
+    ELEMENTARY_CHARGE,
+    RY_TO_EV,
+    VACUUM_PERMITTIVITY,
+)
 from abacustools.io.stru import AbacusSTRU
 
 
@@ -32,8 +37,6 @@ def _reciprocal_lattice(cell):
 
 def _charge_to_potential(chg, cell):
     """Solve the periodic Poisson equation for a charge density."""
-    from ase import units
-
     charge = np.asarray(chg, dtype=float)
     if charge.ndim != 3:
         raise ValueError("charge density must be a three-dimensional array")
@@ -50,7 +53,7 @@ def _charge_to_potential(chg, cell):
     squared = np.sum(wavevectors**2, axis=1).reshape(charge.shape)
     squared[0, 0, 0] = 1.0
     potential = np.fft.ifftn(np.fft.fftn(charge) / squared).real
-    return potential / units._eps0 * units._e * -1 * 1e10
+    return potential / VACUUM_PERMITTIVITY * ELEMENTARY_CHARGE * -1 * 1e10
 
 
 class Grid:

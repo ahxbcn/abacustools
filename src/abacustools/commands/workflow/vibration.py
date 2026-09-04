@@ -10,6 +10,8 @@ from typing import Any
 
 import numpy as np
 
+from abacustools.core.constant import BOLTZMANN_CONSTANT_EV_PER_K
+
 from .common import (
     clear_generated_jobs,
     kpoint_filename,
@@ -340,7 +342,6 @@ def _write_modes(
     if not output_traj and not output_stru:
         return
 
-    from ase import units
     from ase.io import write
     from ase.io.trajectory import Trajectory
 
@@ -354,7 +355,7 @@ def _write_modes(
     if output_stru:
         structure_dir.mkdir(parents=True, exist_ok=True)
 
-    kT = units.kB * 300.0
+    kT = BOLTZMANN_CONSTANT_EV_PER_K * 300.0
     mode_number = 0
     for mode_index, energy in enumerate(energies):
         if abs(energy) <= 1e-5:

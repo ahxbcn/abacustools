@@ -1,6 +1,12 @@
 constants:
   hartree2ev: 27.21138386
   bohr2ang: 0.529177249
+  # SI values use the CODATA 2018 convention where applicable.
+  planck_constant: 6.62607015e-34
+  boltzmann_constant: 1.380649e-23
+  elementary_charge: 1.602176634e-19
+  electron_mass: 9.1093837015e-31
+  vacuum_permittivity: 8.8541878128e-12
 
 abacus:
   version: "3.10.1LTS"

@@ -10,6 +10,8 @@ from typing import Any
 
 import numpy as np
 
+from abacustools.core.constant import THZ_TO_K
+
 from .common import (
     clear_generated_jobs,
     kpoint_filename,
@@ -20,7 +22,6 @@ from .common import (
 )
 
 
-_THZ_TO_K = 47.9924
 _TASK_PREFIX = "disp-"
 
 
@@ -485,7 +486,7 @@ def postprocess(args: argparse.Namespace) -> int:
         "heat_capacity": float(thermal["heat_capacity"][0]),
         "commensurate_frequencies_thz": frequencies.tolist(),
         "max_frequency_thz": max_frequency,
-        "max_frequency_K": max_frequency * _THZ_TO_K,
+        "max_frequency_K": max_frequency * THZ_TO_K,
         "band_structure": _jsonable(phonon.get_band_structure_dict()),
         "total_dos": _jsonable(phonon.get_total_dos_dict()),
         "band_dos_plot": str(plot_path),

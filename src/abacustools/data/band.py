@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 
 from abacustools.data.abacus_result import get_result_from_job
+from abacustools.core.constant import ELECTRON_MASS, ELEMENTARY_CHARGE, HBAR
 from abacustools.io.abacus import ReadInput, ReadKpt
 from abacustools.io.stru import AbacusSTRU, Cartesian2Direct
 
@@ -792,7 +793,6 @@ class BandData:
         """
         import numpy as np
         import matplotlib.pyplot as plt
-        from scipy.constants import hbar, e, m_e
         from scipy.optimize import curve_fit
 
         def parabola_fit(x, a, b, c):
@@ -823,8 +823,8 @@ class BandData:
         a_std = p_err[0]
         curvature = a * 2  # Second derivative d^2E/dk^2 = 2*a (in eV * Angstrom^2)
 
-        convfactor = hbar**2 / e * 1e20  # 1e20 is the conversion factor from Angstrom^-2 to m^-2
-        effective_mass = convfactor / curvature / m_e if curvature != 0 else np.inf
+        convfactor = HBAR**2 / ELEMENTARY_CHARGE * 1e20  # 1e20 converts Angstrom^-2 to m^-2
+        effective_mass = convfactor / curvature / ELECTRON_MASS if curvature != 0 else np.inf
 
         # If plot_fit, generate plot
         if plot_fit:

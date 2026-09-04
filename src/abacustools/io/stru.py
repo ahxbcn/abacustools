@@ -7,6 +7,8 @@ import sys
 
 import numpy as np
 
+from abacustools.core.constant import ANG_TO_BOHR, BOHR_TO_ANG
+
 MASS_DICT = {
     "H": 1.0079,
     "He": 4.0026,
@@ -240,8 +242,8 @@ ABACUS_STRU_KEY_WORD = [
     "PAW_FILES"
 ]
 
-BOHR2A = 0.5291875321107901
-A2BOHR = 1 / BOHR2A
+BOHR2A = BOHR_TO_ANG
+A2BOHR = ANG_TO_BOHR
 
 
 def Direct2Cartesian(coord:List[List[float]],cell:List[List[float]]):
