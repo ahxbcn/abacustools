@@ -3,51 +3,41 @@
 from __future__ import annotations
 
 import argparse
-import shutil
 from copy import deepcopy
 from pathlib import Path
-from typing import Iterable, Optional
 
 import numpy as np
 
-
-def _job_directory(value: str) -> Path:
-    """Return an existing ABACUS job directory or raise a parser error."""
-    path = Path(value)
-    if not path.is_dir():
-        raise argparse.ArgumentTypeError(f"job directory does not exist: {value}")
-    return path
-
-
-def _atom_index(value: str) -> int:
-    """Return a one-based atom index or raise a parser error."""
-    try:
-        index = int(value)
-    except ValueError as error:
-        raise argparse.ArgumentTypeError(
-            f"atom index must be an integer: {value}"
-        ) from error
-    if index < 1:
-        raise argparse.ArgumentTypeError(
-            f"atom index must be greater than zero: {value}"
-        )
-    return index
+from .common import (
+    clear_generated_jobs,
+    completed_scf_output,
+    kpoint_filename,
+    read_manifest,
+    register_stages,
+    write_abacus_job,
+    write_manifest,
+)
 
 
 def _register_prepare_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "-j", "--job", type=_job_directory, required=True,
+        "-j", "--job", type=Path, required=True,
         help="ABACUS input directory used to prepare charge-density jobs.",
     )
     parser.add_argument(
-        "-i", "--index", type=_atom_index, nargs="+", required=True,
+        "-i", "--index", type=int, nargs="+", required=True,
         help="One-based atom indices belonging to subsystem 1; remaining atoms form subsystem 2.",
+    )
+    parser.add_argument(
+        "--override",
+        action="store_true",
+        help="Replace existing generated workflow directories.",
     )
 
 
 def _register_postprocess_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "-j", "--job", type=_job_directory, required=True,
+        "-j", "--job", type=Path, required=True,
         help="Directory containing the prepared charge-density jobs.",
     )
     parser.add_argument(
@@ -56,37 +46,22 @@ def _register_postprocess_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _copy_referenced_files(
-    filenames: Iterable[Optional[str]], source_dir: Path, destination_dir: Path,
-) -> None:
-    """Link files referenced by a generated STRU into its job directory."""
-    copied = set()
-    for filename in filenames:
-        if filename is None or filename in copied:
-            continue
-        copied.add(filename)
-        source = source_dir / filename
-        if not source.is_file():
-            raise RuntimeError(f"referenced file not found: {source}")
-        target = destination_dir / filename
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if target.exists() or target.is_symlink():
-            target.unlink()
-        target.symlink_to(source.resolve())
-
-
 def prepare(args: argparse.Namespace) -> int:
     """Prepare full-system and subsystem SCF jobs for charge-density output."""
-    from abacustools.io.abacus import ReadInput, WriteInput
+    from abacustools.io.abacus import ReadInput
     from abacustools.io.stru import AbacusSTRU
 
     job = Path(args.job).absolute()
+    if not job.is_dir():
+        raise RuntimeError(f"job directory does not exist: {job}")
     inputs = ReadInput(job / "INPUT")
     stru_filename = inputs.get("stru_file", "STRU")
     stru = AbacusSTRU.read(job / stru_filename)
     if stru is None:
         raise RuntimeError(f"failed to read structure: {job / stru_filename}")
 
+    if any(index < 1 for index in args.index):
+        raise ValueError("atom indices must be greater than zero")
     subsystem1 = sorted(set(index - 1 for index in args.index))
     if any(index >= stru.natoms for index in subsystem1):
         raise ValueError(
@@ -96,11 +71,7 @@ def prepare(args: argparse.Namespace) -> int:
     if not subsystem1 or not subsystem2:
         raise ValueError("charge-density difference requires two non-empty subsystems")
 
-    kpoint_filename = inputs.get("kpoint_file", "KPT")
-    has_kpoint_setting = inputs.get("kspacing", 0) not in (0, "0")
-    has_kpoint_setting = has_kpoint_setting or bool(inputs.get("gamma_only", 0))
-    if not has_kpoint_setting and not (job / kpoint_filename).is_file():
-        raise RuntimeError(f"could not find KPT file: {job / kpoint_filename}")
+    kpoint_file = kpoint_filename(job, inputs)
 
     scf_inputs = deepcopy(inputs)
     scf_inputs["calculation"] = "scf"
@@ -110,14 +81,7 @@ def prepare(args: argparse.Namespace) -> int:
     print(f"  subsystem 1 atom indices: {', '.join(str(i + 1) for i in subsystem1)}")
     print(f"  subsystem 2 atom indices: {', '.join(str(i + 1) for i in subsystem2)}")
 
-    for name in generated_names:
-        generated = job / name
-        if generated.exists() or generated.is_symlink():
-            print(f"  removing old directory: {generated}")
-            if generated.is_dir() and not generated.is_symlink():
-                shutil.rmtree(generated)
-            else:
-                generated.unlink()
+    clear_generated_jobs(job, generated_names, override=args.override)
 
     structures = {
         "full_system": stru,
@@ -126,15 +90,24 @@ def prepare(args: argparse.Namespace) -> int:
     }
     for name, structure in structures.items():
         generated = job / name
-        generated.mkdir(parents=True)
-        WriteInput(scf_inputs, generated / "INPUT")
-        structure.write(generated / stru_filename)
-        _copy_referenced_files(
-            (*structure.pps, *structure.orbs, *structure.paws), job, generated
+        write_abacus_job(
+            scf_inputs,
+            structure,
+            job,
+            generated,
+            stru_filename=stru_filename,
+            kpoint=kpoint_file,
         )
-        if (job / kpoint_filename).is_file():
-            _copy_referenced_files((kpoint_filename,), job, generated)
         print(f"  prepared {name}")
+
+    write_manifest(
+        job,
+        "chgdiff",
+        tasks=list(generated_names),
+        subsystem1=[index + 1 for index in subsystem1],
+        subsystem2=[index + 1 for index in subsystem2],
+        nspin=inputs.get("nspin", 1),
+    )
 
     return 0
 
@@ -142,12 +115,9 @@ def prepare(args: argparse.Namespace) -> int:
 def _read_total_charge_density(job: Path):
     """Read total charge density, combining spin channels when necessary."""
     from abacustools.data.grid import Grid
-    from abacustools.io.abacus import ReadInput
 
-    inputs = ReadInput(job / "INPUT")
+    inputs, output_dir = completed_scf_output(job)
     nspin = inputs.get("nspin", 1)
-    suffix = inputs.get("suffix", "ABACUS")
-    output_dir = job / f"OUT.{suffix}"
     spin1 = Grid.from_cube(output_dir / "SPIN1_CHG.cube")
     if nspin == 1:
         return spin1
@@ -176,7 +146,11 @@ def _validate_grid(reference, other, description: str) -> None:
 def postprocess(args: argparse.Namespace) -> int:
     """Combine the three charge-density cubes into a difference cube."""
     job = Path(args.job).absolute()
+    if not job.is_dir():
+        raise RuntimeError(f"job directory does not exist: {job}")
     print(f"  job: {job}")
+    task_names = ("full_system", "subsys1", "subsys2")
+    read_manifest(job, "chgdiff", task_names)
     full = _read_total_charge_density(job / "full_system")
     subsystem1 = _read_total_charge_density(job / "subsys1")
     subsystem2 = _read_total_charge_density(job / "subsys2")
@@ -195,21 +169,13 @@ def postprocess(args: argparse.Namespace) -> int:
 
 def register_parser(subparsers) -> None:
     """Register the ``workflow chgdiff`` parser and its stages."""
-    parser = subparsers.add_parser(
+    register_stages(
+        subparsers,
         "chgdiff",
+        "Calculate charge-density difference.",
+        prepare,
+        postprocess,
+        _register_prepare_arguments,
+        _register_postprocess_arguments,
         aliases=["charge-density-difference", "charge_density_difference"],
-        help="Calculate charge-density difference.",
     )
-    stages = parser.add_subparsers(
-        dest="chgdiff_command", metavar="CHGDIFF_COMMAND",
-        title="charge-density difference commands", required=True,
-    )
-    prepare_parser = stages.add_parser("prepare", help="Prepare charge-density jobs.")
-    _register_prepare_arguments(prepare_parser)
-    prepare_parser.set_defaults(handler=prepare)
-
-    postprocess_parser = stages.add_parser(
-        "postprocess", help="Generate the charge-density difference cube."
-    )
-    _register_postprocess_arguments(postprocess_parser)
-    postprocess_parser.set_defaults(handler=postprocess)
