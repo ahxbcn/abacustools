@@ -232,17 +232,3 @@ def read_manifest(
         names = ", ".join(sorted(missing_tasks))
         raise RuntimeError(f"workflow manifest is missing tasks: {names}")
     return manifest
-
-
-def completed_scf_output(job: Path):
-    """Return INPUT and output directory after confirming SCF convergence."""
-    inputs = read_job_input(job)
-    suffix = inputs.get("suffix", "ABACUS")
-    output_dir = job / f"OUT.{suffix}"
-    log_path = output_dir / "running_scf.log"
-    if not log_path.is_file():
-        raise FileNotFoundError(f"Could not find SCF log in workflow job: {job}")
-    log = log_path.read_text(encoding="utf-8", errors="replace").lower()
-    if "charge density convergence is achieved" not in log:
-        raise RuntimeError(f"SCF calculation did not converge: {job}")
-    return inputs, output_dir

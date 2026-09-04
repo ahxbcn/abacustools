@@ -10,9 +10,9 @@ import numpy as np
 
 from .common import (
     clear_generated_jobs,
-    completed_scf_output,
     kpoint_filename,
     read_manifest,
+    read_job_input,
     read_job_structure,
     register_stages,
     write_abacus_job,
@@ -40,6 +40,11 @@ def _register_postprocess_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "-j", "--job", type=Path, required=True,
         help="Directory containing the prepared charge-density jobs.",
+    )
+    parser.add_argument(
+        "-v", "--version",
+        default="LTS3.10.1",
+        help="ABACUS version used for the calculations.",
     )
     parser.add_argument(
         "-o", "--output", default="charge_density_diff.cube",
@@ -106,11 +111,17 @@ def prepare(args: argparse.Namespace) -> int:
     return 0
 
 
-def _read_total_charge_density(job: Path):
+def _read_total_charge_density(job: Path, version: str):
     """Read total charge density, combining spin channels when necessary."""
+    from abacustools.data.abacus_result import get_result_from_job
     from abacustools.data.grid import Grid
 
-    inputs, output_dir = completed_scf_output(job)
+    inputs = read_job_input(job)
+    result = get_result_from_job(job, ["converged"], version)
+    if not result["converged"]:
+        raise RuntimeError(f"SCF calculation did not converge: {job}")
+
+    output_dir = job / f"OUT.{inputs.get('suffix', 'ABACUS')}"
     nspin = inputs.get("nspin", 1)
     spin1 = Grid.from_cube(output_dir / "SPIN1_CHG.cube")
     if nspin == 1:
@@ -145,9 +156,9 @@ def postprocess(args: argparse.Namespace) -> int:
     print(f"  job: {job}")
     task_names = ("full_system", "subsys1", "subsys2")
     read_manifest(job, "chgdiff", task_names)
-    full = _read_total_charge_density(job / "full_system")
-    subsystem1 = _read_total_charge_density(job / "subsys1")
-    subsystem2 = _read_total_charge_density(job / "subsys2")
+    full = _read_total_charge_density(job / "full_system", args.version)
+    subsystem1 = _read_total_charge_density(job / "subsys1", args.version)
+    subsystem2 = _read_total_charge_density(job / "subsys2", args.version)
     _validate_grid(full, subsystem1, "full system and subsystem 1")
     _validate_grid(full, subsystem2, "full system and subsystem 2")
 
