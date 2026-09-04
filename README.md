@@ -67,6 +67,21 @@ abacustools workflow elastic postprocess -j JOB
 The fitted elastic tensor and Voigt moduli are written to
 `elastic_results.json` under `JOB`.
 
+Phonon spectra can be calculated with finite differences using Phonopy. The
+prepare stage generates displaced supercell SCF jobs, and the postprocess
+stage reads their forces to produce thermal properties, DOS, and a combined
+dispersion/DOS plot:
+
+```text
+abacustools workflow phonon prepare -j JOB
+abacustools workflow phonon postprocess -j JOB
+```
+
+Use `--supercell A B C` to set the supercell explicitly. Without it, the
+supercell is selected so each lattice vector is at least 10 Angstrom long.
+Custom paths can be passed as JSON with `--qpath` and
+`--high-symm-points`.
+
 Generated calculation directories are protected by default. Use `--override`
 when intentionally replacing them. Submission scripts are intentionally not
 generated because their contents depend on the target computing environment.
