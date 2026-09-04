@@ -5,6 +5,7 @@ from . import chgdiff as chgdiff_workflow
 from . import elastic as elastic_workflow
 from . import phonon as phonon_workflow
 from . import vibration as vibration_workflow
+from . import workfunc as workfunc_workflow
 
 
 def register_parser(subparsers) -> None:
@@ -24,3 +25,4 @@ def register_parser(subparsers) -> None:
     elastic_workflow.register_parser(workflow_subparsers)
     phonon_workflow.register_parser(workflow_subparsers)
     vibration_workflow.register_parser(workflow_subparsers)
+    workfunc_workflow.register_parser(workflow_subparsers)

@@ -93,6 +93,19 @@ abacustools workflow vibration postprocess -j JOB
 
 Use `--index 1 2 ...` to select atoms and `--traj` to write mode trajectories.
 
+Surface work functions can be calculated from the averaged electrostatic
+potential. The prepare stage enables `out_pot=2` and writes a calculation
+under `workfunc_job`; the postprocess stage identifies vacuum plateaus and
+writes the work-function results and potential profile:
+
+```text
+abacustools workflow workfunc prepare -j JOB
+abacustools workflow workfunc postprocess -j JOB
+```
+
+Use `--vacuum a|b|c|auto` to select the vacuum direction, and
+`--dipole-corr` to enable dipole correction.
+
 Generated calculation directories are protected by default. Use `--override`
 when intentionally replacing them. Submission scripts are intentionally not
 generated because their contents depend on the target computing environment.
