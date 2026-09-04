@@ -53,6 +53,20 @@ abacustools workflow chgdiff prepare -j JOB -i 1 3 4
 abacustools workflow chgdiff postprocess -j JOB
 ```
 
+Elastic constants can be calculated with the stress-strain workflow. It
+generates one unstrained job and 24 independently strained jobs. By default,
+the jobs use ionic relaxation at fixed cell shape; use `--norelax` for fixed-ion
+SCF calculations:
+
+```text
+abacustools workflow elastic prepare -j JOB
+sbatch runabacus.sh  # submit from each generated job directory
+abacustools workflow elastic postprocess -j JOB
+```
+
+The fitted elastic tensor and Voigt moduli are written to
+`elastic_results.json` under `JOB`.
+
 Generated calculation directories are protected by default. Use `--override`
 when intentionally replacing them. Submission scripts are intentionally not
 generated because their contents depend on the target computing environment.
