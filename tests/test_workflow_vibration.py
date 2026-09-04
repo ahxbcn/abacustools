@@ -91,7 +91,9 @@ H
                 )
             )
             self.assertEqual(result, 0)
-            manifest = json.loads((job / "workflow.json").read_text(encoding="utf-8"))
+            manifest = json.loads(
+                (job / "workflow_vibration.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(manifest["workflow"], "vibration")
             self.assertEqual(manifest["selected_atoms"], [1])
             self.assertEqual(len(manifest["tasks"]), 7)

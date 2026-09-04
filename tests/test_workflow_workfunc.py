@@ -88,7 +88,9 @@ H
                 )
             )
             self.assertEqual(result, 0)
-            manifest = json.loads((job / "workflow.json").read_text(encoding="utf-8"))
+            manifest = json.loads(
+                (job / "workflow_workfunc.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(manifest["workflow"], "workfunc")
             self.assertEqual(manifest["vacuum_direction"], "c")
             self.assertTrue((job / "workfunc_job/STRU").is_file())

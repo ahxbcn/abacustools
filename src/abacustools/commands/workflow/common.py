@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
 
-WORKFLOW_MANIFEST = "workflow.json"
+def workflow_manifest_path(job: Path, workflow: str) -> Path:
+    """Return the manifest path for a workflow in a job directory."""
+    return job / f"workflow_{workflow}.json"
 
 
 def register_stages(
@@ -177,7 +179,7 @@ def write_abacus_job(
 def write_manifest(job: Path, workflow: str, **metadata: Any) -> None:
     """Write metadata describing generated workflow jobs."""
     manifest = {"format": 1, "workflow": workflow, **metadata}
-    path = job / WORKFLOW_MANIFEST
+    path = workflow_manifest_path(job, workflow)
     path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
 
@@ -187,7 +189,7 @@ def read_manifest(
     required_tasks: Iterable[str],
 ) -> dict[str, Any]:
     """Read and validate a workflow manifest."""
-    path = job / WORKFLOW_MANIFEST
+    path = workflow_manifest_path(job, workflow)
     if not path.is_file():
         raise FileNotFoundError(f"Could not find workflow manifest: {path}")
     try:

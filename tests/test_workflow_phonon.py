@@ -85,7 +85,9 @@ H
                 )
             )
             self.assertEqual(result, 0)
-            manifest = json.loads((job / "workflow.json").read_text(encoding="utf-8"))
+            manifest = json.loads(
+                (job / "workflow_phonon.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(manifest["workflow"], "phonon")
             self.assertEqual(manifest["supercell"], [1, 1, 1])
             self.assertEqual(len(manifest["tasks"]), 1)

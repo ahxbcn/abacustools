@@ -110,6 +110,7 @@ Generated calculation directories are protected by default. Use `--override`
 when intentionally replacing them. Submission scripts are intentionally not
 generated because their contents depend on the target computing environment.
 
-Each prepared workflow records its task names and atom partition in
-`workflow.json`. Postprocessing validates this manifest and checks that the
-required SCF calculations converged before reading their outputs.
+Each prepared workflow records its task names and atom partition in a
+workflow-specific manifest such as `workflow_phonon.json`. Postprocessing
+validates this manifest and checks that the required SCF calculations converged
+before reading their outputs.
