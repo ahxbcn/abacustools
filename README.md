@@ -13,6 +13,29 @@ abacustools file stru STRU
 abacustools file kpt KPT
 ```
 
+Complete ABACUS input directories can be prepared with a resource library
+selected from `~/.abacustools/config.yaml`:
+
+```text
+abacustools job prepare -f STRUCTURE --library apns
+```
+
+The configuration contains the `resources.default` library and paths for each
+library's `pp` and `orb` directories. The command uses the default library
+when `--library` is omitted. For example:
+
+```yaml
+resources:
+  default: apns
+  libraries:
+    apns:
+      pp: /path/to/apns-pseudopotentials
+      orb: /path/to/apns-orbitals
+    dojo-nc-sr:
+      pp: /path/to/Dojo-NC-SR/Pseudopotential
+      orb: /path/to/Dojo-NC-SR/Orbitals
+```
+
 Both the top-level parser and each subcommand provide their own help text:
 
 ```text

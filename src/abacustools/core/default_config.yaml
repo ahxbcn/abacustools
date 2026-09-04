@@ -12,6 +12,23 @@ abacus:
   version: "3.10.1LTS"
   default_basis: "lcao"
 
+# Fill these machine-dependent paths in ~/.abacustools/config.yaml.
+resources:
+  default: apns
+  libraries:
+    apns:
+      pp: null
+      orb: null
+    dojo-nc-sr:
+      pp: null
+      orb: null
+    dojo-nc-fr:
+      pp: null
+      orb: null
+    sg15:
+      pp: null
+      orb: null
+
 input_templates:
   scf:
     calculation: "scf"
