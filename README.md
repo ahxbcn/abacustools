@@ -82,6 +82,17 @@ supercell is selected so each lattice vector is at least 10 Angstrom long.
 Custom paths can be passed as JSON with `--qpath` and
 `--high-symm-points`.
 
+Molecular vibration frequencies can be calculated with selected atoms using
+central finite differences. The workflow writes equilibrium and displaced
+force calculations below `vib/`:
+
+```text
+abacustools workflow vibration prepare -j JOB
+abacustools workflow vibration postprocess -j JOB
+```
+
+Use `--index 1 2 ...` to select atoms and `--traj` to write mode trajectories.
+
 Generated calculation directories are protected by default. Use `--override`
 when intentionally replacing them. Submission scripts are intentionally not
 generated because their contents depend on the target computing environment.
