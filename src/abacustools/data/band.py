@@ -7,8 +7,9 @@ import numpy as np
 
 from abacustools.data.abacus_result import get_result_from_job, read_orbital_xml
 from abacustools.core.constant import ELECTRON_MASS, ELEMENTARY_CHARGE, HBAR
+from abacustools.data.unitcell import Unitcell
 from abacustools.io.abacus import ReadInput, ReadKpt
-from abacustools.io.stru import AbacusSTRU, Cartesian2Direct
+from abacustools.io.stru import AbacusSTRU
 
 
 class BandData:
@@ -218,7 +219,9 @@ class BandData:
                 kpt_coord_direct = [float(kx), float(ky), float(kz)]
             else:
                 kpt_coord_cart = [float(kx), float(ky), float(kz)]
-                kpt_coord_direct = Cartesian2Direct([kpt_coord_cart], rec_cell)[0]
+                kpt_coord_direct = Unitcell(rec_cell).cart_to_frac(
+                    [kpt_coord_cart], wrap=False
+                )[0]
 
             # Get label
             if len(kpt) >= 5:

@@ -8,6 +8,7 @@ import sys
 import numpy as np
 
 from abacustools.core.constant import ANG_TO_BOHR, BOHR_TO_ANG
+from abacustools.data.unitcell import Unitcell
 
 MASS_DICT = {
     "H": 1.0079,
@@ -244,13 +245,6 @@ ABACUS_STRU_KEY_WORD = [
 
 BOHR2A = BOHR_TO_ANG
 A2BOHR = ANG_TO_BOHR
-
-
-def Direct2Cartesian(coord:List[List[float]],cell:List[List[float]]):
-    return np.array(coord).dot(np.array(cell)).tolist()
-
-def Cartesian2Direct(coord:List[List[float]],cell:List[List[float]]):
-    return np.array(coord).dot(np.linalg.inv(np.array(cell))).tolist()
 
 
 def mag_to_angle(magx,magy,magz):
@@ -800,7 +794,7 @@ class AbacusSTRU:
     
     @property
     def coords_direct(self):
-        return Cartesian2Direct(self.coords, self.cell)
+        return Unitcell(self.cell).cart_to_frac(self.coords, wrap=False)
     
     @property
     def moves(self):
@@ -846,7 +840,7 @@ class AbacusSTRU:
     @coords_direct.setter
     def coords_direct(self, value: List[Tuple[float,float,float]]):
         assert len(value) == self.natoms, "Number of coordinates must match number of atoms."
-        cart_coords = Direct2Cartesian(value, self.cell)
+        cart_coords = Unitcell(self.cell).frac_to_cart(value, wrap=False)
         for i in range(self.natoms):
             self._atoms[i].coord = cart_coords[i]
     
@@ -919,7 +913,7 @@ class AbacusSTRU:
             direct (bool): Whether the coordinates are in direct or cartesian coordinates. Default is False.
         """
         if direct:
-            coords = Direct2Cartesian(coords, self.cell)
+            coords = Unitcell(self.cell).frac_to_cart(coords, wrap=False)
         for i in range(len(self._atoms)):
             self._atoms[i].coord = coords[i]
     
@@ -1015,7 +1009,9 @@ class AbacusSTRU:
                 if stru_data["cartesian"]:
                     coords = (np.array(stru_data["coord"]) * stru_data['lattice_constant'] * BOHR2A).tolist()
                 else:
-                    coords = Direct2Cartesian(stru_data["coord"], cell)
+                    coords = Unitcell(cell).frac_to_cart(
+                        stru_data["coord"], wrap=False
+                    )
                 atom_list = []
                 label_tot = get_total_property(stru_data, "label")
                 pp_tot = get_total_property(stru_data, "pp")
@@ -1115,7 +1111,7 @@ class AbacusSTRU:
                 cell = np.array(self.cell) * A2BOHR / lc
                 coord = np.array([atom.coord for atom in atom_list]) * A2BOHR / lc
                 if direct:
-                    coord = Cartesian2Direct(coord.tolist(), cell)
+                    coord = Unitcell(cell).cart_to_frac(coord.tolist(), wrap=False)
                 else:
                     coord = coord.tolist()
                 cell = cell.tolist()
@@ -1482,7 +1478,7 @@ class AbacusSTRU:
                 atom.element = element
             atom_nums.append(atomic_numbers[atom.element])
 
-        direct_coords = Cartesian2Direct(self.coords, self.cell)
+        direct_coords = Unitcell(self.cell).cart_to_frac(self.coords, wrap=False)
 
         kpath = seekpath.get_path(
             (self.cell, direct_coords, atom_nums),
