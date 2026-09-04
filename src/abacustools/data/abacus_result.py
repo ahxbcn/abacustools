@@ -108,29 +108,24 @@ def read_dos_from_job(job_dir: Union[str, Path]) -> Dict[str, Any]:
     }
 
 
-def read_pdos_from_job(job_dir: Union[str, Path]) -> Dict[str, Any]:
-    """Read projected DOS data from an ABACUS PDOS XML file."""
-    job_path = Path(job_dir)
-    inputs = _job_input(job_path)
-    output_path = _output_directory(job_path, inputs)
-    pdos_file = output_path / "PDOS"
-    if not pdos_file.is_file():
-        raise FileNotFoundError(f"Could not find PDOS file: {pdos_file}")
+def read_orbital_xml(xml_file: Union[str, Path]) -> Dict[str, Any]:
+    """Read orbital metadata and data from an ABACUS orbital XML file."""
+    xml_path = Path(xml_file)
+    root = ET.parse(xml_path).getroot()
 
-    root = ET.parse(pdos_file).getroot()
+    energy = None
     energy_node = root.find("energy_values")
-    if energy_node is None or not energy_node.text:
-        raise ValueError(f"PDOS file has no energy grid: {pdos_file}")
-    energy = np.asarray([float(value) for value in energy_node.text.split()])
+    if energy_node is not None and energy_node.text:
+        energy = np.asarray(
+            [_as_float(value) for value in energy_node.text.split()]
+        )
 
     orbitals = []
     for orbital in root.findall("orbital"):
         data_node = orbital.find("data")
         if data_node is None or not data_node.text:
-            raise ValueError(f"PDOS orbital has no data: {pdos_file}")
+            raise ValueError(f"Orbital has no data: {xml_path}")
         data = np.loadtxt(StringIO(data_node.text), ndmin=2)
-        if data.shape[0] != energy.shape[0]:
-            raise ValueError(f"PDOS energy and data lengths do not match: {pdos_file}")
         try:
             orbital_info = {
                 "index": int(orbital.get("index")),
@@ -142,10 +137,32 @@ def read_pdos_from_job(job_dir: Union[str, Path]) -> Dict[str, Any]:
                 "data": data,
             }
         except (TypeError, ValueError) as error:
-            raise ValueError(f"PDOS orbital metadata is invalid: {pdos_file}") from error
+            raise ValueError(f"Orbital metadata is invalid: {xml_path}") from error
         orbitals.append(orbital_info)
 
     return {"energy": energy, "orbitals": orbitals}
+
+
+def read_pdos_from_job(job_dir: Union[str, Path]) -> Dict[str, Any]:
+    """Read projected DOS data from an ABACUS PDOS XML file."""
+    job_path = Path(job_dir)
+    inputs = _job_input(job_path)
+    output_path = _output_directory(job_path, inputs)
+    pdos_file = output_path / "PDOS"
+    if not pdos_file.is_file():
+        raise FileNotFoundError(f"Could not find PDOS file: {pdos_file}")
+
+    result = read_orbital_xml(pdos_file)
+    energy = result["energy"]
+    if energy is None:
+        raise ValueError(f"PDOS file has no energy grid: {pdos_file}")
+
+    for orbital in result["orbitals"]:
+        data = orbital["data"]
+        if data.shape[0] != energy.shape[0]:
+            raise ValueError(f"PDOS energy and data lengths do not match: {pdos_file}")
+
+    return result
 
 
 def _calculation(inputs: Dict[str, Any], output_path: Path) -> str:

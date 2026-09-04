@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from abacustools.data.abacus_result import get_result_from_job
+from abacustools.data.abacus_result import get_result_from_job, read_orbital_xml
 from abacustools.core.constant import ELECTRON_MASS, ELEMENTARY_CHARGE, HBAR
 from abacustools.io.abacus import ReadInput, ReadKpt
 from abacustools.io.stru import AbacusSTRU, Cartesian2Direct
@@ -1096,46 +1096,29 @@ class ProjBandData(BandData):
         Returns:
             BandData: A BandData object containing the band data and high symmetry labels.
         """
-        import xml.etree.ElementTree as ET
-        from io import StringIO
-
         band_data = BandData.ReadFromAbacusJob(abacusjob_dir, efermi, high_symm_labels)
 
         input_params = ReadInput(os.path.join(abacusjob_dir, "INPUT"))
         abacusjob_outdir = os.path.join(abacusjob_dir, f"OUT.{input_params.get('suffix', 'ABACUS')}")
         proj_band_file_up = os.path.join(abacusjob_outdir, "PBANDS_1")
-        tree_up = ET.parse(proj_band_file_up)
+        orbital_data_up = read_orbital_xml(proj_band_file_up)["orbitals"]
         if input_params.get("nspin", 1) == 2:
             proj_band_file_dn = os.path.join(abacusjob_outdir, "PBANDS_2")
-            tree_dn = ET.parse(proj_band_file_dn)
+            orbital_data_dn = read_orbital_xml(proj_band_file_dn)["orbitals"]
 
         all_orbital_projband_data = []
 
         # Read projected band data for nspin=1 case
-        root_up = tree_up.getroot()
-        root_up_orbs = root_up.findall("orbital")
-        if input_params.get("nspin", 1) == 2:
-            root_dn = tree_dn.getroot()
-            root_dn_orbs = root_dn.findall("orbital")
-
-        for iorb, orb in enumerate(root_up_orbs):
-            raw_pband_data_up = np.loadtxt(StringIO(orb.find("data").text))
+        for iorb, orb in enumerate(orbital_data_up):
+            raw_pband_data_up = orb["data"]
             if input_params.get("nspin", 1) in [1, 4]:
                 raw_pband_data = raw_pband_data_up[np.newaxis, :, :]
             if input_params.get("nspin", 1) == 2:
-                raw_pband_data_dn = np.loadtxt(StringIO(root_dn_orbs[iorb].find("data").text))
+                raw_pband_data_dn = orbital_data_dn[iorb]["data"]
                 raw_pband_data = np.array([raw_pband_data_up, raw_pband_data_dn])
 
             # Ignore Band Data in PBANDS_* for simplicity
-            orbital_info = {
-                "index": int(orb.get("index")),
-                "atom_index": int(orb.get("atom_index")),
-                "species": orb.get("species"),
-                "l": int(orb.get("l")),
-                "m": int(orb.get("m")),
-                "z": int(orb.get("z")),
-                "data": raw_pband_data,
-            }
+            orbital_info = {**orb, "data": raw_pband_data}
 
             all_orbital_projband_data.append(orbital_info)
 

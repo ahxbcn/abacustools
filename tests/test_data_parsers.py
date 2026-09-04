@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from abacustools.data.abacus_result import read_dos_from_job, read_pdos_from_job
+from abacustools.data.abacus_result import (
+    read_dos_from_job,
+    read_orbital_xml,
+    read_pdos_from_job,
+)
 from abacustools.data.band import BandData
 from abacustools.data.grid import Charge, Grid
 
@@ -64,6 +68,28 @@ def test_read_pdos_from_job(tmp_path):
     np.testing.assert_allclose(result["energy"], [-1.0, 0.0, 1.0])
     assert result["orbitals"][0]["species"] == "H"
     np.testing.assert_allclose(result["orbitals"][0]["data"], [[0.1], [0.2], [0.3]])
+
+
+def test_read_orbital_xml_without_energy_grid(tmp_path):
+    xml_file = tmp_path / "PBANDS_1"
+    xml_file.write_text(
+        """<projected_bands>
+<orbital index="2" atom_index="3" species="O" l="1" m="2" z="1">
+<data>
+0.1 0.2
+0.3 0.4
+</data>
+</orbital>
+</projected_bands>
+""",
+        encoding="utf-8",
+    )
+
+    result = read_orbital_xml(xml_file)
+
+    assert result["energy"] is None
+    assert result["orbitals"][0]["atom_index"] == 3
+    np.testing.assert_allclose(result["orbitals"][0]["data"], [[0.1, 0.2], [0.3, 0.4]])
 
 
 def test_grid_from_stru_and_charge_to_potential(tmp_path):
