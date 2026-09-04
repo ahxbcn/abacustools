@@ -1,6 +1,7 @@
 """The ``abacustools workflow`` command family."""
 
 from . import bsse as bsse_workflow
+from . import chgdiff as chgdiff_workflow
 
 
 def register_parser(subparsers) -> None:
@@ -16,3 +17,4 @@ def register_parser(subparsers) -> None:
         required=True,
     )
     bsse_workflow.register_parser(workflow_subparsers)
+    chgdiff_workflow.register_parser(workflow_subparsers)

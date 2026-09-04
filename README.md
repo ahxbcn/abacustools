@@ -43,3 +43,12 @@ workflow currently provides the preparation and postprocessing framework:
 abacustools workflow bsse prepare
 abacustools workflow bsse postprocess
 ```
+
+Charge-density difference calculations are available as `chgdiff`. Prepare
+the full-system and two-subsystem SCF jobs, submit them with
+`sbatch runabacus.sh`, and then generate the difference cube:
+
+```text
+abacustools workflow chgdiff prepare -j JOB -i 1 3 4
+abacustools workflow chgdiff postprocess -j JOB
+```
