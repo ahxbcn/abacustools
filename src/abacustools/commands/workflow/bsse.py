@@ -11,6 +11,8 @@ from .common import (
     clear_generated_jobs,
     kpoint_filename,
     read_manifest,
+    read_job_input,
+    read_job_structure,
     register_stages,
     write_abacus_job,
     write_manifest,
@@ -60,9 +62,6 @@ def _register_postprocess_arguments(parser: argparse.ArgumentParser) -> None:
 
 def prepare(args: argparse.Namespace) -> int:
     """Run the BSSE preparation stage."""
-    from abacustools.io.abacus import ReadInput
-    from abacustools.io.stru import AbacusSTRU
-
     job_names = [
         "full_system",
         "subsys_a_ghost_b",
@@ -83,7 +82,7 @@ def prepare(args: argparse.Namespace) -> int:
             raise RuntimeError(f"job directory does not exist: {job}")
         print(f"  job: {job}")
 
-        inputs = ReadInput(job / "INPUT")
+        inputs, stru_filename, stru = read_job_structure(job)
         if inputs.get("basis_type", "pw") != "lcao":
             print(
                 "BSSE correction generally needs the LCAO basis type. "
@@ -91,11 +90,7 @@ def prepare(args: argparse.Namespace) -> int:
             )
         scf_inputs = deepcopy(inputs)
         scf_inputs["calculation"] = "scf"
-        stru_filename = inputs.get("stru_file", "STRU")
         kpoint_file = kpoint_filename(job, inputs)
-        stru = AbacusSTRU.read(job / stru_filename)
-        if stru is None:
-            raise RuntimeError(f"failed to read structure in job: {job}")
         if any(index >= stru.natoms for index in subsys_a_indices):
             raise ValueError(
                 f"atom index exceeds the number of atoms ({stru.natoms}) in {job}"
@@ -106,7 +101,7 @@ def prepare(args: argparse.Namespace) -> int:
 
         clear_generated_jobs(job, job_names, override=args.override)
 
-        def write_job(job_name: str, structure: AbacusSTRU) -> None:
+        def write_job(job_name: str, structure) -> None:
             write_abacus_job(
                 scf_inputs,
                 structure,
@@ -152,7 +147,6 @@ def prepare(args: argparse.Namespace) -> int:
 def postprocess(args: argparse.Namespace) -> int:
     """Run the BSSE postprocessing stage."""
     from abacustools.data.abacus_result import get_result_from_job
-    from abacustools.io.abacus import ReadInput
 
     job = Path(args.job).absolute()
     if not job.is_dir():
@@ -190,7 +184,7 @@ def postprocess(args: argparse.Namespace) -> int:
     ghost_a_b_energy = jobs["A + ghost B"]["energy"]
     ghost_b_a_energy = jobs["ghost A + B"]["energy"]
     normalized_version = re.sub(r"[^0-9a-z]", "", args.version.lower())
-    dftd_method = str(ReadInput(job / "INPUT").get("vdw_method", "none")).lower()
+    dftd_method = str(read_job_input(job).get("vdw_method", "none")).lower()
     uses_dftd = dftd_method not in {"", "none", "off", "false", "0"}
     if normalized_version in {"lts3101", "3101"} and uses_dftd:
         for ghost_name, reference_name in (

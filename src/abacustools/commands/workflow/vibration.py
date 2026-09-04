@@ -16,6 +16,7 @@ from .common import (
     clear_generated_jobs,
     kpoint_filename,
     read_manifest,
+    read_job_structure,
     register_stages,
     write_abacus_job,
     write_manifest,
@@ -144,19 +145,6 @@ def _selected_atoms(selected_atoms: Any, natoms: int) -> list[int]:
     return sorted(index - 1 for index in indices)
 
 
-def _read_structure(job: Path):
-    """Read the structure referenced by an ABACUS INPUT file."""
-    from abacustools.io.abacus import ReadInput
-    from abacustools.io.stru import AbacusSTRU
-
-    inputs = ReadInput(job / "INPUT")
-    stru_filename = str(inputs.get("stru_file", "STRU"))
-    structure = AbacusSTRU.read(job / stru_filename)
-    if structure is None:
-        raise RuntimeError(f"failed to read structure: {job / stru_filename}")
-    return inputs, stru_filename, structure
-
-
 def _displacement_tasks(selected_atoms: list[int]) -> list[dict[str, Any]]:
     """Return the task metadata for all central finite differences."""
     tasks = []
@@ -183,7 +171,7 @@ def prepare(args: argparse.Namespace) -> int:
         raise RuntimeError(f"job directory does not exist: {job}")
     _validate_stepsize(args.stepsize)
 
-    inputs, stru_filename, structure = _read_structure(job)
+    inputs, stru_filename, structure = read_job_structure(job)
     selected_atoms = _selected_atoms(args.selected_atoms, structure.natoms)
     vibration_inputs = deepcopy(inputs)
     vibration_inputs["calculation"] = "scf"
@@ -402,7 +390,7 @@ def postprocess(args: argparse.Namespace) -> int:
     if args.frames < 1:
         raise ValueError("frames must be positive")
 
-    _, _, structure = _read_structure(job)
+    _, _, structure = read_job_structure(job)
     manifest = read_manifest(job, "vibration", [_EQUILIBRIUM_TASK])
     try:
         stepsize = float(manifest["stepsize"])

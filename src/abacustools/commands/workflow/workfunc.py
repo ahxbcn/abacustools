@@ -14,6 +14,7 @@ from .common import (
     clear_generated_jobs,
     kpoint_filename,
     read_manifest,
+    read_job_structure,
     register_stages,
     write_abacus_job,
     write_manifest,
@@ -103,19 +104,6 @@ def _register_postprocess_arguments(parser: argparse.ArgumentParser) -> None:
         default="workfunc_results.json",
         help="Output JSON filename. Relative paths are resolved below JOB.",
     )
-
-
-def _read_structure(job: Path):
-    """Read the structure referenced by an ABACUS INPUT file."""
-    from abacustools.io.abacus import ReadInput
-    from abacustools.io.stru import AbacusSTRU
-
-    inputs = ReadInput(job / "INPUT")
-    stru_filename = str(inputs.get("stru_file", "STRU"))
-    structure = AbacusSTRU.read(job / stru_filename)
-    if structure is None:
-        raise RuntimeError(f"failed to read structure: {job / stru_filename}")
-    return inputs, stru_filename, structure
 
 
 def _validate_positive(value: float, name: str) -> None:
@@ -228,7 +216,7 @@ def prepare(args: argparse.Namespace) -> int:
     job = Path(args.job).absolute()
     if not job.is_dir():
         raise RuntimeError(f"job directory does not exist: {job}")
-    inputs, stru_filename, structure = _read_structure(job)
+    inputs, stru_filename, structure = read_job_structure(job)
     detected, vacuum_size, _, _ = _largest_vacuum_direction(structure)
     direction = _choose_vacuum_direction(args.vacuum, detected)
 
@@ -412,7 +400,7 @@ def postprocess(args: argparse.Namespace) -> int:
     _validate_positive(args.threshold, "threshold")
     manifest = read_manifest(job, "workfunc", [_WORKFUNC_DIRECTORY])
     workfunc_job = job / _WORKFUNC_DIRECTORY
-    inputs, _, structure = _read_structure(workfunc_job)
+    inputs, _, structure = read_job_structure(workfunc_job)
     detected, _, _, _ = _largest_vacuum_direction(structure)
     manifest_direction = manifest.get("vacuum_direction")
     direction = _choose_vacuum_direction(args.vacuum, detected, manifest_direction)

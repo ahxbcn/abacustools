@@ -14,6 +14,7 @@ from .common import (
     clear_generated_jobs,
     kpoint_filename,
     read_manifest,
+    read_job_structure,
     register_stages,
     write_abacus_job,
     write_manifest,
@@ -113,19 +114,12 @@ def _deformed_structure(structure, pymatgen_structure):
 
 def prepare(args: argparse.Namespace) -> int:
     """Prepare the equilibrium and independently strained calculations."""
-    from abacustools.io.abacus import ReadInput
-    from abacustools.io.stru import AbacusSTRU
-
     job = Path(args.job).absolute()
     if not job.is_dir():
         raise RuntimeError(f"job directory does not exist: {job}")
     _validate_strain_amounts(args.norm, args.shear)
 
-    inputs = ReadInput(job / "INPUT")
-    stru_filename = str(inputs.get("stru_file", "STRU"))
-    structure = AbacusSTRU.read(job / stru_filename)
-    if structure is None:
-        raise RuntimeError(f"failed to read structure: {job / stru_filename}")
+    inputs, stru_filename, structure = read_job_structure(job)
 
     elastic_inputs = deepcopy(inputs)
     elastic_inputs["calculation"] = "scf" if args.norelax else "relax"

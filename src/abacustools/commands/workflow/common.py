@@ -53,6 +53,31 @@ def register_stages(
     postprocess_parser.set_defaults(handler=postprocess_handler)
 
 
+def read_job_input(job: Path) -> dict[str, Any]:
+    """Read an ABACUS job's INPUT file with a consistent error message."""
+    from abacustools.io.abacus import ReadInput
+
+    job = Path(job)
+    input_path = job / "INPUT"
+    if not input_path.is_file():
+        raise FileNotFoundError(f"Could not find INPUT in ABACUS job: {input_path}")
+    return ReadInput(input_path)
+
+
+def read_job_structure(job: Path):
+    """Read an ABACUS job's INPUT and the structure it references."""
+    from abacustools.io.stru import AbacusSTRU
+
+    job = Path(job)
+    inputs = read_job_input(job)
+    stru_filename = str(inputs.get("stru_file", "STRU"))
+    stru_path = job / stru_filename
+    structure = AbacusSTRU.read(stru_path)
+    if structure is None:
+        raise RuntimeError(f"failed to read structure: {stru_path}")
+    return inputs, stru_filename, structure
+
+
 def has_kpoint_setting(inputs: dict[str, Any]) -> bool:
     """Return whether INPUT can generate k points without a KPT file."""
     try:
@@ -211,12 +236,7 @@ def read_manifest(
 
 def completed_scf_output(job: Path):
     """Return INPUT and output directory after confirming SCF convergence."""
-    from abacustools.io.abacus import ReadInput
-
-    input_path = job / "INPUT"
-    if not input_path.is_file():
-        raise FileNotFoundError(f"Could not find INPUT in workflow job: {job}")
-    inputs = ReadInput(input_path)
+    inputs = read_job_input(job)
     suffix = inputs.get("suffix", "ABACUS")
     output_dir = job / f"OUT.{suffix}"
     log_path = output_dir / "running_scf.log"

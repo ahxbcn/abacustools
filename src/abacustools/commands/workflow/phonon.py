@@ -16,6 +16,7 @@ from .common import (
     clear_generated_jobs,
     kpoint_filename,
     read_manifest,
+    read_job_structure,
     register_stages,
     write_abacus_job,
     write_manifest,
@@ -172,19 +173,6 @@ def _initialize_phonopy(structure, supercell: list[int]):
     return Phonopy(_phonopy_atoms(structure), supercell_matrix=np.diag(supercell))
 
 
-def _read_structure(job: Path):
-    """Read the structure referenced by an ABACUS INPUT file."""
-    from abacustools.io.abacus import ReadInput
-    from abacustools.io.stru import AbacusSTRU
-
-    inputs = ReadInput(job / "INPUT")
-    stru_filename = str(inputs.get("stru_file", "STRU"))
-    structure = AbacusSTRU.read(job / stru_filename)
-    if structure is None:
-        raise RuntimeError(f"failed to read structure: {job / stru_filename}")
-    return inputs, stru_filename, structure
-
-
 def _displacement_metadata(phonon) -> list[dict[str, Any]]:
     """Return the generated Phonopy displacement dataset in JSON form."""
     dataset = phonon.dataset
@@ -216,7 +204,7 @@ def prepare(args: argparse.Namespace) -> int:
     _validate_positive_float(args.displacement_stepsize, "displacement_stepsize")
     _validate_positive_float(args.min_supercell_length, "min_supercell_length")
 
-    inputs, stru_filename, structure = _read_structure(job)
+    inputs, stru_filename, structure = read_job_structure(job)
     supercell = (
         _validate_supercell(args.supercell)
         if args.supercell is not None
@@ -405,7 +393,7 @@ def postprocess(args: argparse.Namespace) -> int:
     if (args.qpath is None) != (args.high_symm_points is None):
         raise ValueError("qpath and high_symm_points must be provided together")
 
-    _, _, structure = _read_structure(job)
+    _, _, structure = read_job_structure(job)
     manifest = read_manifest(job, "phonon", [])
     try:
         manifest_supercell = _validate_supercell(manifest.get("supercell"))

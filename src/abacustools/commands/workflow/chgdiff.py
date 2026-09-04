@@ -13,6 +13,7 @@ from .common import (
     completed_scf_output,
     kpoint_filename,
     read_manifest,
+    read_job_structure,
     register_stages,
     write_abacus_job,
     write_manifest,
@@ -48,17 +49,10 @@ def _register_postprocess_arguments(parser: argparse.ArgumentParser) -> None:
 
 def prepare(args: argparse.Namespace) -> int:
     """Prepare full-system and subsystem SCF jobs for charge-density output."""
-    from abacustools.io.abacus import ReadInput
-    from abacustools.io.stru import AbacusSTRU
-
     job = Path(args.job).absolute()
     if not job.is_dir():
         raise RuntimeError(f"job directory does not exist: {job}")
-    inputs = ReadInput(job / "INPUT")
-    stru_filename = inputs.get("stru_file", "STRU")
-    stru = AbacusSTRU.read(job / stru_filename)
-    if stru is None:
-        raise RuntimeError(f"failed to read structure: {job / stru_filename}")
+    inputs, stru_filename, stru = read_job_structure(job)
 
     if any(index < 1 for index in args.index):
         raise ValueError("atom indices must be greater than zero")
