@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import re
+import xml.etree.ElementTree as ET
+from io import StringIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Union
+
+import numpy as np
 
 from abacustools.io.abacus import ReadInput
 
@@ -74,6 +78,74 @@ def _output_directory(job_path: Path, inputs: Dict[str, Any]) -> Path:
     raise FileNotFoundError(
         f"Could not determine the output directory for ABACUS job {job_path}"
     )
+
+
+def read_dos_from_job(job_dir: Union[str, Path]) -> Dict[str, Any]:
+    """Read total DOS data from an ABACUS job output."""
+    job_path = Path(job_dir)
+    inputs = _job_input(job_path)
+    output_path = _output_directory(job_path, inputs)
+    dos_files = sorted(output_path.glob("DOS*_smearing.dat"))
+    if not dos_files:
+        raise FileNotFoundError(f"Could not find DOS files in {output_path}")
+
+    energy = None
+    dos_channels = []
+    for dos_file in dos_files:
+        data = np.loadtxt(dos_file, ndmin=2)
+        if data.shape[1] < 2:
+            raise ValueError(f"DOS file has fewer than two columns: {dos_file}")
+        file_energy = data[:, 0]
+        if energy is None:
+            energy = file_energy
+        elif energy.shape != file_energy.shape or not np.allclose(energy, file_energy):
+            raise ValueError(f"DOS energy grids do not match: {dos_file}")
+        dos_channels.append(data[:, 1])
+
+    return {
+        "energy": energy,
+        "data": np.column_stack(dos_channels),
+    }
+
+
+def read_pdos_from_job(job_dir: Union[str, Path]) -> Dict[str, Any]:
+    """Read projected DOS data from an ABACUS PDOS XML file."""
+    job_path = Path(job_dir)
+    inputs = _job_input(job_path)
+    output_path = _output_directory(job_path, inputs)
+    pdos_file = output_path / "PDOS"
+    if not pdos_file.is_file():
+        raise FileNotFoundError(f"Could not find PDOS file: {pdos_file}")
+
+    root = ET.parse(pdos_file).getroot()
+    energy_node = root.find("energy_values")
+    if energy_node is None or not energy_node.text:
+        raise ValueError(f"PDOS file has no energy grid: {pdos_file}")
+    energy = np.asarray([float(value) for value in energy_node.text.split()])
+
+    orbitals = []
+    for orbital in root.findall("orbital"):
+        data_node = orbital.find("data")
+        if data_node is None or not data_node.text:
+            raise ValueError(f"PDOS orbital has no data: {pdos_file}")
+        data = np.loadtxt(StringIO(data_node.text), ndmin=2)
+        if data.shape[0] != energy.shape[0]:
+            raise ValueError(f"PDOS energy and data lengths do not match: {pdos_file}")
+        try:
+            orbital_info = {
+                "index": int(orbital.get("index")),
+                "atom_index": int(orbital.get("atom_index")),
+                "species": orbital.get("species"),
+                "l": int(orbital.get("l")),
+                "m": int(orbital.get("m")),
+                "z": int(orbital.get("z")),
+                "data": data,
+            }
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"PDOS orbital metadata is invalid: {pdos_file}") from error
+        orbitals.append(orbital_info)
+
+    return {"energy": energy, "orbitals": orbitals}
 
 
 def _calculation(inputs: Dict[str, Any], output_path: Path) -> str:

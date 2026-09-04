@@ -5,8 +5,9 @@ from pathlib import Path
 
 import numpy as np
 
-from abacustest import ReadInput, ReadKpt, RESULT, AbacusSTRU
-from abacustest.lib_prepare.comm import Cartesian2Direct, real2rec
+from abacustools.data.abacus_result import get_result_from_job
+from abacustools.io.abacus import ReadInput, ReadKpt
+from abacustools.io.stru import AbacusSTRU, Cartesian2Direct
 
 
 class BandData:
@@ -178,7 +179,8 @@ class BandData:
         nspin = input_params.get("nspin", 1)
         stru_file = os.path.join(abacusjob_dir, input_params.get("stru_file", "STRU"))
         stru = AbacusSTRU.read(stru_file)
-        rec_cell = real2rec(stru.cell)
+        cell = np.asarray(stru.cell, dtype=float)
+        rec_cell = 2 * np.pi * np.linalg.inv(cell.T)
 
         kpt_result = ReadKpt(abacusjob_dir)
         if kpt_result is None:
@@ -254,13 +256,14 @@ class BandData:
                 )
                 start_nkpt = end_nkpt + 1
 
-        abacusresult = RESULT(fmt="abacus", path=abacusjob_dir)
-        if abacusresult is None:
-            raise ValueError("Failed to read ABACUS results")
+        abacusresult = get_result_from_job(
+            abacusjob_dir,
+            ["efermi"],
+            "LTS3.10.1",
+        )
         if efermi is None:
-            try:
-                efermi = abacusresult["efermi"]
-            except (KeyError, TypeError):
+            efermi = abacusresult.get("efermi")
+            if efermi is None:
                 raise ValueError(
                     "Fermi energy (efermi) not found in ABACUS results and not provided"
                 )

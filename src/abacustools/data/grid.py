@@ -1,11 +1,56 @@
-from typing import List, Union, Optional, Tuple, Literal
+from typing import List, Optional, Tuple, Literal
 import os
 
 import numpy as np
 
-from abacustest.constant import BOHR2A, RY2EV, PERIOD_DICT_NUMBER
-from abacustest import AbacusStru
-from abacustest.lib_model.comm import chg2pot
+from ase.data import atomic_numbers
+
+from abacustools.core.constant import BOHR_TO_ANG, RY_TO_EV
+from abacustools.io.stru import AbacusSTRU
+
+
+BOHR2A = BOHR_TO_ANG
+RY2EV = RY_TO_EV
+
+
+def _reciprocal_lattice(cell):
+    """Calculate reciprocal lattice vectors including the 2*pi factor."""
+    cell = np.asarray(cell, dtype=float)
+    if cell.shape != (3, 3):
+        raise ValueError(f"cell must have shape (3, 3), got {cell.shape}")
+    volume = np.dot(cell[0], np.cross(cell[1], cell[2]))
+    if np.isclose(volume, 0.0):
+        raise ValueError("cell must be non-singular")
+    return np.asarray(
+        [
+            2 * np.pi * np.cross(cell[1], cell[2]) / volume,
+            2 * np.pi * np.cross(cell[2], cell[0]) / volume,
+            2 * np.pi * np.cross(cell[0], cell[1]) / volume,
+        ]
+    )
+
+
+def _charge_to_potential(chg, cell):
+    """Solve the periodic Poisson equation for a charge density."""
+    from ase import units
+
+    charge = np.asarray(chg, dtype=float)
+    if charge.ndim != 3:
+        raise ValueError("charge density must be a three-dimensional array")
+    nx, ny, nz = charge.shape
+    reciprocal = _reciprocal_lattice(cell)
+    grid = np.meshgrid(
+        np.fft.fftfreq(nx, d=1 / nx),
+        np.fft.fftfreq(ny, d=1 / ny),
+        np.fft.fftfreq(nz, d=1 / nz),
+        indexing="ij",
+    )
+    indices = np.vstack([component.ravel() for component in grid]).T
+    wavevectors = indices @ reciprocal
+    squared = np.sum(wavevectors**2, axis=1).reshape(charge.shape)
+    squared[0, 0, 0] = 1.0
+    potential = np.fft.ifftn(np.fft.fftn(charge) / squared).real
+    return potential / units._eps0 * units._e * -1 * 1e10
 
 
 class Grid:
@@ -44,9 +89,9 @@ class Grid:
             else:
                 atom_charges = [0.0] * atom_positions.shape[0]  # Default charge if not provided
         else:
-            atom_positions = np.zeros(3)
-            atom_types = [0]
-            atom_charges = [0]
+            atom_positions = np.empty((0, 3), dtype=float)
+            atom_types = []
+            atom_charges = []
                 
         assert origin.shape == (3,), "Origin should be a 1D numpy array of length 3"
         
@@ -201,13 +246,13 @@ class Grid:
             stru_file (str): Path to the STRU file.
             grid_size (tuple): Grid size along each cell direction (nx, ny, nz).
         """
-        stru = AbacusStru.ReadStru(stru_file)
+        stru = AbacusSTRU.read(stru_file)
         if stru is None:
             raise ValueError(f"Failed to read STRU file {stru_file}")
         
-        cell = stru.get_cell(bohr=False)  # in Angstrom
-        coord = stru.get_coord(bohr=False, direct=False)  # in Angstrom
-        element = stru.get_element(number=True, total=True)
+        cell = stru.cell
+        coord = stru.coords
+        element = [atomic_numbers[symbol] for symbol in stru.elements]
         
         return cls(np.zeros(grid_size), np.array(cell), np.array(coord), np.array(element), np.zeros(len(element)), np.zeros(3))
 
@@ -337,7 +382,7 @@ class Charge(Grid):
         Returns:
             Potential: The electrostatic potential object.
         """
-        pot = chg2pot(self.data, self.cell)
+        pot = _charge_to_potential(self.data, self.cell)
         return Potential(pot, self.cell, self.atom_positions, self.atom_types, self.atom_charges, self.origin)  
     
     def supercell(self, sc: Tuple[int, int, int]):

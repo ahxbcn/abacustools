@@ -3,7 +3,7 @@
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Union
 
-from abacustest.lib_collectdata.collectdata import RESULT
+from abacustools.data.abacus_result import get_result_from_job, read_dos_from_job, read_pdos_from_job
 
 
 l_map = ['s', 'p', 'd', 'f', 'g']
@@ -80,11 +80,11 @@ class DOSData:
         """
         Read DOS outputed by ABACUS from directory of finished ABACUS calculation.
         """
-        results = RESULT(fmt="abacus", path=abacusjob_dir)
-        energy = np.array(results['dos']['energy'])
-        dosdata = np.array(results['dos']['data'])
+        dos = read_dos_from_job(abacusjob_dir)
+        energy = np.asarray(dos["energy"])
+        dosdata = np.asarray(dos["data"])
         if efermi is None:
-            efermi = results['efermi']
+            efermi = get_result_from_job(abacusjob_dir, ["efermi"], "LTS3.10.1")["efermi"]
 
         return DOSData(energy=energy, dosdata=dosdata, efermi=efermi)
     
@@ -133,6 +133,8 @@ class PDOSData:
         self.efermi = efermi
         if efermi is not None:
             self.energy = np.array(energy) - efermi
+        else:
+            self.energy = np.array(energy)
 
         for orbital_pdos in pdosdata:
             assert energy.shape[0] == orbital_pdos['data'].shape[0] # Length of energy and PDOS data of one orbital must match
@@ -141,11 +143,8 @@ class PDOSData:
 
     def read_projected_dos(abacusjob_dir):
         """Read projected DOS from ABACUS output files (XML format)."""
-        results = RESULT(fmt="abacus", path=abacusjob_dir)
-        energy = np.array(results['pdos']['energy'])
-        for i in range(len(results['pdos']['orbitals'])):
-            results['pdos']['orbitals'][i]['data'] = np.array(results['pdos']['orbitals'][i]['data'])
-        return energy, results['pdos']['orbitals']
+        pdos = read_pdos_from_job(abacusjob_dir)
+        return np.asarray(pdos["energy"]), pdos["orbitals"]
     
     @staticmethod
     def ReadFromAbacusJob(abacus_job: str, efermi: Optional[float]=None) -> 'PDOSData':
@@ -162,10 +161,9 @@ class PDOSData:
         PDOSData
             An instance of the PDOSData class with data read from the ABACUS job output.
         """
-        results = RESULT(fmt="abacus", path=abacus_job)
         energy, pdosdata = PDOSData.read_projected_dos(abacus_job)
         if efermi is None:
-            efermi = results['efermi']
+            efermi = get_result_from_job(abacus_job, ["efermi"], "LTS3.10.1")["efermi"]
 
         return PDOSData(energy=energy, pdosdata=pdosdata, efermi=efermi)
 
