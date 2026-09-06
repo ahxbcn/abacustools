@@ -5,12 +5,14 @@ from __future__ import annotations
 import numpy as np
 
 from abacustools.data.abacus_result import (
+    get_result_from_job,
     read_dos_from_job,
     read_orbital_xml,
     read_pdos_from_job,
 )
 from abacustools.data.band import BandData
 from abacustools.data.grid import Charge, Grid
+from abacustools.main import main
 
 
 def test_band_data_module_imports_without_abacustest():
@@ -25,6 +27,75 @@ def _job_with_output(tmp_path):
         encoding="utf-8",
     )
     return output
+
+
+def test_get_result_returns_none_when_requested_data_is_unavailable(tmp_path):
+    output = _job_with_output(tmp_path)
+    (output / "running_scf.log").write_text(
+        "calculation did not reach an electronic iteration\n",
+        encoding="utf-8",
+    )
+
+    result = get_result_from_job(
+        tmp_path,
+        ["energy", "drho", "denergy", "scf_steps", "converged", "efermi"],
+        version="",
+    )
+
+    assert result == {
+        "energy": None,
+        "drho": None,
+        "denergy": None,
+        "scf_steps": 0,
+        "converged": False,
+        "efermi": None,
+    }
+
+
+def test_get_result_does_not_fail_for_incomplete_job(tmp_path):
+    (tmp_path / "INPUT").write_text(
+        "INPUT_PARAMETERS\ncalculation scf\nsuffix ABACUS\n",
+        encoding="utf-8",
+    )
+
+    result = get_result_from_job(tmp_path, None, version="")
+
+    assert result["energy"] is None
+    assert result["converged"] is None
+
+
+def test_result_command_continues_after_incomplete_job(tmp_path, capsys):
+    incomplete = tmp_path / "incomplete"
+    incomplete.mkdir()
+    (incomplete / "INPUT").write_text(
+        "INPUT_PARAMETERS\nsuffix ABACUS\n",
+        encoding="utf-8",
+    )
+
+    complete = tmp_path / "complete"
+    complete.mkdir()
+    output = _job_with_output(complete)
+    (output / "running_scf.log").write_text(
+        "Final Etot = -2.5 eV\n",
+        encoding="utf-8",
+    )
+
+    assert main(
+        [
+            "postprocess",
+            "result",
+            "-j",
+            str(incomplete),
+            str(complete),
+            "-p",
+            "energy",
+        ]
+    ) == 0
+
+    output_text = capsys.readouterr().out
+    assert "incomplete" in output_text
+    assert "complete" in output_text
+    assert "-2.50000000" in output_text
 
 
 def test_read_dos_from_job(tmp_path):

@@ -223,10 +223,9 @@ def split_param_by_group(param_names: Optional[Sequence[str]]) -> Dict[str, List
     return param_groups
 
 
-def _last_value(values: List[Any], name: str) -> Any:
-    if not values:
-        raise ValueError(f"Could not find {name} in the ABACUS log")
-    return values[-1]
+def _empty_results(metrics: Sequence[str]) -> Dict[str, Any]:
+    """Return empty values for metrics whose output is not available yet."""
+    return {metric: None for metric in metrics}
 
 
 def _parse_force_block(
@@ -270,11 +269,14 @@ def collect_scf_results(job_dir: str, metrics: List[str]) -> Dict[str, Any]:
         return {}
 
     job_path = Path(job_dir)
-    inputs = _job_input(job_path)
-    output_path = _output_directory(job_path, inputs)
-    calculation = _calculation(inputs, output_path)
-    log_path = _log_file(output_path, calculation)
-    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    try:
+        inputs = _job_input(job_path)
+        output_path = _output_directory(job_path, inputs)
+        calculation = _calculation(inputs, output_path)
+        log_path = _log_file(output_path, calculation)
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except FileNotFoundError:
+        return _empty_results(param_groups["scf_results"])
 
     energies: List[float] = []
     drhos: List[float] = []
@@ -313,8 +315,9 @@ def collect_scf_results(job_dir: str, metrics: List[str]) -> Dict[str, Any]:
             if stress:
                 stresses.append(stress)
 
+    energy_values = final_energies or energies
     available = {
-        "energy": _last_value(final_energies or energies, "energy"),
+        "energy": energy_values[-1] if energy_values else None,
         "drho": drhos[-1] if drhos else None,
         "denergy": energies[-1] - energies[-2] if len(energies) > 1 else None,
         "scf_steps": len(energies),
@@ -333,10 +336,13 @@ def collect_vdw_results(job_dir: str, metrics: List[str]) -> Dict[str, Any]:
         return {}
 
     job_path = Path(job_dir)
-    inputs = _job_input(job_path)
-    output_path = _output_directory(job_path, inputs)
-    calculation = _calculation(inputs, output_path)
-    log_path = _log_file(output_path, calculation)
+    try:
+        inputs = _job_input(job_path)
+        output_path = _output_directory(job_path, inputs)
+        calculation = _calculation(inputs, output_path)
+        log_path = _log_file(output_path, calculation)
+    except FileNotFoundError:
+        return _empty_results(param_groups["vdw_results"])
 
     vdw_energies: List[float] = []
     for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -357,12 +363,18 @@ def collect_relax_results(job_dir: str, metrics: List[str]) -> Dict[str, Any]:
         return {}
 
     job_path = Path(job_dir)
-    inputs = _job_input(job_path)
-    output_path = _output_directory(job_path, inputs)
-    calculation = _calculation(inputs, output_path)
+    try:
+        inputs = _job_input(job_path)
+        output_path = _output_directory(job_path, inputs)
+        calculation = _calculation(inputs, output_path)
+    except FileNotFoundError:
+        return _empty_results(param_groups["relax_results"])
     if calculation not in _RELAX_CALCULATIONS:
-        return {metric: None for metric in param_groups["relax_results"]}
-    log_path = _log_file(output_path, calculation, relax=True)
+        return _empty_results(param_groups["relax_results"])
+    try:
+        log_path = _log_file(output_path, calculation, relax=True)
+    except FileNotFoundError:
+        return _empty_results(param_groups["relax_results"])
 
     largest_forces: List[float] = []
     largest_stresses: List[float] = []
@@ -390,8 +402,13 @@ def _default_params(job_dir: str) -> List[str]:
     """Select default results based on whether the job has ionic relaxation."""
     job_path = Path(job_dir)
     inputs = _job_input(job_path)
-    output_path = _output_directory(job_path, inputs)
-    calculation = _calculation(inputs, output_path)
+    calculation = str(inputs.get("calculation", "scf")).lower()
+    try:
+        output_path = _output_directory(job_path, inputs)
+    except FileNotFoundError:
+        output_path = None
+    if output_path is not None:
+        calculation = _calculation(inputs, output_path)
     params = list(grouped_params["scf_results"])
     if calculation in _RELAX_CALCULATIONS:
         params.extend(grouped_params["relax_results"])
@@ -404,7 +421,13 @@ def get_result_from_job(
     version: str,
 ) -> Dict[str, Any]:
     """Collect requested results from one ABACUS job directory."""
-    params = list(param_names) if param_names is not None else _default_params(job_dir)
+    if param_names is not None:
+        params = list(param_names)
+    else:
+        try:
+            params = _default_params(job_dir)
+        except FileNotFoundError:
+            params = list(grouped_params["scf_results"])
     param_groups = split_param_by_group(params)
     results: Dict[str, Any] = {}
 
