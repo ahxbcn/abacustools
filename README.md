@@ -129,9 +129,29 @@ abacustools workflow workfunc postprocess -j JOB
 Use `--vacuum a|b|c|auto` to select the vacuum direction, and
 `--dipole-corr` to enable dipole correction.
 
+Born effective charges can be calculated with Berry-phase finite differences.
+The workflow prepares SCF and three Berry-phase NSCF calculations for each
+selected atom displacement:
+
+```text
+abacustools workflow bec prepare -j JOB --index 1 --dir x y z --type c
+```
+
+Run `run_bec.sh` in each generated `bec_*` directory, then postprocess the
+polarization differences:
+
+```text
+abacustools workflow bec postprocess -j JOB
+```
+
+The BEC tensors and task diagnostics are written to `bec_results.json` under
+`JOB`. Missing or incomplete Berry-phase task output is retained as missing
+tensor entries so other completed displacement directions can still be reported.
+
 Generated calculation directories are protected by default. Use `--override`
-when intentionally replacing them. Submission scripts are intentionally not
-generated because their contents depend on the target computing environment.
+when intentionally replacing them. The BEC workflow's `run_bec.sh` is only a
+local four-step runner for one generated task; cluster submission scripts are
+not generated because their contents depend on the target computing environment.
 
 Each prepared workflow records its task names and atom partition in a
 workflow-specific manifest such as `workflow_phonon.json`. Postprocessing
