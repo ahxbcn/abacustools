@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -29,6 +30,16 @@ class JobValidation:
 
 
 @dataclass
+class InputCheck:
+    """Structured result of checking an ABACUS input and its dependencies."""
+
+    valid: bool
+    issues: list[ValidationIssue]
+    inputs: dict[str, Any]
+    summary: dict[str, Any]
+
+
+@dataclass
 class JobStatus:
     """Current state and latest progress of one ABACUS job."""
 
@@ -42,6 +53,20 @@ def _as_positive(value: Any) -> bool:
         return float(value) > 0
     except (TypeError, ValueError):
         return False
+
+
+def _is_enabled(value: Any) -> bool:
+    """Return whether an ABACUS boolean-like setting is enabled."""
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "t", "yes", "y", "1"}
+    return _as_positive(value)
+
+
+def _has_positive_value(value: Any) -> bool:
+    """Return whether a scalar or vector setting contains positive values."""
+    if isinstance(value, (list, tuple)):
+        return bool(value) and all(_as_positive(item) for item in value)
+    return _as_positive(value)
 
 
 def _resolve_job_path(job: Path, filename: str) -> Path:
@@ -78,26 +103,157 @@ def _known_input_keywords() -> set[str]:
     return {name for name in known if name}
 
 
-def validate_job(job_dir: Path, *, strict: bool = False) -> JobValidation:
-    """Validate the input and referenced resources of one ABACUS job."""
+def _input_syntax_issues(input_path: Path) -> list[ValidationIssue]:
+    """Find non-comment INPUT lines that cannot be parsed as key/value pairs."""
+    issues = []
+    try:
+        lines = input_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return issues
+    for line_number, line in enumerate(lines, start=1):
+        content = line.split("#", 1)[0].strip()
+        if not content or content.upper() == "INPUT_PARAMETERS":
+            continue
+        if len(content.split(None, 1)) != 2:
+            issues.append(
+                ValidationIssue(
+                    "error",
+                    "invalid-input-line",
+                    f"INPUT line {line_number} must contain a keyword and a value",
+                )
+            )
+    return issues
+
+
+def _kpoint_summary(kpoint_path: Path) -> tuple[dict[str, Any], Optional[str]]:
+    """Return a compact KPT summary and an optional syntax error."""
+    try:
+        lines = []
+        for line in kpoint_path.read_text(encoding="utf-8").splitlines():
+            line = line.split("#", 1)[0].split("//", 1)[0].strip()
+            if line:
+                lines.append(line)
+    except (OSError, UnicodeError) as error:
+        return {}, f"cannot read KPT: {error}"
+
+    if len(lines) < 3:
+        return {}, "KPT must contain a count and a k-point mode"
+
+    mode = lines[2].lower()
+    if mode.startswith("gamma"):
+        mode = "gamma"
+    elif mode.startswith("mp") or mode.startswith("monkhorst"):
+        mode = "mp"
+    elif mode.startswith("direct"):
+        mode = "direct"
+    elif mode.startswith("cart"):
+        mode = "cartesian"
+    elif mode.startswith("line_cartesian"):
+        mode = "line_cartesian"
+    elif mode.startswith("line"):
+        mode = "line"
+    else:
+        return {}, f"unsupported KPT mode: {lines[2]}"
+
+    try:
+        count = int(lines[1].split()[0])
+    except (IndexError, ValueError):
+        return {}, "KPT point count must be an integer"
+
+    if mode in {"gamma", "mp"}:
+        if len(lines) < 4:
+            return {}, f"{mode} KPT requires a mesh line"
+        values = lines[3].split()
+        if len(values) < 3:
+            return {}, f"{mode} KPT mesh must contain three integers"
+        try:
+            mesh = [int(value) for value in values[:3]]
+        except ValueError:
+            return {}, f"{mode} KPT mesh must contain three integers"
+        if any(value <= 0 for value in mesh):
+            return {}, f"{mode} KPT mesh must be positive"
+        return {"mode": mode, "mesh": mesh}, None
+
+    if count <= 0:
+        return {}, "KPT point count must be positive"
+    if len(lines) < 3 + count:
+        return {}, f"KPT declares {count} points but contains fewer entries"
+    for line in lines[3 : 3 + count]:
+        values = line.split()
+        if len(values) < 4:
+            return {}, "each explicit KPT point needs coordinates and a weight"
+        try:
+            [float(value) for value in values[:4]]
+        except ValueError:
+            return {}, "explicit KPT coordinates and weights must be numeric"
+    return {"mode": mode, "count": count}, None
+
+
+def _input_summary(
+    inputs: dict[str, Any],
+    *,
+    structure=None,
+    kpoints: Optional[dict[str, Any]] = None,
+    resources: Optional[dict[str, list[str]]] = None,
+) -> dict[str, Any]:
+    """Build the user-facing summary for an input check."""
+    summary: dict[str, Any] = {
+        "calculation": str(inputs.get("calculation", "scf")).lower(),
+        "basis_type": str(inputs.get("basis_type", "pw")).lower(),
+        "esolver_type": str(inputs.get("esolver_type", "ksdft")).lower(),
+        "nspin": inputs.get("nspin", 1),
+    }
+    for name in ("ecutwfc", "scf_thr", "smearing_method", "smearing_sigma"):
+        if name in inputs:
+            summary[name] = inputs[name]
+    if _is_enabled(inputs.get("gamma_only")):
+        summary["kpoints"] = {"mode": "gamma_only"}
+    elif _has_positive_value(inputs.get("kspacing")):
+        summary["kpoints"] = {"mode": "kspacing", "value": inputs["kspacing"]}
+    elif kpoints is not None:
+        summary["kpoints"] = kpoints
+    if structure is not None:
+        counts = Counter(
+            atom.element or atom.label
+            for atom in structure.atoms
+        )
+        from abacustools.data.unitcell import Unitcell
+
+        cell = Unitcell(structure.cell)
+        summary["structure"] = {
+            "natoms": structure.natoms,
+            "species": dict(sorted(counts.items())),
+            "cell_parameters_ang_deg": cell.get_cell_param(),
+            "cell_volume_ang3": cell.get_cell_volume(),
+        }
+    if resources is not None:
+        summary["resources"] = resources
+    return summary
+
+
+def check_input(job_dir: Path, *, strict: bool = False) -> InputCheck:
+    """Check an ABACUS INPUT and the files it references, without reading output."""
     job = Path(job_dir).expanduser().absolute()
     issues: list[ValidationIssue] = []
     inputs: dict[str, Any] = {}
+    summary: dict[str, Any] = {}
 
     if not job.is_dir():
         issues.append(ValidationIssue("error", "missing-job", f"job directory does not exist: {job}"))
-        return JobValidation(False, issues, inputs)
+        return InputCheck(False, issues, inputs, summary)
 
     input_path = job / "INPUT"
     if not input_path.is_file():
         issues.append(ValidationIssue("error", "missing-input", f"missing INPUT: {input_path}"))
-        return JobValidation(False, issues, inputs)
+        return InputCheck(False, issues, inputs, summary)
     try:
         inputs = ReadInput(input_path)
     except (OSError, ValueError) as error:
         issues.append(ValidationIssue("error", "invalid-input", f"cannot read INPUT: {error}"))
-        return JobValidation(False, issues, inputs)
+        return InputCheck(False, issues, inputs, summary)
 
+    issues.extend(_input_syntax_issues(input_path))
+    summary = _input_summary(inputs)
     unknown = sorted(set(inputs) - _known_input_keywords())
     if unknown:
         level = "error" if strict else "warning"
@@ -105,46 +261,119 @@ def validate_job(job_dir: Path, *, strict: bool = False) -> JobValidation:
             ValidationIssue(level, "unknown-input", f"unknown INPUT keyword(s): {', '.join(unknown)}")
         )
 
+    calculation = summary["calculation"]
+    valid_calculations = {
+        "scf",
+        "nscf",
+        "relax",
+        "cell-relax",
+        "md",
+        "get_pchg",
+        "get_wf",
+        "get_s",
+        "gen_bessel",
+        "test_memory",
+        "test_neighbour",
+    }
+    if calculation not in valid_calculations:
+        issues.append(ValidationIssue("error", "invalid-calculation", f"unsupported calculation: {calculation}"))
+
+    basis_type = summary["basis_type"]
+    if basis_type not in {"pw", "lcao"}:
+        issues.append(ValidationIssue("error", "invalid-basis", f"unsupported basis_type: {basis_type}"))
+
+    try:
+        nspin = int(inputs.get("nspin", 1))
+        if nspin not in {1, 2, 4}:
+            raise ValueError
+    except (TypeError, ValueError):
+        issues.append(ValidationIssue("error", "invalid-nspin", "nspin must be one of 1, 2, or 4"))
+
+    for name in ("ecutwfc", "scf_thr"):
+        if name in inputs and not _as_positive(inputs[name]):
+            issues.append(ValidationIssue("error", f"invalid-{name}", f"{name} must be positive"))
+    if "kspacing" in inputs:
+        kspacing = inputs["kspacing"]
+        valid_kspacing = (
+            _has_positive_value(kspacing)
+            and not isinstance(kspacing, (list, tuple))
+        ) or (
+            isinstance(kspacing, (list, tuple))
+            and len(kspacing) == 3
+            and _has_positive_value(kspacing)
+        )
+        if not valid_kspacing:
+            issues.append(
+                ValidationIssue(
+                    "error",
+                    "invalid-kspacing",
+                    "kspacing must be a positive number or three positive numbers",
+                )
+            )
+
+    structure = None
     structure_path = _resolve_job_path(job, inputs.get("stru_file", "STRU"))
     if not structure_path.is_file():
         issues.append(ValidationIssue("error", "missing-stru", f"missing STRU: {structure_path}"))
-        return JobValidation(not any(item.level == "error" for item in issues), issues, inputs)
+    else:
+        from abacustools.io.stru import AbacusSTRU
 
-    from abacustools.io.stru import AbacusSTRU
+        try:
+            structure = AbacusSTRU.read(structure_path)
+        except Exception as error:
+            structure = None
+            issues.append(ValidationIssue("error", "invalid-stru", f"cannot read STRU: {error}"))
+        if structure is None and not any(item.code == "invalid-stru" for item in issues):
+            issues.append(ValidationIssue("error", "invalid-stru", f"cannot read STRU: {structure_path}"))
 
-    structure = AbacusSTRU.read(structure_path)
-    if structure is None:
-        issues.append(ValidationIssue("error", "invalid-stru", f"cannot read STRU: {structure_path}"))
-        return JobValidation(False, issues, inputs)
+    resources = {"pseudopotentials": [], "orbitals": [], "paw": []}
+    if structure is not None:
+        pseudo_dir = inputs.get("pseudo_dir")
+        orbital_dir = inputs.get("orbital_dir")
+        for atom in structure.atoms:
+            if not atom.pp:
+                issues.append(ValidationIssue("error", "missing-pseudopotential", f"pseudopotential is not set for {atom.element or atom.label}"))
+            else:
+                resources["pseudopotentials"].append(str(atom.pp))
+                if _resource_path(job, atom.pp, pseudo_dir) is None:
+                    issues.append(ValidationIssue("error", "missing-pseudopotential", f"pseudopotential not found: {atom.pp}"))
 
-    pseudo_dir = inputs.get("pseudo_dir")
-    orbital_dir = inputs.get("orbital_dir")
-    for atom in structure.atoms:
-        if not atom.pp:
-            issues.append(
-                ValidationIssue("error", "missing-pseudopotential", f"pseudopotential is not set for {atom.element}")
-            )
-        elif _resource_path(job, atom.pp, pseudo_dir) is None:
-            issues.append(
-                ValidationIssue("error", "missing-pseudopotential", f"pseudopotential not found: {atom.pp}")
-            )
+            if basis_type == "lcao":
+                if not atom.orb:
+                    issues.append(ValidationIssue("error", "missing-orbital", f"orbital is not set for {atom.element or atom.label}"))
+                else:
+                    resources["orbitals"].append(str(atom.orb))
+                    if _resource_path(job, atom.orb, orbital_dir) is None:
+                        issues.append(ValidationIssue("error", "missing-orbital", f"orbital not found: {atom.orb}"))
+            if atom.paw:
+                resources["paw"].append(str(atom.paw))
+                if _resource_path(job, atom.paw, inputs.get("paw_dir")) is None:
+                    issues.append(ValidationIssue("error", "missing-paw", f"PAW file not found: {atom.paw}"))
 
-        basis = str(inputs.get("basis_type", "pw")).lower()
-        if basis.startswith("lcao"):
-            if not atom.orb:
-                issues.append(ValidationIssue("error", "missing-orbital", f"orbital is not set for {atom.element}"))
-            elif _resource_path(job, atom.orb, orbital_dir) is None:
-                issues.append(ValidationIssue("error", "missing-orbital", f"orbital not found: {atom.orb}"))
-        if atom.paw and _resource_path(job, atom.paw, inputs.get("paw_dir")) is None:
-            issues.append(ValidationIssue("error", "missing-paw", f"PAW file not found: {atom.paw}"))
-
-    if not _as_positive(inputs.get("gamma_only")) and not _as_positive(inputs.get("kspacing")):
+    resources = {name: sorted(set(values)) for name, values in resources.items() if values}
+    kpoints = None
+    if not _is_enabled(inputs.get("gamma_only")) and not _has_positive_value(inputs.get("kspacing")):
         kpoint_path = _resolve_job_path(job, inputs.get("kpoint_file", "KPT"))
         if not kpoint_path.is_file():
             issues.append(ValidationIssue("error", "missing-kpt", f"missing KPT: {kpoint_path}"))
+        else:
+            kpoints, error = _kpoint_summary(kpoint_path)
+            if error:
+                issues.append(ValidationIssue("error", "invalid-kpt", f"cannot read KPT: {error}"))
 
+    try:
+        summary = _input_summary(inputs, structure=structure, kpoints=kpoints, resources=resources)
+    except (TypeError, ValueError, ZeroDivisionError) as error:
+        issues.append(ValidationIssue("error", "invalid-stru", f"cannot summarize STRU: {error}"))
+        summary = _input_summary(inputs, kpoints=kpoints, resources=resources)
     valid = not any(item.level == "error" for item in issues)
-    return JobValidation(valid, issues, inputs)
+    return InputCheck(valid, issues, inputs, summary)
+
+
+def validate_job(job_dir: Path, *, strict: bool = False) -> JobValidation:
+    """Backward-compatible input validation facade."""
+    report = check_input(job_dir, strict=strict)
+    return JobValidation(report.valid, report.issues, report.inputs)
 
 
 def _output_directory(job: Path, inputs: dict[str, Any]) -> Optional[Path]:
@@ -221,7 +450,7 @@ def as_json(value: Any) -> Any:
     """Convert job diagnostics to JSON-compatible values."""
     if isinstance(value, Path):
         return str(value)
-    if isinstance(value, (JobValidation, JobStatus, ValidationIssue)):
+    if isinstance(value, (InputCheck, JobValidation, JobStatus, ValidationIssue)):
         return as_json(asdict(value))
     if isinstance(value, dict):
         return {key: as_json(item) for key, item in value.items()}

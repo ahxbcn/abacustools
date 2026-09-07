@@ -50,6 +50,19 @@ Calculation results can be collected from one or more completed ABACUS jobs:
 abacustools postprocess result -j JOB -p energy force stress
 ```
 
+Input files can be checked independently of calculation output:
+
+```text
+abacustools job checkinput JOB
+abacustools job checkinput JOB --strict
+```
+
+The command checks `INPUT`, `STRU`, `KPT`, and referenced pseudopotential,
+orbital, and PAW files. It reports the calculation settings, structure size
+and composition, cell parameters, k-point mode, and resource files. It does
+not read `OUT.*` directories or calculation logs. Use `--json` for a
+machine-readable report.
+
 Use `abacustools postprocess result --help` to see all supported result
 parameters. If `--param` is omitted, the command selects the results relevant
 to the job's calculation type and displays scalar results as compact,
