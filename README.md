@@ -103,6 +103,23 @@ and `KPATH.txt` below `JOB`. Use `--efermi` to provide an explicit Fermi
 energy when it is not present in the log. Only `calculation nscf` jobs are
 recommended; other calculation types emit a warning and are still processed.
 
+COHP and COOP curves can be calculated for selected ABACUS NAO orbital groups
+when the LCAO output contains `data-*-H`, `data-*-S`, `kpoints`, and
+`WFC_NAO_K*.txt` files:
+
+```text
+abacustools postprocess cohp -j JOB \
+  --atom-i-orbs 0,1,2 --atom-j-orbs 13,14,15 \
+  --method COHP --de 0.1 --output cohp.png --data-output cohp.dat
+```
+
+Orbital indices are zero-based global NAO indices. Use `--method COOP` for
+overlap-weighted curves, `--spin up|down` for a spin channel, and `--invert`
+to invert only the plotted curve. The data file keeps the computed sign.
+`ICOHP`/`ICOOP` printed by the command is the integral up to the Fermi level.
+This is an ABACUS-NAO COHP/COOP implementation and is not a standard LOBSTER
+pCOHP projection.
+
 DOS and projected DOS can be processed from an ABACUS output directory:
 
 ```text

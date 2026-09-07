@@ -236,8 +236,8 @@ def read_density_matrix(rho_mat_file: str | Path) -> np.ndarray:
     return matrix
 
 
-def read_wfc_nao_k(file_path: str | Path) -> tuple[np.ndarray, np.ndarray]:
-    """Read one ``WFC_NAO_K*.txt`` file and its band occupations."""
+def read_wfc_nao_k_data(file_path: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Read one WFC file, returning coefficients, band energies, and occupations."""
 
     path = Path(file_path)
     _required_file(path, "NAO wavefunction")
@@ -251,10 +251,11 @@ def read_wfc_nao_k(file_path: str | Path) -> tuple[np.ndarray, np.ndarray]:
     if nbands is None or nlocal is None or nbands <= 0 or nlocal <= 0:
         raise ValueError(f"{path}: missing or invalid number of bands/orbitals")
     wfc = np.zeros((nlocal, nbands), dtype=np.complex128)
+    energies = np.full(nbands, np.nan, dtype=float)
     occupations = np.full(nbands, np.nan, dtype=float)
     current_band: Optional[int] = None
     reading_coefficients = False
-    coefficients: dict[int, list[complex]] = {}
+    coefficients: dict[int, list[float]] = {}
     for line in lines:
         if line.endswith("(band)"):
             current_band = int(line.split()[0]) - 1
@@ -262,6 +263,10 @@ def read_wfc_nao_k(file_path: str | Path) -> tuple[np.ndarray, np.ndarray]:
                 raise ValueError(f"{path}: band index out of range: {current_band + 1}")
             coefficients[current_band] = []
             reading_coefficients = False
+        elif line.endswith("(Ry)"):
+            if current_band is None:
+                raise ValueError(f"{path}: energy without a band header")
+            energies[current_band] = _number(line.split()[0])
         elif line.endswith("(Occupations)"):
             if current_band is None:
                 raise ValueError(f"{path}: occupation without a band header")
@@ -271,15 +276,24 @@ def read_wfc_nao_k(file_path: str | Path) -> tuple[np.ndarray, np.ndarray]:
             reading_coefficients = True
         elif reading_coefficients and line and not line.endswith(")"):
             tokens = line.split()
-            if len(tokens) % 2:
-                raise ValueError(f"{path}: odd number of wavefunction components in band {current_band + 1}")
-            coefficients[current_band].extend(complex(_number(tokens[i]), _number(tokens[i + 1])) for i in range(0, len(tokens), 2))
-    if len(coefficients) != nbands or not np.all(np.isfinite(occupations)):
+            coefficients[current_band].extend(_number(token) for token in tokens)
+    if len(coefficients) != nbands or not np.all(np.isfinite(energies)) or not np.all(np.isfinite(occupations)):
         raise ValueError(f"{path}: incomplete band or occupation data")
     for band in range(nbands):
-        if len(coefficients.get(band, [])) != nlocal:
-            raise ValueError(f"{path}: band {band + 1} has {len(coefficients.get(band, []))} coefficients; expected {nlocal}")
-        wfc[:, band] = coefficients[band]
+        raw = coefficients.get(band, [])
+        if len(raw) == nlocal:
+            wfc[:, band] = np.asarray(raw, dtype=float)
+        elif len(raw) == 2 * nlocal:
+            wfc[:, band] = [complex(raw[index], raw[index + 1]) for index in range(0, len(raw), 2)]
+        else:
+            raise ValueError(f"{path}: band {band + 1} has {len(raw)} wavefunction values; expected {nlocal} or {2 * nlocal}")
+    return wfc, energies, occupations
+
+
+def read_wfc_nao_k(file_path: str | Path) -> tuple[np.ndarray, np.ndarray]:
+    """Read one ``WFC_NAO_K*.txt`` file and its band occupations."""
+
+    wfc, _energies, occupations = read_wfc_nao_k_data(file_path)
     return wfc, occupations
 
 
