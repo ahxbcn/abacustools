@@ -38,7 +38,15 @@ def test_get_result_returns_none_when_requested_data_is_unavailable(tmp_path):
 
     result = get_result_from_job(
         tmp_path,
-        ["energy", "drho", "denergy", "scf_steps", "converged", "efermi"],
+        [
+            "energy",
+            "drho",
+            "denergy",
+            "scf_steps",
+            "converged",
+            "normal_end",
+            "efermi",
+        ],
         version="",
     )
 
@@ -48,6 +56,7 @@ def test_get_result_returns_none_when_requested_data_is_unavailable(tmp_path):
         "denergy": None,
         "scf_steps": 0,
         "converged": False,
+        "normal_end": False,
         "efermi": None,
     }
 
@@ -62,6 +71,35 @@ def test_get_result_does_not_fail_for_incomplete_job(tmp_path):
 
     assert result["energy"] is None
     assert result["converged"] is None
+    assert result["normal_end"] is None
+
+
+def test_get_result_reports_normal_end_from_log_footer(tmp_path):
+    output = _job_with_output(tmp_path)
+    (output / "running_scf.log").write_text(
+        "Final Etot = -2.5 eV\n"
+        "\n"
+        "Start  Time  : 2026-09-07 10:00:00\n"
+        "Finish Time  : 2026-09-07 10:01:00\n"
+        "Total  Time  : 60\n\n",
+        encoding="utf-8",
+    )
+
+    result = get_result_from_job(tmp_path, ["normal_end"], version="")
+
+    assert result == {"normal_end": True}
+
+
+def test_get_result_reports_incomplete_log(tmp_path):
+    output = _job_with_output(tmp_path)
+    (output / "running_scf.log").write_text(
+        "Final Etot = -2.5 eV\n",
+        encoding="utf-8",
+    )
+
+    result = get_result_from_job(tmp_path, ["normal_end"], version="")
+
+    assert result == {"normal_end": False}
 
 
 def test_result_command_continues_after_incomplete_job(tmp_path, capsys):

@@ -20,6 +20,7 @@ grouped_params = {
         "denergy",
         "scf_steps",
         "converged",
+        "normal_end",
         "efermi",
         "force",
         "stress",
@@ -278,6 +279,11 @@ def collect_scf_results(job_dir: str, metrics: List[str]) -> Dict[str, Any]:
     except FileNotFoundError:
         return _empty_results(param_groups["scf_results"])
 
+    last_line = next((line.strip() for line in reversed(lines) if line.strip()), None)
+    normal_end = (
+        None if last_line is None else "Total  Time  :" in last_line
+    )
+
     energies: List[float] = []
     drhos: List[float] = []
     efermis: List[float] = []
@@ -322,6 +328,7 @@ def collect_scf_results(job_dir: str, metrics: List[str]) -> Dict[str, Any]:
         "denergy": energies[-1] - energies[-2] if len(energies) > 1 else None,
         "scf_steps": len(energies),
         "converged": converged,
+        "normal_end": normal_end,
         "efermi": efermis[-1] if efermis else None,
         "force": forces[-1] if forces else None,
         "stress": stresses[-1] if stresses else None,
