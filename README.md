@@ -116,6 +116,19 @@ energy, and writes `DOS.png` and `DOS.dat`. Use `--pdos species-shell`,
 plots. Output paths can be changed with `-o` and `--data-output`; use
 `--efermi` when the Fermi energy cannot be read from the ABACUS output.
 
+Mayer bond orders can be analyzed from an ABACUS LCAO calculation with
+`out_mat_hs=1` (and `out_dm=1` for gamma-only jobs):
+
+```text
+abacustools postprocess mayer -j JOB --cutoff 3.0
+abacustools postprocess mayer -j JOB --pairs 1-2,1-3 --json -o mayer.json
+```
+
+The analyzer reads numerical orbitals, overlap matrices, density matrices or
+NAO wavefunctions, validates their dimensions, and reports atom indices,
+elements, periodic distances, and Mayer bond orders. It supports gamma-only
+and multi-k calculations with `nspin=1` or `nspin=2`.
+
 Complex calculation workflows are organized by task and stage. The BSSE
 workflow currently provides the preparation and postprocessing framework:
 

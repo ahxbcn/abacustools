@@ -2,6 +2,7 @@
 
 from . import band as band_command
 from . import dos as dos_command
+from . import mayer as mayer_command
 from . import result as result_command
 
 
@@ -19,4 +20,5 @@ def register_parser(subparsers) -> None:
     )
     band_command.register_parser(postprocess_subparsers)
     dos_command.register_parser(postprocess_subparsers)
+    mayer_command.register_parser(postprocess_subparsers)
     result_command.register_parser(postprocess_subparsers)
