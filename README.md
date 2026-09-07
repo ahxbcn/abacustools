@@ -63,6 +63,17 @@ and composition, cell parameters, k-point mode, and resource files. It does
 not read `OUT.*` directories or calculation logs. Use `--json` for a
 machine-readable report.
 
+Convergence tests can generate independent SCF calculations for cutoff energy:
+
+```text
+abacustools workflow ecutwfc prepare -j JOB --values 30 40 50 60
+abacustools workflow ecutwfc postprocess -j JOB --energy-tol 1e-4
+```
+
+The postprocessing stage reports total energy per atom, convergence deltas,
+incomplete tasks, a recommended first value within the tolerance, a JSON
+report, and a convergence plot. `cutoff` is an alias for `ecutwfc`.
+
 Use `abacustools postprocess result --help` to see all supported result
 parameters. If `--param` is omitted, the command selects the results relevant
 to the job's calculation type and displays scalar results as compact,

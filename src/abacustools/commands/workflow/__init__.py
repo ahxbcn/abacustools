@@ -3,6 +3,7 @@
 from . import bsse as bsse_workflow
 from . import bec as bec_workflow
 from . import chgdiff as chgdiff_workflow
+from . import ecutwfc as ecutwfc_workflow
 from . import elastic as elastic_workflow
 from . import phonon as phonon_workflow
 from . import vibration as vibration_workflow
@@ -24,6 +25,7 @@ def register_parser(subparsers) -> None:
     bsse_workflow.register_parser(workflow_subparsers)
     bec_workflow.register_parser(workflow_subparsers)
     chgdiff_workflow.register_parser(workflow_subparsers)
+    ecutwfc_workflow.register_parser(workflow_subparsers)
     elastic_workflow.register_parser(workflow_subparsers)
     phonon_workflow.register_parser(workflow_subparsers)
     vibration_workflow.register_parser(workflow_subparsers)
