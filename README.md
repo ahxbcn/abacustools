@@ -59,6 +59,19 @@ or wrapped by the terminal. A result that does not apply to a job is shown as
 `-`. Large array results such as `force` and `stress` are omitted from this
 summary.
 
+Band structures from ABACUS NSCF calculations can be processed and plotted
+from a job directory containing `BANDS_1.dat`:
+
+```text
+abacustools postprocess band -j JOB --emin -8 --emax 8
+```
+
+The command reads the line-mode `KPT`, shifts the bands by the Fermi energy
+from the NSCF log, and writes `band.png`, `band.dat` (or spin-resolved files),
+and `KPATH.txt` below `JOB`. Use `--efermi` to provide an explicit Fermi
+energy when it is not present in the log. Only `calculation nscf` jobs are
+recommended; other calculation types emit a warning and are still processed.
+
 Complex calculation workflows are organized by task and stage. The BSSE
 workflow currently provides the preparation and postprocessing framework:
 

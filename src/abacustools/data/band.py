@@ -1,4 +1,6 @@
 import os
+import re
+import warnings
 from collections import defaultdict
 from typing import Dict, List, Tuple, Optional, Union, Any
 from pathlib import Path
@@ -160,6 +162,26 @@ class BandData:
         return kpath_cum_dist
 
     @staticmethod
+    def _read_efermi_from_output(output_dir: str) -> Optional[float]:
+        """Read the Fermi energy directly from an ABACUS output log."""
+        number = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[EeDd][-+]?\d+)?"
+        for filename in ("running_nscf.log", "running_scf.log"):
+            log_path = os.path.join(output_dir, filename)
+            if not os.path.isfile(log_path):
+                continue
+            with open(log_path, encoding="utf-8", errors="replace") as log_handle:
+                log_lines = log_handle.readlines()
+            for line in reversed(log_lines):
+                match = re.search(rf"\bEFERMI\s*=\s*({number})", line, re.IGNORECASE)
+                if match:
+                    return float(match.group(1).replace("D", "E").replace("d", "e"))
+                if re.search(r"\bE[_ ]?Fermi\b", line, re.IGNORECASE):
+                    values = re.findall(number, line)
+                    if values:
+                        return float(values[-1].replace("D", "E").replace("d", "e"))
+        return None
+
+    @staticmethod
     def ReadFromAbacusJob(
         abacusjob_dir: str,
         efermi: Optional[float] = None,
@@ -177,6 +199,14 @@ class BandData:
             BandData: A BandData object containing the band data and high symmetry labels.
         """
         input_params = ReadInput(os.path.join(abacusjob_dir, "INPUT"))
+        calculation = str(input_params.get("calculation", "scf")).lower()
+        if calculation != "nscf":
+            warnings.warn(
+                "ABACUS band plotting is intended for calculation=nscf; "
+                f"found calculation={calculation!r}",
+                UserWarning,
+                stacklevel=2,
+            )
         suffix = input_params.get("suffix", "ABACUS")
         nspin = input_params.get("nspin", 1)
         stru_file = os.path.join(abacusjob_dir, input_params.get("stru_file", "STRU"))
@@ -201,6 +231,18 @@ class BandData:
         # Ensure kpt_data is a list
         if not isinstance(kpt_data, list):
             raise TypeError(f"Expected kpt_data to be a list, got {type(kpt_data)}")
+
+        kpt_file = os.path.join(abacusjob_dir, input_params.get("kpoint_file", "KPT"))
+        with open(kpt_file, encoding="utf-8") as kpt_handle:
+            kpt_lines = [
+                line for line in kpt_handle
+                if line.split("#", 1)[0].strip()
+            ]
+        try:
+            declared_kpoints = int(kpt_lines[1].split()[0])
+        except (IndexError, ValueError) as error:
+            raise ValueError(f"Invalid line-mode KPT file: {kpt_file}") from error
+        kpt_data = kpt_data[:declared_kpoints]
 
         for i, kpt in enumerate(kpt_data):
             # kpt format: [kx, ky, kz, npoints, label] or [kx, ky, kz, npoints]
@@ -267,6 +309,10 @@ class BandData:
         )
         if efermi is None:
             efermi = abacusresult.get("efermi")
+        if efermi is None:
+            efermi = BandData._read_efermi_from_output(
+                os.path.join(abacusjob_dir, f"OUT.{suffix}")
+            )
             if efermi is None:
                 raise ValueError(
                     "Fermi energy (efermi) not found in ABACUS results and not provided"
@@ -274,21 +320,38 @@ class BandData:
 
         # Read band data for nspin=1 or 4
         band_file = os.path.join(abacusjob_dir, f"OUT.{suffix}/BANDS_1.dat")
-        with open(band_file, "r") as f:
-            original_band_data = np.loadtxt(f)
-            kpath_cum_dist, band = original_band_data[:, 1], original_band_data[:, 2:]
-            band_data = np.expand_dims(
-                band, axis=0
-            )  # Transform to ndarray shaped (1, nkpt, nband)
+        if not os.path.isfile(band_file):
+            raise FileNotFoundError(f"Could not find ABACUS band output: {band_file}")
+        original_band_data = np.loadtxt(band_file, ndmin=2)
+        if original_band_data.shape[1] < 3:
+            raise ValueError(
+                f"ABACUS band output has fewer than three columns: {band_file}"
+            )
+        kpath_cum_dist = original_band_data[:, 1]
+        band = original_band_data[:, 2:]
+        band_data = np.expand_dims(band, axis=0)  # (1, nkpt, nband)
         # Read band data for nspin=2
         if nspin == 2:
             band_file_dw = os.path.join(abacusjob_dir, f"OUT.{suffix}/BANDS_2.dat")
-            with open(band_file_dw, "r") as f:
-                original_band_data = np.loadtxt(f)
-                band_dw = original_band_data[:, 2:]
-                band_data = np.stack(
-                    (band, band_dw), axis=0
-                )  # Transform to ndarray shaped (2, nkpt, nband)
+            if not os.path.isfile(band_file_dw):
+                raise FileNotFoundError(
+                    f"Could not find spin-down ABACUS band output: {band_file_dw}"
+                )
+            original_band_data_dw = np.loadtxt(band_file_dw, ndmin=2)
+            if original_band_data_dw.shape != original_band_data.shape:
+                raise ValueError("BANDS_1.dat and BANDS_2.dat have different shapes")
+            if not np.allclose(original_band_data_dw[:, :2], original_band_data[:, :2]):
+                raise ValueError("BANDS_1.dat and BANDS_2.dat have different k-point paths")
+            band_dw = original_band_data_dw[:, 2:]
+            if band_dw.shape != band.shape:
+                raise ValueError("BANDS_1.dat and BANDS_2.dat have different band counts")
+            band_data = np.stack((band, band_dw), axis=0)  # (2, nkpt, nband)
+
+        expected_kpoints = sum(max(1, int(kpoint[3])) for kpoint in kpt_data)
+        if len(kpath_cum_dist) != expected_kpoints:
+            raise ValueError(
+                "The number of k-points in BANDS_1.dat does not match the line-mode KPT file"
+            )
 
         return BandData(high_symm_kpts, kpaths, kpath_cum_dist, efermi, band_data)
 
