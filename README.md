@@ -70,6 +70,13 @@ abacustools workflow ecutwfc prepare -j JOB --values 30 40 50 60
 abacustools workflow ecutwfc postprocess -j JOB --energy-tol 1e-4
 ```
 
+The same workflow can test k-point spacing:
+
+```text
+abacustools workflow kspacing prepare -j JOB --values 0.4 0.3 0.2 0.1
+abacustools workflow kspacing postprocess -j JOB
+```
+
 The postprocessing stage reports total energy per atom, convergence deltas,
 incomplete tasks, a recommended first value within the tolerance, a JSON
 report, and a convergence plot. `cutoff` is an alias for `ecutwfc`.
