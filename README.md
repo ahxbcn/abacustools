@@ -72,6 +72,19 @@ and `KPATH.txt` below `JOB`. Use `--efermi` to provide an explicit Fermi
 energy when it is not present in the log. Only `calculation nscf` jobs are
 recommended; other calculation types emit a warning and are still processed.
 
+DOS and projected DOS can be processed from an ABACUS output directory:
+
+```text
+abacustools postprocess dos -j JOB --emin -20 --emax 10
+abacustools postprocess dos -j JOB --pdos species
+```
+
+The command reads `DOS*_smearing.dat`, shifts the energy axis by the Fermi
+energy, and writes `DOS.png` and `DOS.dat`. Use `--pdos species-shell`,
+`--pdos species-orbital`, or `--pdos atoms --atom-index 1 2` for projected DOS
+plots. Output paths can be changed with `-o` and `--data-output`; use
+`--efermi` when the Fermi energy cannot be read from the ABACUS output.
+
 Complex calculation workflows are organized by task and stage. The BSSE
 workflow currently provides the preparation and postprocessing framework:
 
