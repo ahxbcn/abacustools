@@ -235,6 +235,23 @@ The BEC tensors and task diagnostics are written to `bec_results.json` under
 `JOB`. Missing or incomplete Berry-phase task output is retained as missing
 tensor entries so other completed displacement directions can still be reported.
 
+Piezoelectric stress tensors can be calculated from finite-strain changes in
+the Berry-phase polarization. The workflow generates the six independent
+Voigt strain modes (`xx`, `yy`, `zz`, `yz`, `xz`, and `xy`), with forward,
+backward, or central differences:
+
+```text
+abacustools workflow piezoelectric prepare -j JOB --strain 0.01 --type c
+```
+
+Run `run.sh` in each generated `piezoelectric_*` directory. Use `--relax` to
+relax ionic positions at each strained cell before the Berry-phase
+calculation. The tensor and per-task diagnostics are written under `JOB`:
+
+```text
+abacustools workflow piezoelectric postprocess -j JOB
+```
+
 Generated calculation directories are protected by default. Use `--override`
 when intentionally replacing them. The BEC workflow's `run_bec.sh` is only a
 local four-step runner for one generated task; cluster submission scripts are
