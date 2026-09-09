@@ -38,6 +38,17 @@ grouped_params = {
 
 _RELAX_CALCULATIONS = {"relax", "cell-relax", "md"}
 _FLOAT = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[EeDd][-+]?\d+)?"
+_RELAX_STEP_RE = re.compile(r"STEP\s+OF\s+RELAXATION\s*:\s*(\d+)", re.IGNORECASE)
+_RELAX_FORCE_RE = re.compile(
+    rf"largest\s+gradient\s+in\s+force\s+is\s+({_FLOAT})\s*(?:eV\s*/\s*A|eV/Angstrom)?",
+    re.IGNORECASE,
+)
+_RELAX_STRESS_RE = re.compile(
+    rf"largest\s+gradient\s+in\s+stress\s+is\s+({_FLOAT})\s*([A-Za-z/]*)",
+    re.IGNORECASE,
+)
+_RELAX_ENERGY_RE = re.compile(rf"(?:final\s+etot\s+is|!final_etot_is)\s+({_FLOAT})", re.IGNORECASE)
+_RELAX_ENERGY_DIFF_RE = re.compile(rf"etot\s+diff\s*\(\s*eV\s*\)\s*:\s*({_FLOAT})", re.IGNORECASE)
 
 
 def _as_float(value: str) -> float:
@@ -46,6 +57,60 @@ def _as_float(value: str) -> float:
 
 def _numbers(line: str) -> List[float]:
     return [_as_float(value) for value in re.findall(_FLOAT, line)]
+
+
+def read_relaxation_history(log_file: Union[str, Path]) -> List[Dict[str, Any]]:
+    """Read per-ionic-step geometry-optimization metrics from an ABACUS log."""
+    path = Path(log_file)
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    records: Dict[int, Dict[str, Any]] = {}
+    current_step: Optional[int] = None
+
+    def record(step: int) -> Dict[str, Any]:
+        return records.setdefault(
+            step,
+            {
+                "step": step,
+                "energy": None,
+                "energy_change": None,
+                "max_force": None,
+                "max_stress": None,
+                "converged": False,
+            },
+        )
+
+    for line in lines:
+        step_match = _RELAX_STEP_RE.search(line)
+        if step_match:
+            current_step = int(step_match.group(1))
+            record(current_step)
+            continue
+        if current_step is None:
+            continue
+        item = record(current_step)
+        energy_match = _RELAX_ENERGY_RE.search(line)
+        if energy_match:
+            item["energy"] = _as_float(energy_match.group(1))
+        energy_diff_match = _RELAX_ENERGY_DIFF_RE.search(line)
+        if energy_diff_match:
+            item["energy_change"] = _as_float(energy_diff_match.group(1))
+        force_match = _RELAX_FORCE_RE.search(line)
+        if force_match:
+            item["max_force"] = _as_float(force_match.group(1))
+        stress_match = _RELAX_STRESS_RE.search(line)
+        if stress_match:
+            item["max_stress"] = _as_float(stress_match.group(1))
+        if "relaxation is converged" in line.lower():
+            item["converged"] = True
+
+    history = [records[step] for step in sorted(records)]
+    previous_energy = None
+    for item in history:
+        if item["energy_change"] is None and item["energy"] is not None and previous_energy is not None:
+            item["energy_change"] = item["energy"] - previous_energy
+        if item["energy"] is not None:
+            previous_energy = item["energy"]
+    return history
 
 
 def _is_separator(line: str) -> bool:

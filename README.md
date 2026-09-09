@@ -25,6 +25,25 @@ abacustools file stru POSCAR STRU
 abacustools file stru structure.xyz STRU --cell 10 0 0 0 10 0 0 0 10
 ```
 
+Basic structure information can be inspected without converting the file:
+
+```text
+abacustools file info STRU
+abacustools file info POSCAR --json
+abacustools file info structure.xyz --cell 10 0 0 0 10 0 0 0 10
+```
+
+The report includes cell parameters, volume, element and label counts, space
+group, point group, crystal system, symmetry operation count, per-atom
+Wyckoff positions, a separate list of symmetry-inequivalent atomic positions,
+and ABACUS pseudopotential, orbital, and PAW filenames. The inequivalent list
+contains one representative atom per symmetry-equivalent group together with
+the equivalent atom indices and multiplicity.
+Use `--symprec` and `--angle-tolerance` when the input coordinates require
+different symmetry tolerances. Structures without a three-dimensional cell
+are still summarized, but symmetry and Wyckoff positions are reported as
+unavailable.
+
 Conversions issue a `StructureConversionWarning` when ABACUS-specific data
 such as pseudopotential/orbital filenames, spin settings, velocities,
 movement constraints, or `NUMERICAL_DESCRIPTOR` cannot be represented by the
