@@ -100,6 +100,30 @@ and composition, cell parameters, k-point mode, and resource files. It does
 not read `OUT.*` directories or calculation logs. Use `--json` for a
 machine-readable report.
 
+Running geometry optimizations can be monitored step by step. The monitor
+reads `running_relax.log` or `running_cell-relax.log` and reports the total
+energy, energy change, maximum force, and maximum stress for every ionic step:
+
+```text
+abacustools job monitor JOB --relax
+abacustools job monitor JOB --relax --once --json
+abacustools job monitor JOB --relax --once --csv relaxation.csv
+abacustools job monitor JOB --relax --once --plot relaxation.png
+```
+
+The history keeps the current incomplete step while the calculation is still
+running. Energies are in eV, forces in eV/Angstrom, and stresses in the
+native ABACUS kBar unit.
+
+Several jobs can be monitored together. Geometry-optimization jobs include
+their current step and latest force/stress metrics, while SCF jobs show their
+current electronic progress:
+
+```text
+abacustools job monitor-many -j JOB1 JOB2 JOB3
+abacustools job monitor-many -j JOB1 JOB2 --once --json
+```
+
 Convergence tests can generate independent SCF calculations for cutoff energy:
 
 ```text
