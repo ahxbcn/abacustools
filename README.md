@@ -11,7 +11,25 @@ abacustools version
 abacustools file input INPUT
 abacustools file stru STRU
 abacustools file kpt KPT
+abacustools file stru INPUT OUTPUT
 ```
+
+`file stru` converts between ABACUS `STRU` and common structure formats
+supported by ASE, including POSCAR/VASP, CIF, XYZ, EXTXYZ, and XSF. The input
+and output formats are inferred from filenames, or can be set explicitly with
+`--input-format` and `--output-format`:
+
+```text
+abacustools file stru STRU POSCAR
+abacustools file stru POSCAR STRU
+abacustools file stru structure.xyz STRU --cell 10 0 0 0 10 0 0 0 10
+```
+
+Conversions issue a `StructureConversionWarning` when ABACUS-specific data
+such as pseudopotential/orbital filenames, spin settings, velocities,
+movement constraints, or `NUMERICAL_DESCRIPTOR` cannot be represented by the
+target format. Standard XYZ files do not contain a periodic cell; provide
+`--cell` when converting one to `STRU`.
 
 Complete ABACUS input directories can be prepared with a resource library
 selected from `~/.abacustools/config.yaml`:

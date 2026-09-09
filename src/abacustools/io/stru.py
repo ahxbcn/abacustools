@@ -4,6 +4,8 @@ import copy
 import traceback
 import os
 import sys
+import re
+import warnings
 
 import numpy as np
 
@@ -500,7 +502,14 @@ _SUPPORTED_FORMATS = {
     "poscar": ("poscar", "vasp"),
     "vasp": ("poscar", "vasp"),
     "cif": ("cif",),
+    "xyz": ("xyz",),
+    "extxyz": ("extxyz",),
+    "xsf": ("xsf",),
 }
+
+
+class StructureConversionWarning(UserWarning):
+    """Warning emitted when a structure conversion cannot preserve fields."""
 
 
 def _guess_format(path: str) -> str:
@@ -513,13 +522,145 @@ def _guess_format(path: str) -> str:
         str: Guessed format ("stru", "poscar", "cif"), or None if cannot guess.
     """
     name = os.path.basename(path)
-    if name in ["POSCAR", "CONTCAR"] or name.endswith(".vasp") or name.endswith(".poscar"):
+    lower_name = name.lower()
+    if name in ["POSCAR", "CONTCAR"] or lower_name.endswith(".vasp") or lower_name.endswith(".poscar"):
         return "poscar"
-    if name in ["STRU", "STRU_ION_D"] or name.endswith(".stru"):
+    if name in ["STRU", "STRU_ION_D"] or lower_name.endswith(".stru"):
         return "stru"
-    if name.endswith(".cif"):
+    if lower_name.endswith(".cif"):
         return "cif"
+    if lower_name.endswith(".extxyz"):
+        return "extxyz"
+    if lower_name.endswith(".xyz"):
+        return "xyz"
+    if lower_name.endswith(".xsf"):
+        return "xsf"
     return None
+
+
+def _normalize_structure_format(fmt: Optional[str], filename: str) -> str:
+    """Normalize a structure format name, using the filename when needed."""
+    if fmt is None:
+        fmt = _guess_format(filename) or "stru"
+    fmt = fmt.lower()
+    return _SUPPORTED_FORMATS.get(fmt, (fmt,))[0]
+
+
+def _warn_conversion_losses(losses: List[str], source: str, target: str) -> None:
+    """Emit one readable warning for all fields lost by a conversion."""
+    if not losses:
+        return
+    details = "; ".join(losses)
+    warnings.warn(
+        f"Converting {source} to {target} may lose information: {details}",
+        StructureConversionWarning,
+        stacklevel=3,
+    )
+
+
+def _ase_conversion_losses(ase_stru) -> List[str]:
+    """Return ASE fields that ``AbacusSTRU.from_ase`` cannot retain."""
+    supported_arrays = {
+        "numbers",
+        "positions",
+        "masses",
+        "initial_magmoms",
+        "momenta",
+    }
+    losses: List[str] = []
+    extra_arrays = sorted(set(ase_stru.arrays) - supported_arrays)
+    if extra_arrays:
+        losses.append("ASE per-atom fields: " + ", ".join(extra_arrays))
+    extra_info = sorted(
+        str(key)
+        for key in ase_stru.info
+        if key not in {"pp", "orb", "paw", "dpks"}
+    )
+    if extra_info:
+        losses.append("ASE structure metadata: " + ", ".join(extra_info))
+    if not np.all(np.asarray(ase_stru.pbc, dtype=bool)):
+        losses.append("non-periodic PBC flags (STRU is periodic)")
+    return losses
+
+
+def _source_conversion_losses(filename: str, source_format: str) -> List[str]:
+    """Detect source-format metadata discarded before ASE creates ``Atoms``."""
+    if source_format == "cif":
+        return ["CIF crystallographic metadata such as symmetry and occupancy"]
+    if source_format != "extxyz":
+        return []
+
+    try:
+        with open(filename, encoding="utf-8") as handle:
+            next(handle)
+            comment = next(handle, "")
+    except (OSError, StopIteration):
+        return []
+    match = re.search(r"(?:^|\s)Properties=([^\s]+)", comment)
+    if not match:
+        return []
+    fields = match.group(1).split(":")
+    names = fields[::3] if len(fields) % 3 == 0 else []
+    supported = {
+        "species",
+        "element",
+        "pos",
+        "vel",
+        "Z",
+        "initial_magmoms",
+        "momenta",
+    }
+    extra = [name for name in names if name not in supported]
+    if extra:
+        return ["EXTXYZ per-atom fields: " + ", ".join(extra)]
+    return []
+
+
+def conversion_loss_report(structure: "AbacusSTRU", target_format: str) -> List[str]:
+    """Return information that cannot be represented in a target format.
+
+    The report is intentionally conservative: a warning is preferable to a
+    silently incomplete structure, especially for calculations where masses,
+    constraints, or magnetic moments affect the result.
+    """
+    target = _normalize_structure_format(target_format, target_format)
+    if target in ("stru", "abacus/stru"):
+        return []
+
+    losses: List[str] = []
+    atoms = structure.atoms
+    if any(atom.pp or atom.orb or atom.paw for atom in atoms):
+        losses.append("pseudopotential/orbital/PAW filenames")
+    if any(atom.velocity is not None for atom in atoms):
+        if target != "extxyz":
+            losses.append("atomic velocities")
+    if any(atom.constrain is not None for atom in atoms):
+        losses.append("ABACUS spin constraints")
+    if any(atom.lambda_ is not None for atom in atoms):
+        losses.append("ABACUS lambda parameters")
+    if structure.dpks:
+        losses.append("NUMERICAL_DESCRIPTOR/DPKS information")
+    if any(atom.label != atom.element for atom in atoms):
+        losses.append("custom ABACUS atom labels")
+    if any(
+        atom.mass is not None
+        and abs(atom.mass - MASS_DICT.get(atom.element, atom.mass)) > 1e-8
+        for atom in atoms
+    ):
+        losses.append("custom atomic masses")
+    if any(not all(atom.move) for atom in atoms) and target not in ("poscar", "vasp"):
+        losses.append("atomic movement constraints")
+    if any(
+        atom.type_mag not in (None, 0.0)
+        or atom.mag is not None
+        or atom.angle1 is not None
+        or atom.angle2 is not None
+        for atom in atoms
+    ) and target != "extxyz":
+        losses.append("magnetic moments and spin directions")
+    if target == "xyz":
+        losses.append("periodic cell and PBC flags")
+    return list(dict.fromkeys(losses))
 
 
 class AbacusSTRU:
@@ -870,7 +1011,7 @@ class AbacusSTRU:
         return paws
 
     @staticmethod
-    def read(filename: str, fmt: Optional[Literal["stru", "abacus/stru", "poscar","vasp", "cif"]]=None) -> "AbacusSTRU":
+    def read(filename: str, fmt: Optional[str] = None, cell=None) -> "AbacusSTRU":
         """Read structure from a file in the specified format.
 
         Args:
@@ -884,14 +1025,7 @@ class AbacusSTRU:
         if not os.path.exists(filename):
             print(f"Error: file '{filename}' does not exist.")
             return None
-        if fmt is None:
-            fmt = _guess_format(filename)
-            if fmt is None:
-                #print(f"Warning: cannot guess format from filename '{filename}'. Try to read with fmt='stru'")
-                fmt = "stru"
-        else:
-            fmt = fmt.lower()
-            fmt = _SUPPORTED_FORMATS.get(fmt, (fmt,))[0]
+        fmt = _normalize_structure_format(fmt, filename)
         try:
             if fmt in ["stru", "abacus/stru"]:
                 stru_data = read_stru_file(stru=filename)
@@ -934,18 +1068,26 @@ class AbacusSTRU:
                     "atom_type": "cartesian" if stru_data.get("cartesian", True) else "direct",
                 }
                 return AbacusSTRU(cell=cell, atoms=atom_list, dpks=dpks, metadata=metadata)
-            elif fmt in ["poscar", "vasp", "cif"]:
-                # use ase to read poscar/vasp/cif file
+            elif fmt in ["poscar", "vasp", "cif", "xyz", "extxyz", "xsf"]:
+                # Use ASE for formats that do not have an ABACUSTools parser.
                 from ase.io import read as ase_read
-                if fmt == "poscar":
-                    fmt = "vasp"
-                atom_type = "direct"
-                if fmt == "vasp":
-                    with open(filename, 'r') as f: lines = f.readlines()
-                    if lines[5].strip().lower().startswith("c"):
-                        atom_type = "cartesian"
-        
-                ase_stru = ase_read(filename, format=fmt)
+                ase_format = "vasp" if fmt == "poscar" else fmt
+                ase_stru = ase_read(filename, format=ase_format, index=-1)
+                if cell is not None:
+                    ase_stru.set_cell(np.asarray(cell, dtype=float).reshape(3, 3))
+                    ase_stru.set_pbc(True)
+                elif ase_stru.cell.rank < 3:
+                    _warn_conversion_losses(
+                        ["periodic cell (provide cell=... when converting to STRU)"],
+                        fmt.upper(),
+                        "STRU",
+                    )
+                _warn_conversion_losses(
+                    _source_conversion_losses(filename, fmt),
+                    fmt.upper(),
+                    "STRU",
+                )
+                atom_type = "direct" if fmt == "poscar" else "cartesian"
                 return AbacusSTRU.from_ase(ase_stru, metadata={
                     "lattice_constant": A2BOHR,
                     "atom_type": atom_type,
@@ -959,7 +1101,7 @@ class AbacusSTRU:
             return None
 
     def write(self, filename: str,
-              fmt: Optional[Literal["stru", "abacus/stru", "poscar","vasp", "cif"]]=None,
+              fmt: Optional[str] = None,
               empty2x: bool = False,
               direct: Optional[bool]=None) -> bool:
         """Write the structure to a file in the specified format.
@@ -974,14 +1116,12 @@ class AbacusSTRU:
         Returns:
             bool: True if write succeeded, False otherwise.
         """
-        if fmt is None:
-            fmt = _guess_format(filename)
-            if fmt is None:
-                #print(f"Warning: cannot guess format from filename '{filename}'. Try to write with fmt='stru'")
-                fmt = "stru"
-        else:
-            fmt = fmt.lower()
-            fmt = _SUPPORTED_FORMATS.get(fmt, (fmt,))[0]
+        fmt = _normalize_structure_format(fmt, filename)
+        _warn_conversion_losses(
+            conversion_loss_report(self, fmt),
+            "STRU",
+            fmt.upper(),
+        )
         if direct is None:
             direct = (self.metadata.get("atom_type","cartesian").lower() == "direct")
         else:
@@ -1029,9 +1169,15 @@ class AbacusSTRU:
                 write_poscar(cell = self.cell,
                              coord=self.coords if not direct else self.coords_direct,
                              label=elements, poscar=filename, direct=direct, move=self.moves)
-            elif fmt == "cif":
+            elif fmt in ["cif", "xyz", "extxyz", "xsf"]:
                 ase_stru = self.to(fmt="ase", empty2x=empty2x)
-                ase_stru.write(filename, format="cif")
+                if any(atom.velocity is not None for atom in self.atoms):
+                    velocities = [
+                        atom.velocity if atom.velocity is not None else (0.0, 0.0, 0.0)
+                        for atom in self.atoms
+                    ]
+                    ase_stru.set_velocities(velocities)
+                ase_stru.write(filename, format=fmt)
             else:
                 print(f"Error: unsupported format '{fmt}'.")
                 return False
@@ -1055,9 +1201,11 @@ class AbacusSTRU:
         """
         from ase import Atoms
         assert isinstance(ase_stru, Atoms), "Input structure must be an ASE Atoms object."
+        _warn_conversion_losses(_ase_conversion_losses(ase_stru), "ASE", "STRU")
         cell = ase_stru.get_cell().tolist()
         atom_list = []
         mags = ase_stru.arrays["initial_magmoms"] if "initial_magmoms" in ase_stru.arrays.keys() else [None]*len(ase_stru)
+        velocities = ase_stru.get_velocities()
         for i in range(len(ase_stru)):
             atom_move = (True, True, True)
             # Get atom coordinate fix from constraints
@@ -1068,7 +1216,9 @@ class AbacusSTRU:
                         atom_move = (False, False, False)
                 elif const_type in ["FixCartesian", "FixScaled"]:
                     if i in constraint.index:
-                        atom_move = constraint.mask
+                        # ASE masks fixed directions, while ABACUS ``m``
+                        # flags mark directions that are allowed to move.
+                        atom_move = tuple(not fixed for fixed in constraint.mask)
 
             atom = AbacusATOM(
                 label=ase_stru[i].symbol,
@@ -1081,6 +1231,7 @@ class AbacusSTRU:
                 type_mag=0.0,
                 move=atom_move,
                 mag= mags[i],
+                velocity=None if velocities is None else tuple(velocities[i].tolist()),
             )
             atom_list.append(atom)
 
@@ -1207,7 +1358,7 @@ class AbacusSTRU:
                             magnetic_moments=self.atom_mags)
         else:
             raise ValueError(f"Unsupported format: {fmt}")
-    
+
     def rotate(self, rot_mat):
         # rotate the cell using given rotation matric
         self.cell = np.dot(rot_mat, np.array(self.cell).T).T.tolist()
@@ -1895,3 +2046,42 @@ def get_total_property(stru_data: Dict[str, Any],
             result.extend([item] * count)
 
         return result
+
+
+def convert_structure(
+    source: str,
+    destination: str,
+    input_format: Optional[str] = None,
+    output_format: Optional[str] = None,
+    *,
+    cell=None,
+    empty2x: bool = False,
+    direct: Optional[bool] = None,
+) -> AbacusSTRU:
+    """Convert a structure file and warn about fields not in the target format.
+
+    Args:
+        source: Input structure path.
+        destination: Output structure path.
+        input_format: Optional input format; otherwise inferred from ``source``.
+        output_format: Optional output format; otherwise inferred from
+            ``destination``.
+        cell: Optional 3x3 cell used to complete formats such as XYZ.
+        empty2x: Write ABACUS ``empty`` labels as the dummy element ``X``.
+        direct: Coordinate mode for POSCAR/STRU output. ``None`` keeps the
+            source mode when available.
+
+    Returns:
+        The intermediate :class:`AbacusSTRU` object.
+    """
+    structure = AbacusSTRU.read(source, fmt=input_format, cell=cell)
+    if structure is None:
+        raise ValueError(f"failed to read structure file: {source}")
+    if not structure.write(
+        destination,
+        fmt=output_format,
+        empty2x=empty2x,
+        direct=direct,
+    ):
+        raise IOError(f"failed to write structure file: {destination}")
+    return structure
