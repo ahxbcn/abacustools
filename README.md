@@ -221,6 +221,30 @@ abacustools workflow vibration postprocess -j JOB
 
 Use `--index 1 2 ...` to select atoms and `--traj` to write mode trajectories.
 
+Analytic forces and stresses can be checked independently with central finite
+differences. Force validation accepts one-based atom indices, or the
+`abacus-test`-compatible `info.txt` format (`C 2 x y z`):
+
+```text
+abacustools workflow fdforce prepare -j JOB --index 1 2 --dir x y z
+abacustools workflow fdforce postprocess -j JOB
+```
+
+Stress validation defaults to the six independent cell components and keeps
+fractional coordinates fixed while deforming the cell. Use `--all-components`
+to include all nine components:
+
+```text
+abacustools workflow fdstress prepare -j JOB --step 0.0001 --number 5
+abacustools workflow fdstress postprocess -j JOB
+```
+
+Both workflows write their generated calculations below `fdforce/` or
+`fdstress/`, record the exact finite-difference cases in a manifest, and write
+JSON results containing analytic values, finite-difference values, deviations,
+and step-size convergence. Missing or unconverged ABACUS results stop
+postprocessing with an explicit error.
+
 Surface work functions can be calculated from the averaged electrostatic
 potential. The prepare stage enables `out_pot=2` and writes a calculation
 under `workfunc_job`; the postprocess stage identifies vacuum plateaus and

@@ -5,6 +5,8 @@ from . import bec as bec_workflow
 from . import chgdiff as chgdiff_workflow
 from . import ecutwfc as ecutwfc_workflow
 from . import elastic as elastic_workflow
+from . import fdforce as fdforce_workflow
+from . import fdstress as fdstress_workflow
 from . import kspacing as kspacing_workflow
 from . import phonon as phonon_workflow
 from . import piezoelectric as piezoelectric_workflow
@@ -30,6 +32,8 @@ def register_parser(subparsers) -> None:
     ecutwfc_workflow.register_parser(workflow_subparsers)
     kspacing_workflow.register_parser(workflow_subparsers)
     elastic_workflow.register_parser(workflow_subparsers)
+    fdforce_workflow.register_parser(workflow_subparsers)
+    fdstress_workflow.register_parser(workflow_subparsers)
     phonon_workflow.register_parser(workflow_subparsers)
     piezoelectric_workflow.register_parser(workflow_subparsers)
     vibration_workflow.register_parser(workflow_subparsers)
