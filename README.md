@@ -131,6 +131,23 @@ additionally overrides the PAW file or directory. The environment variables
 `ABACUS_PP_PATH`, `ABACUS_ORB_PATH` and `ABACUS_PAW_PATH` are still honoured as
 fallbacks when neither an explicit path nor the selected library defines one.
 
+Alongside the upstream libraries the configuration ships a `custom` entry for
+pseudopotentials and orbitals from any other source:
+
+```yaml
+resources:
+  libraries:
+    custom:
+      pp: /path/to/your/pseudopotentials
+      orb: /path/to/your/orbitals
+```
+
+It assumes the APNS layout: one file per element whose name starts with the
+element symbol, such as `Si.upf` and `Si_gga_7au_100Ry_2s2p1d.orb`, searched
+recursively and without variant directories. The generated configuration points
+it at `~/.abacustools/pseudopotentials` and `~/.abacustools/orbitals`, and the
+packaged default leaves both empty.
+
 A library directory is searched for files whose names start with the element
 symbol, preferring the `.upf`/`.orb`/`.paw` suffix matching the resource type;
 subdirectories are searched too. Two optional index files make the mapping

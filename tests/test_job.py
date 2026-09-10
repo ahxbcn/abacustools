@@ -7,6 +7,7 @@ import warnings
 from pathlib import Path
 
 import pytest
+import yaml
 
 from abacustools.core.config import CONFIG
 from abacustools.core.input_prep import InputPreparationError, InputPreparer
@@ -625,6 +626,66 @@ def test_prepare_pw_ignores_the_orbital_cutoff(tmp_path: Path) -> None:
 
     # A plane-wave job takes the cutoff recommended by the pseudopotentials.
     assert ReadInput(job / "INPUT")["ecutwfc"] == pytest.approx(60.0)
+
+
+def test_prepare_supports_a_custom_library(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The custom library follows the APNS layout: flat, element-named files."""
+    source, library = _source_and_library(tmp_path)
+    monkeypatch.setitem(
+        CONFIG,
+        "resources",
+        {
+            "default": "apns",
+            "orb_variant": "DZP",
+            "libraries": {"custom": {"pp": str(library), "orb": str(library)}},
+        },
+    )
+
+    job = InputPreparer(
+        source,
+        output_dir=tmp_path / "jobs",
+        filetype="stru",
+        basis="lcao",
+        library="custom",
+        kpt=[1, 1, 1],
+    ).run()[0].path
+
+    assert (job / "H.upf").read_text(encoding="utf-8") == "pseudo"
+    assert (job / "H.orb").read_text(encoding="utf-8") == "orbital"
+
+
+def test_prepare_reports_an_empty_library_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, _ = _source_and_library(tmp_path)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setitem(
+        CONFIG,
+        "resources",
+        {"default": "custom", "libraries": {"custom": {"pp": str(empty), "orb": str(empty)}}},
+    )
+
+    with pytest.raises(InputPreparationError, match=f"no matching file in {empty}"):
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="lcao",
+            library="custom",
+            kpt=[1, 1, 1],
+        ).run()
+
+
+def test_default_config_offers_a_custom_library() -> None:
+    from abacustools.core.config import _DEFAULT_CONFIG_FILE
+
+    packaged = yaml.safe_load(Path(_DEFAULT_CONFIG_FILE).read_text(encoding="utf-8"))
+
+    assert "custom" in packaged["resources"]["libraries"]
+    assert set(packaged["resources"]["libraries"]["custom"]) == {"pp", "orb"}
 
 
 def test_validate_reports_unknown_keyword_and_missing_resource(tmp_path: Path) -> None:

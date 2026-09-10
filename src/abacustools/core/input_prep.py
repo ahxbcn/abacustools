@@ -412,11 +412,14 @@ def _resource_assignments(
             "paw": "PAW",
         }[attribute]
         message = f"missing {resource_name} for element(s): {', '.join(missing)}"
-        if configured_path is None and library_name is not None:
-            message += (
-                f"; configure resources.libraries.{library_name}.{attribute} "
-                "in ~/.abacustools/config.yaml"
-            )
+        if configured_path is None:
+            if library_name is not None:
+                message += (
+                    f"; configure resources.libraries.{library_name}.{attribute} "
+                    "in ~/.abacustools/config.yaml"
+                )
+        else:
+            message += f"; no matching file in {configured_path}"
         raise InputPreparationError(message)
 
     setter = {"pp": structure.set_pp, "orb": structure.set_orb, "paw": structure.set_paw}[attribute]

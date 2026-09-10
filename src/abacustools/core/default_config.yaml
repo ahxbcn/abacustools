@@ -41,6 +41,13 @@ resources:
     apns:
       pp: null
       orb: null
+    # Pseudopotentials and orbitals from any other source. The directory layout
+    # is assumed to follow the APNS convention: one file per element whose name
+    # starts with the element symbol, such as Si.upf and
+    # Si_gga_7au_100Ry_2s2p1d.orb, without variant directories.
+    custom:
+      pp: null
+      orb: null
     dojo-nc-sr:
       pp: null
       orb: null
