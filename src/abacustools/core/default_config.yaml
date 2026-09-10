@@ -90,3 +90,63 @@ basis_settings:
     ks_solver: "dav_subspace"
     pw_diag_ndim: 2
     pw_diag_nmax: 20
+
+# Workflow submission scripts are disabled by default. Set `generate: true`
+# in ~/.abacustools/config.yaml, or use a workflow's --submit-script option.
+# The task template may use {abacus_command}, {job_name}, {task_name}, and
+# {workflow}. Double braces are required for literal braces in shell code.
+submission:
+  generate: false
+  default: slurm
+  abacus_command: "abacus"
+  workflow_filename: "submit_{workflow}.sh"
+  templates:
+    local:
+      filename: "run.sh"
+      template: |
+        #!/bin/bash
+        set -euo pipefail
+        {abacus_command} > abacus.log 2>&1
+      launcher:
+        mode: local
+    slurm:
+      filename: "submit.slurm"
+      template: |
+        #!/bin/bash
+        #SBATCH --job-name={job_name}
+        #SBATCH --output=slurm-%j.out
+        set -euo pipefail
+        {abacus_command} > abacus.log 2>&1
+      launcher:
+        mode: scheduler
+        submit_command: "sbatch --parsable"
+        dependency_option: "--dependency=afterok:{dependency_id}"
+        id_filter: "cat"
+    pbs:
+      filename: "submit.pbs"
+      template: |
+        #!/bin/bash
+        #PBS -N {job_name}
+        #PBS -j oe
+        set -euo pipefail
+        cd "$PBS_O_WORKDIR"
+        {abacus_command} > abacus.log 2>&1
+      launcher:
+        mode: scheduler
+        submit_command: "qsub"
+        dependency_option: "-W depend=afterok:{dependency_id}"
+        id_filter: "cat"
+    lsf:
+      filename: "submit.lsf"
+      template: |
+        #!/bin/bash
+        #BSUB -J {job_name}
+        #BSUB -o lsf-%J.out
+        set -euo pipefail
+        cd "$LS_SUBCWD"
+        {abacus_command} > abacus.log 2>&1
+      launcher:
+        mode: scheduler
+        submit_command: "bsub"
+        dependency_option: "-w done({dependency_id})"
+        id_filter: "sed -n 's/.*<\\([0-9][0-9]*\\)>.*/\\1/p'"

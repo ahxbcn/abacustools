@@ -264,6 +264,28 @@ abacustools workflow vibration postprocess -j JOB
 
 Use `--index 1 2 ...` to select atoms and `--traj` to write mode trajectories.
 
+Workflow submission scripts can be generated from `~/.abacustools/config.yaml`.
+The packaged defaults support local execution and Slurm, PBS, and LSF
+submission. Script generation is disabled by default; enable it globally with
+`submission.generate: true`, or for one preparation use `--submit-script`.
+Use `--no-submit-script` to override an enabled default, and
+`--submission-type local|slurm|pbs|lsf` to choose a configured template:
+
+```yaml
+submission:
+  generate: true
+  default: slurm
+  abacus_command: "mpirun -np 8 abacus"
+```
+
+For the vibration workflow, the generated `submit_vibration.sh` runs the
+equilibrium task first and submits all displacement tasks in parallel after it
+finishes. The task template is applied to each generated task directory, so
+site-specific scheduler directives can be customized without changing the
+workflow implementation. Templates support `{abacus_command}`, `{job_name}`,
+`{task_name}`, and `{workflow}` placeholders; literal shell braces must be
+written as doubled braces.
+
 Analytic forces and stresses can be checked independently with central finite
 differences. Force validation accepts one-based atom indices, or the
 `abacus-test`-compatible `info.txt` format (`C 2 x y z`):

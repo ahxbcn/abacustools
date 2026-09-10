@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 
 from abacustools.core.constant import BOLTZMANN_CONSTANT_EV_PER_K
+from abacustools.core.submission import generate_workflow_submission
 
 from .common import (
     clear_generated_jobs,
@@ -56,6 +57,30 @@ def _register_prepare_arguments(parser: argparse.ArgumentParser) -> None:
         "--override",
         action="store_true",
         help="Replace the existing generated vibration directory.",
+    )
+    submission = parser.add_mutually_exclusive_group()
+    submission.add_argument(
+        "--submit-script",
+        dest="generate_scripts",
+        action="store_true",
+        help="Generate configured task and workflow submission scripts.",
+    )
+    submission.add_argument(
+        "--no-submit-script",
+        dest="generate_scripts",
+        action="store_false",
+        help="Do not generate submission scripts, overriding the config default.",
+    )
+    parser.set_defaults(generate_scripts=None)
+    parser.add_argument(
+        "--submission-type",
+        "--submit-type",
+        dest="submission_type",
+        help="Submission template type from the config, such as local, slurm, pbs, or lsf.",
+    )
+    parser.add_argument(
+        "--abacus-command",
+        help="ABACUS command used in generated scripts; otherwise use the config default.",
     )
 
 
@@ -217,14 +242,27 @@ def prepare(args: argparse.Namespace) -> int:
         )
         print(f"  prepared {item['task']}")
 
-    write_manifest(
+    submission = generate_workflow_submission(
         job,
         "vibration",
+        task_names,
+        submission_type=getattr(args, "submission_type", None),
+        generate=getattr(args, "generate_scripts", None),
+        abacus_command=getattr(args, "abacus_command", None),
+    )
+    if submission is not None:
+        print(f"  submission type: {submission['type']}")
+        print(f"  workflow script: {submission['workflow_script']}")
+
+    manifest = dict(
         tasks=task_names,
         selected_atoms=[index + 1 for index in selected_atoms],
         stepsize=float(args.stepsize),
         displacements=displacement_tasks,
     )
+    if submission is not None:
+        manifest["submission"] = submission
+    write_manifest(job, "vibration", **manifest)
     print(f"  job: {job}")
     print(f"  selected atoms: {', '.join(str(index + 1) for index in selected_atoms)}")
     print(f"  displacement step: {args.stepsize} Angstrom")

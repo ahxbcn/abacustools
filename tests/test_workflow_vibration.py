@@ -19,9 +19,117 @@ from abacustools.commands.workflow.vibration import (
     _temperatures,
     prepare,
 )
+from abacustools.core.submission import generate_workflow_submission, resolve_submission
 
 
 class TestVibrationWorkflow(unittest.TestCase):
+    def test_submission_scripts_honor_equilibrium_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            job = Path(temporary)
+            result = generate_workflow_submission(
+                job,
+                "vibration",
+                ["vib/SCF/eq", "vib/SCF/disp_1_x+", "vib/SCF/disp_1_x-"],
+                submission_type="local",
+                generate=True,
+                abacus_command="mpirun -np 2 abacus",
+            )
+            self.assertEqual(result["type"], "local")
+            self.assertTrue((job / "vib/SCF/eq/run.sh").stat().st_mode & 0o111)
+            launcher = (job / "submit_vibration.sh").read_text(encoding="utf-8")
+            self.assertIn("./run.sh)", launcher)
+            self.assertIn("pids+=(\"$!\")", launcher)
+            self.assertLess(launcher.index("/eq"), launcher.index("/disp_1_x+"))
+            self.assertIn("mpirun -np 2 abacus", (job / "vib/SCF/eq/run.sh").read_text())
+
+    def test_scheduler_submission_uses_configured_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            job = Path(temporary)
+            generate_workflow_submission(
+                job,
+                "vibration",
+                ["vib/SCF/eq", "vib/SCF/disp_1_x+"],
+                submission_type="slurm",
+                generate=True,
+            )
+            launcher = (job / "submit_vibration.sh").read_text(encoding="utf-8")
+            self.assertIn("sbatch --parsable submit.slurm", launcher)
+            self.assertIn("--dependency=afterok:${equilibrium_id}", launcher)
+            self.assertTrue((job / "vib/SCF/eq/submit.slurm").stat().st_mode & 0o111)
+
+    def test_custom_submission_template_can_be_resolved(self) -> None:
+        settings = resolve_submission(
+            config={
+                "submission": {
+                    "generate": True,
+                    "default": "custom",
+                    "templates": {
+                        "custom": {
+                            "filename": "submit.sh",
+                            "template": "#!/bin/sh\n{abacus_command}\n",
+                            "launcher": {"mode": "local"},
+                        }
+                    },
+                }
+            }
+        )
+        self.assertEqual(settings["type"], "custom")
+        self.assertEqual(settings["filename"], "submit.sh")
+
+    def test_submission_scripts_are_disabled_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            self.assertIsNone(
+                generate_workflow_submission(Path(temporary), "vibration", ["vib/SCF/eq"])
+            )
+
+    def test_prepare_generates_configured_submission_scripts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            job = Path(temporary)
+            (job / "INPUT").write_text(
+                "INPUT_PARAMETERS\ncalculation scf\ngamma_only 1\n",
+                encoding="utf-8",
+            )
+            (job / "STRU").write_text(
+                """ATOMIC_SPECIES
+H 1.0
+
+LATTICE_CONSTANT
+1.0
+
+LATTICE_VECTORS
+10 0 0
+0 10 0
+0 0 10
+
+ATOMIC_POSITIONS
+Cartesian
+
+H
+0.0
+1
+1 2 3
+""",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                prepare(
+                    Namespace(
+                        job=job,
+                        stepsize=0.01,
+                        selected_atoms=[1],
+                        override=False,
+                        generate_scripts=True,
+                        submission_type="local",
+                        abacus_command="abacus",
+                    )
+                ),
+                0,
+            )
+            manifest = json.loads((job / "workflow_vibration.json").read_text())
+            self.assertEqual(manifest["submission"]["workflow_script"], "submit_vibration.sh")
+            self.assertTrue((job / "vib/SCF/disp_1_z-/run.sh").is_file())
+            self.assertTrue((job / "submit_vibration.sh").stat().st_mode & 0o111)
+
     def test_selected_atoms_and_temperatures(self) -> None:
         self.assertEqual(_selected_atoms([3, 1], 3), [0, 2])
         self.assertEqual(_temperatures([100, 300, 3]), [100.0, 200.0, 300.0])
