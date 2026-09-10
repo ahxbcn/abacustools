@@ -688,6 +688,90 @@ def test_default_config_offers_a_custom_library() -> None:
     assert set(packaged["resources"]["libraries"]["custom"]) == {"pp", "orb"}
 
 
+def _mapped_variant_library(tmp_path: Path) -> dict:
+    """Build an APNS-like library with one directory per orbital set."""
+    efficiency = tmp_path / "efficiency"
+    efficiency.mkdir()
+    (efficiency / "H_gga_7au_100Ry_2s2p1d.orb").write_text("efficiency", encoding="utf-8")
+    precision = tmp_path / "precision"
+    precision.mkdir()
+    (precision / "H_gga_10au_100Ry_3s3p2d.orb").write_text("precision", encoding="utf-8")
+    pseudopotentials = tmp_path / "pp"
+    pseudopotentials.mkdir()
+    (pseudopotentials / "H.upf").write_text("pseudo", encoding="utf-8")
+    return {
+        "pp": str(pseudopotentials),
+        "orb": str(efficiency),
+        "orb_variants": {
+            "efficiency": str(efficiency),
+            "precision": str(precision),
+        },
+    }
+
+
+def test_prepare_selects_a_mapped_orbital_variant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, _ = _source_and_library(tmp_path)
+    monkeypatch.setitem(
+        CONFIG,
+        "resources",
+        {
+            "default": "apns",
+            "orb_variant": "DZP",
+            "libraries": {"apns": _mapped_variant_library(tmp_path)},
+        },
+    )
+
+    # A variant name that is not mapped, such as the SG15-style DZP, keeps the
+    # configured orbital directory.
+    default_job = InputPreparer(
+        source,
+        output_dir=tmp_path / "default",
+        filetype="stru",
+        basis="lcao",
+        library="apns",
+        kpt=[1, 1, 1],
+    ).run()[0].path
+    assert (default_job / "H_gga_7au_100Ry_2s2p1d.orb").is_file()
+
+    precision_job = InputPreparer(
+        source,
+        output_dir=tmp_path / "precision",
+        filetype="stru",
+        basis="lcao",
+        library="apns",
+        orb_variant="precision",
+        kpt=[1, 1, 1],
+    ).run()[0].path
+    assert (precision_job / "H_gga_10au_100Ry_3s3p2d.orb").is_file()
+    assert not (precision_job / "H_gga_7au_100Ry_2s2p1d.orb").exists()
+
+
+def test_prepare_honours_a_library_variant_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, _ = _source_and_library(tmp_path)
+    library = _mapped_variant_library(tmp_path)
+    library["orb_variant"] = "precision"
+    monkeypatch.setitem(
+        CONFIG,
+        "resources",
+        {"default": "apns", "orb_variant": "DZP", "libraries": {"apns": library}},
+    )
+
+    job = InputPreparer(
+        source,
+        output_dir=tmp_path / "jobs",
+        filetype="stru",
+        basis="lcao",
+        library="apns",
+        kpt=[1, 1, 1],
+    ).run()[0].path
+
+    assert (job / "H_gga_10au_100Ry_3s3p2d.orb").is_file()
+
+
 def test_validate_reports_unknown_keyword_and_missing_resource(tmp_path: Path) -> None:
     job = tmp_path / "job"
     job.mkdir()

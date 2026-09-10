@@ -41,6 +41,12 @@ resources:
     apns:
       pp: null
       orb: null
+      # APNS ships one directory per orbital set instead of variant
+      # subdirectories; map them here and select them with --variant or
+      # `orb_variant`.
+      # orb_variants:
+      #   efficiency: /path/to/apns-orbitals-efficiency
+      #   precision: /path/to/apns-orbitals-precision
     # Pseudopotentials and orbitals from any other source. The directory layout
     # is assumed to follow the APNS convention: one file per element whose name
     # starts with the element symbol, such as Si.upf and

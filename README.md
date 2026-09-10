@@ -178,6 +178,32 @@ silently using a different basis. Libraries without variant directories are
 unaffected, and an `element.json` mapping takes precedence over variant
 selection.
 
+Some libraries ship one directory per orbital set instead of variant
+subdirectories; APNS provides an `efficiency` and a `precision` set. Such
+directories are mapped with `orb_variants`, and the same `--variant` and
+`orb_variant` settings select them:
+
+```yaml
+resources:
+  libraries:
+    apns:
+      orb: /path/to/apns-orbitals-efficiency-v1
+      orb_variants:
+        efficiency: /path/to/apns-orbitals-efficiency-v1
+        precision: /path/to/apns-orbitals-precision-v1
+      pp: /path/to/apns-pseudopotentials-v1
+```
+
+```text
+abacustools job prepare -f STRUCTURE --library apns                    # efficiency
+abacustools job prepare -f STRUCTURE --library apns --variant precision
+```
+
+A variant name that is not mapped keeps the configured `orb` directory, so the
+SG15-style default (`DZP`) leaves an APNS library on its configured set. Set
+`orb_variant` inside a library entry to change which set that library uses by
+default.
+
 Upstream libraries also publish the recommended cutoff radius of every element
 as `<orbital directory>_<VARIANT>_..._StandardRcut.json` next to the orbital
 directory, with an `Others` fallback. When such an index is present, the

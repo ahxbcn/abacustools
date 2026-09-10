@@ -529,6 +529,12 @@ class InputPreparer:
         )
         if self.orb_variant is not None:
             self.orb_variant = str(self.orb_variant)
+        configured_variants = configured_resources.get("orb_variants") or {}
+        self.orb_variants = (
+            {str(name).lower(): path for name, path in configured_variants.items()}
+            if isinstance(configured_variants, Mapping)
+            else {}
+        )
         self.paw_path = paw_path if paw_path is not None else os.environ.get("ABACUS_PAW_PATH")
         self.input_template = input_template
         self.kpt = list(kpt) if kpt is not None else None
@@ -735,18 +741,19 @@ class InputPreparer:
             library_name=self.library,
         )
         if basis.startswith("lcao"):
+            orbital_library = self._orbital_library()
             orb_resources = _resource_assignments(
                 structure,
                 source_dir,
                 _collect_library(
-                    self.orb_path,
+                    orbital_library,
                     "orb",
                     variant=self.orb_variant,
                     elements=elements,
                 ),
                 "orb",
                 required=True,
-                configured_path=self.orb_path,
+                configured_path=orbital_library,
                 library_name=self.library,
             )
         else:
@@ -765,6 +772,19 @@ class InputPreparer:
         resources.update(orb_resources)
         resources.update(paw_resources)
         return resources
+
+    def _orbital_library(self) -> Optional[PathLike]:
+        """Return the orbital directory holding the requested variant.
+
+        SG15 and Dojo express variants as subdirectories of one directory,
+        while APNS ships a separate directory per variant (efficiency,
+        precision).  ``orb_variants`` maps the latter, so the same ``--variant``
+        and ``orb_variant`` settings select either kind.
+        """
+        variant = (self.orb_variant or "").lower()
+        if variant and variant in self.orb_variants:
+            return self.orb_variants[variant]
+        return self.orb_path
 
     def _destination(self, source: Path, index: int) -> Path:
         base = self.output_dir / _folder_name(source, index, self.folder_syntax)
