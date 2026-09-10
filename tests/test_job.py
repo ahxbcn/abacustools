@@ -958,6 +958,43 @@ def test_prepare_rejects_paw_files(tmp_path: Path) -> None:
     assert not (tmp_path / "jobs" / "000000").exists()
 
 
+def test_prepare_rejects_unknown_set_parameters(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+
+    with pytest.raises(
+        ValueError, match=r"unknown INPUT parameter\(s\) for --set: calculaton"
+    ):
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="pw",
+            pp_path=library,
+            kpt=[1, 1, 1],
+            set_params={"calculaton": "scf"},
+        )
+
+    assert not (tmp_path / "jobs").exists()
+
+
+def test_prepare_accepts_known_set_parameters(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+
+    job = InputPreparer(
+        source,
+        output_dir=tmp_path / "jobs",
+        filetype="stru",
+        basis="pw",
+        pp_path=library,
+        kpt=[1, 1, 1],
+        set_params={"ecutwfc": 60, "smearing_sigma": 0.02},
+    ).run()[0].path
+
+    inputs = ReadInput(job / "INPUT")
+    assert inputs["ecutwfc"] == pytest.approx(60.0)
+    assert inputs["smearing_sigma"] == pytest.approx(0.02)
+
+
 def test_validate_reports_unknown_keyword_and_missing_resource(tmp_path: Path) -> None:
     job = tmp_path / "job"
     job.mkdir()

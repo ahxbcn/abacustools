@@ -125,6 +125,11 @@ selects the plane-wave solver. The basis may be given only once: `--basis` and
 `--set basis_type`, or `--basis` and a template with another `basis_type`, are
 rejected instead of producing a mixed INPUT.
 
+The names given to `--set` are checked against the ABACUS parameter list shipped
+in `input-params.json`, so a mistyped parameter is reported with a suggestion
+before any directory is created. A parameter of a newer ABACUS than the shipped
+list can still be passed through an INPUT template (`--input`).
+
 Pseudopotential and orbital paths are configured through libraries rather than
 through command-line paths: `--library NAME` selects one entry of
 `resources.libraries`, and `~/.abacustools/config.yaml` can hold any number of

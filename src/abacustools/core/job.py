@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from abacustools.io.abacus import IsEnabled, ReadInput
+from abacustools.io.abacus import IsEnabled, KnownInputKeywords, ReadInput
 
 
 @dataclass(frozen=True)
@@ -81,19 +80,6 @@ def _resource_path(job: Path, filename: str, directory: Any) -> Optional[Path]:
         if candidate.is_file():
             return candidate
     return None
-
-
-def _known_input_keywords() -> set[str]:
-    from importlib.resources import files
-
-    try:
-        values = json.loads((files("abacustools.io") / "input-params.json").read_text())
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
-        return set()
-    known = set()
-    for item in values:
-        known.update(name.strip().lower() for name in str(item.get("name", "")).split(","))
-    return {name for name in known if name}
 
 
 def _input_syntax_issues(input_path: Path) -> list[ValidationIssue]:
@@ -247,7 +233,7 @@ def check_input(job_dir: Path, *, strict: bool = False) -> InputCheck:
 
     issues.extend(_input_syntax_issues(input_path))
     summary = _input_summary(inputs)
-    unknown = sorted(set(inputs) - _known_input_keywords())
+    unknown = sorted(set(inputs) - KnownInputKeywords())
     if unknown:
         level = "error" if strict else "warning"
         issues.append(

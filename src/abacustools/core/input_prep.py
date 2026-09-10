@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import re
@@ -17,6 +18,7 @@ from abacustools.core.config import CONFIG
 from abacustools.io.abacus import (
     FormatKpt,
     IsEnabled,
+    KnownInputKeywords,
     NormalizeKptModel,
     ReadInput,
     WriteInput,
@@ -78,6 +80,12 @@ def parse_input_value(value: str) -> Any:
             return float(value)
         except ValueError:
             return value
+
+
+def _keyword_hint(name: str, known: Iterable[str]) -> str:
+    """Suggest the closest known INPUT keyword for a mistyped one."""
+    matches = difflib.get_close_matches(name, sorted(known), n=1)
+    return f" (did you mean {matches[0]}?)" if matches else ""
 
 
 def _normalize_kpt(kpt: Sequence[Any], model: str) -> list:
@@ -638,6 +646,18 @@ class InputPreparer:
                 raise ValueError(
                     f"--basis {self.basis} conflicts with --set basis_type "
                     f"{requested_basis}; use a single basis"
+                )
+        known_keywords = KnownInputKeywords()
+        if known_keywords:
+            unknown = sorted(set(self.set_params) - known_keywords)
+            if unknown:
+                raise ValueError(
+                    "unknown INPUT parameter(s) for --set: "
+                    + ", ".join(
+                        name + _keyword_hint(name, known_keywords) for name in unknown
+                    )
+                    + "; a parameter of a newer ABACUS can be passed through an "
+                    "INPUT template (--input) instead"
                 )
         if self.nspin not in (1, 2, 4):
             raise ValueError("nspin must be 1, 2, or 4")

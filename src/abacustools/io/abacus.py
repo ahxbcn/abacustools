@@ -1,3 +1,4 @@
+from functools import lru_cache
 from typing import Dict, Any, List
 import os
 import re
@@ -215,6 +216,29 @@ def IsEnabled(param) -> bool:
         return float(param) > 0
     except (TypeError, ValueError):
         return False
+
+
+@lru_cache(maxsize=1)
+def KnownInputKeywords() -> frozenset:
+    """Return the INPUT keywords of the packaged ABACUS parameter list.
+
+    The list is read from ``input-params.json``.  Parameters that accept several
+    names are split, so ``nx, ny, nz`` contributes three keywords.
+
+    Returns:
+        frozenset: Lowercase keyword names; empty when the list cannot be read.
+    """
+    import json
+    from importlib.resources import files
+
+    try:
+        values = json.loads((files("abacustools.io") / "input-params.json").read_text())
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return frozenset()
+    known = set()
+    for item in values:
+        known.update(name.strip().lower() for name in str(item.get("name", "")).split(","))
+    return frozenset(name for name in known if name)
 
 
 def ReadKpt(kptpath):
