@@ -25,7 +25,7 @@ from abacustools.io.abacus import (
     WriteKpt,
 )
 from abacustools.io.pseudo import UPF
-from abacustools.io.stru import MASS_DICT, AbacusSTRU
+from abacustools.io.stru import MASS_DICT, AbacusATOM, AbacusSTRU
 
 
 PathLike = Union[str, Path]
@@ -368,6 +368,7 @@ def _collect_library(
             raise InputPreparationError(f"cannot infer element from resource file: {root}")
         return {element: root.resolve()}
 
+    wanted = None if elements is None else {str(element) for element in elements}
     mapping: dict[str, Path] = {}
     element_file = root / "element.json"
     if element_file.is_file():
@@ -382,6 +383,12 @@ def _collect_library(
                     f"element.json maps {element} to a missing file: {resource}"
                 )
             mapping[str(element).capitalize()] = resource.resolve()
+        missing = sorted(wanted - set(mapping)) if wanted is not None else []
+        if missing:
+            raise InputPreparationError(
+                f"element.json in {root} does not list {', '.join(missing)}; add the "
+                "missing entries or remove the index to search the directory instead"
+            )
         return mapping
 
     preferred_suffixes = {
@@ -402,7 +409,6 @@ def _collect_library(
     for _, _, element, resource in sorted(candidates):
         by_element.setdefault(element, []).append(resource)
     cutoffs = _standard_rcut_index(root, variant) if resource_type == "orb" else {}
-    wanted = None if elements is None else {str(element) for element in elements}
     ambiguous: list[tuple[str, list[float], Path]] = []
     for element, resources in by_element.items():
         if wanted is not None and element not in wanted:
@@ -726,7 +732,11 @@ class InputPreparer:
             sources.extend(match.resolve() for match in matches if match.is_file())
         if not sources:
             raise InputPreparationError("no structure files were found")
-        return sources
+        unique: list[Path] = []
+        for source in sources:
+            if source not in unique:
+                unique.append(source)
+        return unique
 
     def _base_inputs(self) -> dict[str, Any]:
         inputs = deepcopy(CONFIG["input_templates"][self.job_type])
@@ -782,15 +792,26 @@ class InputPreparer:
     def _dftu_inputs(self, inputs: dict[str, Any], structure: AbacusSTRU) -> None:
         if not self.dftu:
             return
-        elements = _unique(structure.elements)
+        # ABACUS reads orbital_corr and hubbard_u per ATOMIC_SPECIES block, so
+        # follow the atom-type runs the STRU writer emits rather than the
+        # elements: a structure may hold several species of the same element.
+        label_elements: dict[str, Optional[str]] = {}
+        for atom in structure.atoms:
+            label_elements.setdefault(atom.label, atom.element)
         corrections = []
         values = []
-        for element in elements:
-            configured = self.dftu_param.get(element) if self.dftu_param else None
+        for atom_type in AbacusATOM.find_uniq_atomtypes(structure.atoms):
+            label = str(atom_type.label)
+            element = str(label_elements.get(label) or label)
+            configured = None
+            if self.dftu_param:
+                configured = self.dftu_param.get(label)
+                if configured is None:
+                    configured = self.dftu_param.get(element)
             if isinstance(configured, (list, tuple)):
                 orbital = _ORBITAL_INDEX.get(str(configured[0]).lower())
                 if orbital is None or len(configured) != 2:
-                    raise ValueError(f"invalid DFT+U setting for {element}: {configured}")
+                    raise ValueError(f"invalid DFT+U setting for {label}: {configured}")
                 corrections.append(orbital)
                 values.append(float(configured[1]))
             elif configured is not None:
@@ -839,7 +860,15 @@ class InputPreparer:
         else:
             structure.atom_mags = values
 
-    def _prepare_structure(self, source: Path, structure: AbacusSTRU, basis: str) -> dict[Path, str]:
+    def _prepare_structure(
+        self, source: Path, structure: AbacusSTRU, basis: str
+    ) -> tuple[dict[Path, str], dict[Path, str]]:
+        """Resolve the resources of one structure.
+
+        Returns:
+            tuple: All resources to install, followed by the pseudopotentials,
+            which are the only ones that carry spin-orbit metadata.
+        """
         source_dir = source.parent
         elements = _unique(structure.elements)
         paw_files = sorted({paw for paw in structure.paws if paw})
@@ -883,7 +912,7 @@ class InputPreparer:
         resources = {}
         resources.update(pp_resources)
         resources.update(orb_resources)
-        return resources
+        return resources, pp_resources
 
     def _orbital_library(self) -> Optional[PathLike]:
         """Return the orbital directory holding the requested variant.
@@ -973,7 +1002,7 @@ class InputPreparer:
             )
 
     def _check_spin_orbit_pseudopotentials(
-        self, resources: Mapping[Path, str]
+        self, pseudopotentials: Mapping[Path, str]
     ) -> None:
         """Warn when a spinor calculation uses pseudopotentials without SO data.
 
@@ -981,9 +1010,7 @@ class InputPreparer:
         still prepared: the warning names the files that do not declare it.
         """
         unsupported = []
-        for path in resources:
-            if path.suffix.lower() != ".upf":
-                continue
+        for path in pseudopotentials:
             support = _spin_orbit_support(path)
             if support is True:
                 continue
@@ -1008,7 +1035,9 @@ class InputPreparer:
                 raise InputPreparationError(f"failed to read structure: {source}")
             inputs = deepcopy(inputs_template)
             basis = str(inputs.get("basis_type", "pw")).lower()
-            resources = self._prepare_structure(source, structure, basis)
+            resources, pseudopotentials = self._prepare_structure(
+                source, structure, basis
+            )
             self._set_initial_magnets(structure)
             self._dftu_inputs(inputs, structure)
             if basis.startswith("lcao"):
@@ -1018,7 +1047,7 @@ class InputPreparer:
                 if recommendations:
                     inputs["ecutwfc"] = max(recommendations)
             if self.nspin == 4:
-                self._check_spin_orbit_pseudopotentials(resources)
+                self._check_spin_orbit_pseudopotentials(pseudopotentials)
 
             destination = self._destination(source, index)
             destination.mkdir(parents=True, exist_ok=False)

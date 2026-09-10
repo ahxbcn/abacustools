@@ -219,6 +219,13 @@ pseudopotentials that explicitly support them, which UPF files declare as
 The job is still prepared when a selected pseudopotential only declares
 scalar-relativistic support, but the warning names the files, so a setup such
 as the SG15 set (scalar only) cannot be used for spin-orbit work unnoticed.
+Selected pseudopotentials that cannot be read as UPF are reported as unreadable
+rather than assumed usable.
+
+Structures that name several species of one element, such as `Si1` and `Si2`,
+receive one `orbital_corr`/`hubbard_u` entry per species, looked up by species
+label first and by element second. Repeating the same structure file through
+overlapping `-f` patterns produces one job instead of duplicates.
 
 Upstream libraries also publish the recommended cutoff radius of every element
 as `<orbital directory>_<VARIANT>_..._StandardRcut.json` next to the orbital
@@ -241,7 +248,8 @@ If several candidates match, the preparation stops and lists them.
 
 Every entry of `element.json` must point to an existing file; a broken entry
 stops the preparation with an explicit error instead of silently falling back
-to the file-name search.
+to the file-name search, and so does an element that the index does not list
+even though the structure needs it.
 
 ```yaml
 # ecutwfc.json: element -> recommended plane-wave cutoff in Ry

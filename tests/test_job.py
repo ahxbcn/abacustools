@@ -1020,6 +1020,106 @@ def test_prepare_hints_about_ambiguous_orbital_radii(tmp_path: Path) -> None:
     assert (job / "H_gga_10au_100Ry_2s2p1d.orb").is_file()
 
 
+STRU_TWO_SPECIES = """\
+ATOMIC_SPECIES
+Si1 28.0855 Si.upf
+Si2 28.0855 Si.upf
+
+LATTICE_CONSTANT
+1.0
+
+LATTICE_VECTORS
+5 0 0
+0 5 0
+0 0 5
+
+ATOMIC_POSITIONS
+Cartesian
+
+Si1
+0.0
+1
+0 0 0
+
+Si2
+0.0
+1
+1 1 1
+"""
+
+
+def test_prepare_writes_dftu_settings_per_species(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+    source.write_text(STRU_TWO_SPECIES, encoding="utf-8")
+    (library / "Si.upf").write_text("pseudo", encoding="utf-8")
+    (library / "Si.orb").write_text("orbital", encoding="utf-8")
+
+    job = InputPreparer(
+        source,
+        output_dir=tmp_path / "jobs",
+        filetype="stru",
+        basis="lcao",
+        pp_path=library,
+        orb_path=library,
+        kpt=[1, 1, 1],
+        dftu=True,
+        dftu_param={"Si1": 5.0, "Si": 3.0},
+    ).run()[0].path
+
+    # Two ATOMIC_SPECIES blocks need two entries, looked up by label first.
+    inputs = ReadInput(job / "INPUT")
+    assert inputs["orbital_corr"] == [1, 1]
+    assert inputs["hubbard_u"] == pytest.approx([5.0, 3.0])
+
+
+def test_prepare_deduplicates_repeated_structure_patterns(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+
+    jobs = InputPreparer(
+        [source, tmp_path / "*.stru"],
+        output_dir=tmp_path / "jobs",
+        filetype="stru",
+        basis="pw",
+        pp_path=library,
+        kpt=[1, 1, 1],
+    ).run()
+
+    assert [job.path.name for job in jobs] == ["000000"]
+
+
+def test_prepare_reports_unreadable_pseudopotentials_for_nspin4(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+    (library / "H.upf").unlink()
+    (library / "H.blps").write_text("not a UPF file", encoding="utf-8")
+
+    with pytest.warns(UserWarning, match=r"H\.blps \(unreadable\)"):
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="pw",
+            pp_path=library,
+            nspin=4,
+            kpt=[1, 1, 1],
+        ).run()
+
+
+def test_prepare_reports_elements_missing_from_an_element_index(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+    (library / "O.upf").write_text("pseudo", encoding="utf-8")
+    (library / "element.json").write_text('{"O": "O.upf"}', encoding="utf-8")
+
+    with pytest.raises(InputPreparationError, match="does not list H"):
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="pw",
+            pp_path=library,
+            kpt=[1, 1, 1],
+        ).run()
+
+
 def test_prepare_stays_quiet_when_the_index_selects_the_radius(tmp_path: Path) -> None:
     source, _ = _source_and_library(tmp_path)
     orbitals = _v2_library(tmp_path / "sg15", {"DZP": {"H": 7}})
