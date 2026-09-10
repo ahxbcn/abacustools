@@ -1,0 +1,113 @@
+# AGENTS.md
+
+Guidance for AI coding agents (and humans) working in **abacustools**, a CLI
+toolkit for DFT calculations with [ABACUS](https://abacus.deepmodeling.com/).
+
+## Project overview
+
+- Pure-Python package `abacustools`, exposed as the `abacustools` console
+  script (`abacustools.main:main`). No compiled extensions.
+- Requires Python >= 3.9 (developed on 3.11).
+- Runtime dependencies: `numpy`, `rich`, `pymatgen`, `phonopy`, `seekpath`,
+  `matplotlib`, `ase`, `pydantic`.
+- Four command families:
+  - `abacustools file ...` — convert/inspect `INPUT`, `STRU`, `KPT`, structures.
+  - `abacustools job ...` — prepare, check, validate, and monitor jobs.
+  - `abacustools postprocess ...` — `result`, `band`, `dos`, `cohp`, `mayer`, `bader`.
+  - `abacustools workflow ...` — multi-step workflows (elastic, phonon, ...).
+
+## Environment setup
+
+```bash
+pip install -e .          # editable install; provides the `abacustools` script
+```
+
+The package is normally used from an editable install, so `import abacustools`
+works without `PYTHONPATH`. If you cannot install, prefix commands with
+`PYTHONPATH=src`.
+
+## Common commands
+
+```bash
+abacustools --help                        # CLI help (also: <family> --help)
+python -m pytest tests                    # full test suite
+python -m pytest tests/test_bader.py -q   # one module
+ruff check src tests                      # lint (ruff defaults; no config file)
+ruff format src tests                     # format
+```
+
+## Repository layout
+
+```text
+src/abacustools/
+  main.py            # argparse entry point; registers the four families
+  version.py         # __version__
+  commands/          # CLI layer (thin): <family>/<command>.py
+    file/ job/ postprocess/ workflow/
+  data/              # parsing/analysis of ABACUS outputs -> arrays/dataclasses
+  io/                # read/write file formats (STRU, INPUT, KPT, pseudo, NAO)
+  core/              # config, constants, job/process handling, submission
+  integrations/      # adapters to external tools (e.g. abacuslite)
+tests/               # pytest suite (test_*.py)
+```
+
+Layering: `commands/` may import `data/`, `io/`, and `core/`; `data/` and `io/`
+must not import `commands/`. Keep the CLI layer thin — argument parsing and
+rendering only.
+
+## Adding or changing a command
+
+1. Implement the logic in `data/` (or `io/`, `core/`), not in the command file.
+2. Create `commands/<family>/<name>.py` containing:
+   - `register_parser(subparsers)` that adds the subparser and calls
+     `parser.set_defaults(handler=<func>)`;
+   - a handler `def <func>(args: argparse.Namespace) -> int` returning the exit
+     code (0 on success).
+3. Register the module in `commands/<family>/__init__.py`.
+4. Add `tests/test_<name>.py`.
+5. Document the command in `README.md`.
+
+## Code style
+
+- Start modules with `from __future__ import annotations`.
+- Type-annotate public functions; prefer `pathlib.Path` over string paths.
+- Google-style docstrings (`Args:` / `Returns:`) on public APIs.
+- Render CLI output with `rich`; support `--json` for structured reports.
+- Never use a bare `except:`; avoid `# type: ignore` unless justified.
+- Match the conventions of the file you are editing.
+
+## Units and domain conventions
+
+- ABACUS lengths are in Bohr, energies in Ry/eV. Conversion constants live in
+  `core/constant.py` (`BOHR_TO_ANG`, `ANG_TO_BOHR`, `RY_TO_EV`, ...).
+- `*-CHARGE-DENSITY.restart` stores `rho(G)`; ABACUS-format cube files store
+  density in e/Bohr^3. The internal `Charge` class stores density in e/Ang^3 and
+  cell vectors in Angstrom.
+- When writing cube files, keep grid geometry at full precision — low-precision
+  cell vectors corrupt the cell volume and make integrated charges non-integer.
+
+## Testing
+
+- Tests live in `tests/` as `test_*.py`; the suite mixes `unittest.TestCase`
+  classes and plain pytest functions.
+- Use `tmp_path` / `tempfile` for file I/O; never depend on network access or a
+  real ABACUS binary. Prefer small synthetic fixtures over large reference files.
+- Run the full suite (`python -m pytest tests`) before considering work done.
+
+## Git and commits
+
+- Commit subjects are short and imperative: `Add <feature>` or `feat: ...`,
+  `fix: ...`.
+- Keep commits focused and do not mix unrelated changes. Prefer a separate
+  `fix:` commit over folding a fix into a feature commit.
+- Never commit generated artifacts: `OUT.*/`, `build/`, `__pycache__/`,
+  `.pytest_cache/`, `.ruff_cache/`, or `.sisyphus/`.
+
+## Agent checklist
+
+- [ ] Logic lives outside the CLI layer; the command file only wires arguments.
+- [ ] New behavior is covered by tests in `tests/`.
+- [ ] `python -m pytest tests` passes.
+- [ ] `ruff check src tests` is clean (or only pre-existing issues remain).
+- [ ] CLI changes are reflected in `README.md`.
+- [ ] No generated or large files staged.
