@@ -167,6 +167,39 @@ def _phonopy_atoms(structure):
     )
 
 
+def _phonopy_supercell_structure(structure, phonopy_supercell):
+    """Build an ABACUS supercell that follows the phonopy atom order.
+
+    :meth:`AbacusSTRU.supercell` orders atoms by lattice point, while phonopy
+    orders them by the atom of the reference cell.  Mixing the two orders
+    attaches the calculated forces to the wrong atoms, so supercells written
+    for displaced calculations are rebuilt from the phonopy object.
+    """
+    from abacustools.io.stru import AbacusSTRU
+
+    by_element = {}
+    for atom in structure.atoms:
+        if atom.element is not None:
+            by_element.setdefault(atom.element, atom)
+    if not by_element:
+        raise RuntimeError("structure does not define any element")
+
+    atoms = []
+    for symbol, position in zip(phonopy_supercell.symbols, phonopy_supercell.positions):
+        source = by_element.get(symbol)
+        if source is None:
+            raise RuntimeError(f"phonopy supercell contains an unknown element: {symbol}")
+        atom = deepcopy(source)
+        atom.coord = tuple(float(value) for value in position)
+        atoms.append(atom)
+    return AbacusSTRU(
+        cell=np.asarray(phonopy_supercell.cell, dtype=float).tolist(),
+        atoms=atoms,
+        dpks=structure.dpks,
+        metadata=deepcopy(structure.metadata),
+    )
+
+
 def _initialize_phonopy(structure, supercell: list[int]):
     """Initialize Phonopy with a diagonal supercell matrix."""
     from phonopy import Phonopy
@@ -234,7 +267,7 @@ def prepare(args: argparse.Namespace) -> int:
     if scf_thr > 1e-7:
         phonon_inputs["scf_thr"] = 1e-7
     kpoint_file = kpoint_filename(job, inputs)
-    supercell_structure = structure.supercell(supercell)
+    supercell_structure = _phonopy_supercell_structure(structure, phonon.supercell)
     if supercell_structure.natoms != len(displaced_structures[0]):
         raise RuntimeError("Phonopy and ABACUS generated supercells have different atom counts")
 

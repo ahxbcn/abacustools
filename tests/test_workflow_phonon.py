@@ -12,6 +12,7 @@ from abacustools.commands.workflow.phonon import (
     _automatic_supercell,
     _custom_band_path,
     _initialize_phonopy,
+    _phonopy_supercell_structure,
     _validate_mesh,
     _validate_supercell,
     prepare,
@@ -105,6 +106,103 @@ H
         self.assertTrue(all(len(path) == 5 for path in paths))
         self.assertEqual(connections, [True, False])
         self.assertEqual(labels, [r"$\Gamma$", "X", r"$\Gamma$"])
+
+    def test_supercell_structure_follows_phonopy_atom_order(self) -> None:
+        import numpy as np
+        from phonopy.structure.atoms import PhonopyAtoms
+        from phonopy.structure.cells import get_supercell
+
+        from abacustools.io.stru import AbacusATOM, AbacusSTRU
+
+        structure = AbacusSTRU(
+            cell=[[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]],
+            atoms=[
+                AbacusATOM(label="Si", element="Si", coord=(0.0, 0.0, 0.0)),
+                AbacusATOM(label="Ge", element="Ge", coord=(1.0, 1.0, 1.0)),
+            ],
+            metadata={"atom_type": "cartesian"},
+        )
+        unitcell = PhonopyAtoms(
+            symbols=["Si", "Ge"],
+            cell=structure.cell,
+            scaled_positions=[[0, 0, 0], [0.25, 0.25, 0.25]],
+        )
+        phonopy_supercell = get_supercell(unitcell, np.diag([2, 1, 1]))
+
+        supercell = _phonopy_supercell_structure(structure, phonopy_supercell)
+
+        self.assertEqual(supercell.elements, list(phonopy_supercell.symbols))
+        np.testing.assert_allclose(
+            np.asarray(supercell.coords, dtype=float),
+            np.asarray(phonopy_supercell.positions, dtype=float),
+        )
+
+    def test_prepare_writes_supercells_in_phonopy_order(self) -> None:
+        import numpy as np
+        from phonopy.structure.atoms import PhonopyAtoms
+        from phonopy.structure.cells import get_supercell
+
+        from abacustools.io.stru import AbacusSTRU
+
+        with tempfile.TemporaryDirectory() as temporary:
+            job = Path(temporary)
+            (job / "INPUT").write_text(
+                "INPUT_PARAMETERS\ncalculation scf\ngamma_only 1\n",
+                encoding="utf-8",
+            )
+            (job / "STRU").write_text(
+                """ATOMIC_SPECIES
+Si 28.0855
+Ge 72.63
+
+LATTICE_CONSTANT
+1.0
+
+LATTICE_VECTORS
+4 0 0
+0 4 0
+0 0 4
+
+ATOMIC_POSITIONS
+Cartesian
+
+Si
+0.0
+1
+0 0 0
+
+Ge
+0.0
+1
+1 1 1
+""",
+                encoding="utf-8",
+            )
+            prepare(
+                Namespace(
+                    job=job,
+                    supercell=[2, 1, 1],
+                    displacement_stepsize=0.01,
+                    min_supercell_length=10.0,
+                    override=False,
+                )
+            )
+
+            parsed = AbacusSTRU.read(str(job / "STRU"))
+            unitcell = PhonopyAtoms(
+                symbols=parsed.elements,
+                cell=np.asarray(parsed.cell, dtype=float),
+                scaled_positions=np.asarray(parsed.coords_direct, dtype=float),
+            )
+            expected = get_supercell(unitcell, np.diag([2, 1, 1]))
+            written = AbacusSTRU.read(str(job / "disp-1" / "STRU"))
+
+            self.assertEqual(written.elements, list(expected.symbols))
+            np.testing.assert_allclose(
+                np.asarray(written.coords_direct, dtype=float),
+                np.asarray(expected.scaled_positions, dtype=float),
+                atol=0.01,
+            )
 
 
 if __name__ == "__main__":
