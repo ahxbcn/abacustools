@@ -54,23 +54,57 @@ Basic structure information can be inspected without converting the file:
 abacustools file info STRU
 abacustools file info POSCAR --json
 abacustools file info structure.xyz --cell 10 0 0 0 10 0 0 0 10
+abacustools file info slab.STRU --coordination
+abacustools file info STRU --coordination voronoi --json
 ```
 
-The report includes cell parameters, volume, element and label counts, space
-group, point group, crystal system, symmetry operation count, per-atom
-Wyckoff positions, a separate list of symmetry-inequivalent atomic positions,
-and the ABACUS pseudopotential and orbital file of every label. The
-inequivalent list contains one representative atom per symmetry-equivalent
-group together with the equivalent atom indices and multiplicity.
+The report includes cell parameters, volume, density, element and label counts,
+the formula unit with the number of formula units per cell and the prototype
+formula, space group, crystal system, point group with its Schoenflies symbol,
+Bravais lattice with the Pearson symbol, inversion symmetry, polar point group,
+the symmetry tolerances that were used, symmetry operation count, per-atom
+Wyckoff positions with their multiplicity and site symmetry, a separate list of
+symmetry-inequivalent atomic positions, and the ABACUS pseudopotential and
+orbital file of every label. The inequivalent list contains one representative
+atom per symmetry-equivalent group together with the equivalent atom indices
+and multiplicity; when no two atoms are related by symmetry, as in `P1`, the
+list only repeats the per-atom table and is left out of the report.
 The per-atom table holds the index, label, element, fractional and Cartesian
-coordinates and the Wyckoff letter, followed by the magnetic moments (with their
-polar angles when the structure sets them), the movement constraints and the
-velocities; those last columns appear only when the structure actually defines
-them, so an unconstrained structure keeps a compact table.
+coordinates, the Wyckoff position with its multiplicity and the site symmetry
+symbol, followed by the magnetic moments (with their polar angles when the
+structure sets them), the movement constraints and the velocities; those last
+columns appear only when the structure actually defines them, so an
+unconstrained structure keeps a compact table. A Wyckoff symbol counts the
+atoms of its orbit in the conventional cell, as the International Tables write
+it, so it does not change when the same crystal is handed in as a supercell;
+the equivalent atom column counts the atoms of the orbit in the given cell.
+Three more items are reported from the same structure when they are defined:
+the magnetic space group with its BNS and UNI numbers and its type (a structure
+without magnetic moments keeps the grey group), the magnetic ordering (FM, AFM
+or FiM with the net moment and the number of magnetic sites) and the layer group
+of a slab. The layer group needs the non-periodic direction, which is detected
+from the vacuum of the cell and can be set explicitly with `--layer-direction`;
+slabs show it next to the space group, bulk structures stay without it.
 Use `--symprec` and `--angle-tolerance` when the input coordinates require
 different symmetry tolerances. Structures without a three-dimensional cell
 are still summarized, but symmetry and Wyckoff positions are reported as
 unavailable.
+
+The same vacuum that carries the layer group also gives the dimensionality:
+an empty span of at least `--min-vacuum` Angstrom, 5 by default, makes a
+lattice direction non-periodic, so the report names the structure a 3D bulk,
+a 2D slab, a 1D wire or a 0D molecule or cluster. `--coordination` adds the
+coordination number of every atom to the per-atom table and, for a bulk, the
+coordination geometry symbols of ChemEnv such as `T:4` or `O:6`, together with
+their continuous symmetry measure. The analysis follows the dimensionality by
+default: ChemEnv describes bulk crystals, but its Voronoi tessellation is
+undefined in the vacuum of a slab, so slabs, wires and molecules are analysed
+with the CrystalNN nearest neighbours instead, and a note explains the choice.
+`--coordination METHOD` forces `crystalnn`, `chemenv`, `voronoi` or
+`minimum-distance`; an explicit method that cannot handle the structure is
+reported as unavailable instead of being replaced silently. The work-function
+workflow uses the same vacuum analysis to find the direction of the
+electrostatic vacuum.
 
 Structures can also be edited into a new file. Every action reads a structure,
 writes a separate OUTPUT (existing files are only replaced with `--override`)
