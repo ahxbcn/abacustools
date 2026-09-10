@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from argparse import Namespace
 from pathlib import Path
 
@@ -105,12 +106,58 @@ def test_band_command_writes_plot_and_processed_data(tmp_path: Path) -> None:
             emin=-2.0,
             emax=2.0,
             efermi=0.0,
+            gap=False,
+            spin_resolved=False,
+            effective_mass=None,
+            direction=None,
+            fit_points=5,
+            fat_band=None,
+            atom_index=None,
+            json=False,
         )
     ) == 0
 
     assert (job / "plots/band.png").stat().st_size > 0
     assert (job / "processed/band.dat").stat().st_size > 0
     assert (job / "processed/KPATH.txt").stat().st_size > 0
+
+
+def _analysis_args(job: Path, **overrides) -> Namespace:
+    args = dict(
+        job=job,
+        output=None,
+        data_output="band.dat",
+        kpath_output="KPATH.txt",
+        emin=-2.0,
+        emax=2.0,
+        efermi=0.0,
+        gap=False,
+        spin_resolved=False,
+        effective_mass=None,
+        direction=None,
+        fit_points=5,
+        fat_band=None,
+        atom_index=None,
+        json=False,
+    )
+    args.update(overrides)
+    return Namespace(**args)
+
+
+def test_band_command_reports_band_gap(tmp_path: Path, capsys) -> None:
+    job = tmp_path / "job"
+    job.mkdir()
+    _write_job(job)
+
+    assert run(_analysis_args(job, gap=True, json=True)) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    gap = report["band_gap"]
+    assert gap["band_gap"] == pytest.approx(1.5)
+    assert gap["direct"] is False
+    assert gap["is_metal"] is False
+    assert gap["vbm"]["energy"] == pytest.approx(-0.5)
+    assert gap["cbm"]["energy"] == pytest.approx(1.0)
 
 
 def test_band_reader_warns_for_non_nscf_job(tmp_path: Path) -> None:

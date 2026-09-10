@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from argparse import Namespace
 from pathlib import Path
 
@@ -9,6 +10,24 @@ import numpy as np
 
 from abacustools.commands.postprocess.dos import run
 from abacustools.data.dos import DOSData, PDOSData
+
+
+def _args(job: Path, **overrides) -> Namespace:
+    args = dict(
+        job=job,
+        output=None,
+        data_output=None,
+        emin=-3.0,
+        emax=2.0,
+        efermi=0.5,
+        pdos=None,
+        atom_index=None,
+        combined=False,
+        list_metadata=False,
+        json=False,
+    )
+    args.update(overrides)
+    return Namespace(**args)
 
 
 def _write_job(job: Path, with_pdos: bool = False) -> None:
@@ -68,6 +87,9 @@ def test_dos_command_writes_plot_and_data(tmp_path: Path) -> None:
             efermi=0.5,
             pdos=None,
             atom_index=None,
+            combined=False,
+            list_metadata=False,
+            json=False,
         )
     ) == 0
 
@@ -91,6 +113,9 @@ def test_pdos_command_uses_existing_species_helpers(tmp_path: Path) -> None:
             efermi=0.5,
             pdos="species",
             atom_index=None,
+            combined=False,
+            list_metadata=False,
+            json=False,
         )
     ) == 0
 
@@ -98,3 +123,38 @@ def test_pdos_command_uses_existing_species_helpers(tmp_path: Path) -> None:
     assert (job / "PDOS.dat").stat().st_size > 0
     assert "H_up" in (job / "PDOS.dat").read_text()
     assert isinstance(PDOSData.ReadFromAbacusJob(job, efermi=0.5), PDOSData)
+
+
+def test_dos_command_lists_metadata(tmp_path: Path, capsys) -> None:
+    job = tmp_path / "job"
+    job.mkdir()
+    _write_job(job, with_pdos=True)
+
+    assert run(_args(job, list_metadata=True, json=True)) == 0
+
+    metadata = json.loads(capsys.readouterr().out)
+    assert metadata["species"] == ["H"]
+    assert metadata["shells"]["H"] == [0]
+    assert metadata["atoms"] == [1]
+
+
+def test_dos_command_writes_combined_plot(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    job.mkdir()
+    _write_job(job, with_pdos=True)
+
+    assert run(_args(job, combined=True)) == 0
+
+    assert (job / "DOS_PDOS.png").stat().st_size > 0
+    assert (job / "DOS_PDOS.dat").stat().st_size > 0
+
+
+def test_dos_command_atom_shell_mode(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    job.mkdir()
+    _write_job(job, with_pdos=True)
+
+    assert run(_args(job, pdos="atom-shell", atom_index=[1])) == 0
+
+    assert (job / "PDOS.png").stat().st_size > 0
+    assert (job / "PDOS.dat").stat().st_size > 0

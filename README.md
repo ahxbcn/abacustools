@@ -213,6 +213,23 @@ and `KPATH.txt` below `JOB`. Use `--efermi` to provide an explicit Fermi
 energy when it is not present in the log. Only `calculation nscf` jobs are
 recommended; other calculation types emit a warning and are still processed.
 
+Band-gap, effective-mass, and projected (fat) band analysis use the same
+command:
+
+```text
+abacustools postprocess band -j JOB --gap
+abacustools postprocess band -j JOB --gap --json
+abacustools postprocess band -j JOB --effective-mass cbm --direction G X
+abacustools postprocess band -j JOB --fat-band species
+```
+
+`--gap` reports the band gap, VBM, CBM, and whether the gap is direct or
+indirect (`--spin-resolved` adds per-spin gaps; `--json` prints the report as
+JSON). `--effective-mass cbm|vbm` with `--direction START END` fits the band
+curvature at the edge and is available for nspin=1 only.
+`--fat-band species|species-shell|species-orbital|atoms` plots the projected
+band structure from the `PBANDS_*` output.
+
 COHP and COOP curves can be calculated for selected ABACUS NAO orbital groups
 when the LCAO output contains `data-*-H`, `data-*-S`, `kpoints`, and
 `WFC_NAO_K*.txt` files:
@@ -242,6 +259,11 @@ energy, and writes `DOS.png` and `DOS.dat`. Use `--pdos species-shell`,
 `--pdos species-orbital`, or `--pdos atoms --atom-index 1 2` for projected DOS
 plots. Output paths can be changed with `-o` and `--data-output`; use
 `--efermi` when the Fermi energy cannot be read from the ABACUS output.
+
+Use `--combined` to overlay the total DOS with the species-projected DOS
+(`DOS_PDOS.png`/`DOS_PDOS.dat`), `--pdos atom-shell` or `--pdos atom-orbital`
+with `--atom-index` for single-atom projections, and `--list` (optionally with
+`--json`) to list the available species, shells, orbitals and atoms.
 
 Mayer bond orders can be analyzed from an ABACUS LCAO calculation with
 `out_mat_hs=1` (and `out_dm=1` for gamma-only jobs):

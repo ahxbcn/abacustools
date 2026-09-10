@@ -1,7 +1,7 @@
 """Module for managing DOS and PDOS data from ABACUS calculations."""
 
 import numpy as np
-from typing import Dict, List, Tuple, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 from abacustools.data.abacus_result import get_result_from_job, read_dos_from_job, read_pdos_from_job
 
@@ -227,7 +227,7 @@ class PDOSData:
         else:
             return pdos_datas
 
-    def get_pdos_by_atom_shell(self, atom_index: int, l: Tuple[int, str], sum_only: bool=True) -> List[Dict]:
+    def get_pdos_by_atom_shell(self, atom_index: int, l: Union[int, str], sum_only: bool=True) -> List[Dict]:
         """
         Get PDOS data for a specific atom shell.
         
@@ -253,7 +253,7 @@ class PDOSData:
         else:
             return pdos_datas
     
-    def get_pdos_by_atom_orbital(self, atom_index: int, l: Optional[Tuple[int, str]], m: Tuple[int, str], sum_only: bool=True) -> List[Dict]:
+    def get_pdos_by_atom_orbital(self, atom_index: int, l: Optional[Union[int, str]], m: Union[int, str], sum_only: bool=True) -> List[Dict]:
         """
         Get PDOS data for a specific atom orbital.
         
