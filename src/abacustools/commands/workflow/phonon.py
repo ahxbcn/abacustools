@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 
 from abacustools.core.constant import THZ_TO_K
+from abacustools.data.versions import default_version
 
 from .common import (
     clear_generated_jobs,
@@ -78,7 +79,7 @@ def _register_postprocess_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "-v", "--version",
-        default="LTS3.10.1",
+        default=default_version(),
         help="ABACUS version used for the calculations.",
     )
     parser.add_argument(

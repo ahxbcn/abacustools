@@ -9,7 +9,20 @@ constants:
   vacuum_permittivity: 8.8541878128e-12
 
 abacus:
-  version: "3.10.1LTS"
+  # Version used to read ABACUS output files. "auto" detects the version from
+  # the "ABACUS v..." banner of each running log; an explicit name such as
+  # "3.10.1LTS" or "develop" is used when a job log does not declare one, and
+  # the version found in the log always wins over a conflicting setting.
+  version: "auto"
+  # Log markers of each supported ABACUS branch. Entries listed here override
+  # the built-in profile of the same name; new entries define new versions.
+  versions:
+    "3.10.1LTS":
+      aliases: ["LTS3.10.1", "3.10.1", "3.10", "lts"]
+      version_prefixes: ["3.8", "3.9", "3.10"]
+    develop:
+      aliases: ["dev", "3.11", "3.12", "beta"]
+      version_prefixes: ["3.11", "3.12", "4.", "5."]
   default_basis: "lcao"
 
 # Path to the Henkelman grid-based Bader program used by `postprocess bader`.

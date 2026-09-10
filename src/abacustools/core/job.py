@@ -427,7 +427,7 @@ def status_job(job_dir: Path, validation: Optional[JobValidation] = None) -> Job
     if calculation in {"relax", "cell-relax", "cell_relax", "md"}:
         parameters.extend(["largest_force", "largest_stress", "relax_steps", "relax_converged"])
     try:
-        parsed = get_result_from_job(job, parameters, version="")
+        parsed = get_result_from_job(job, parameters, version=None)
     except (FileNotFoundError, ValueError):
         parsed = {}
     progress = {key: parsed[key] for key in parameters if key in parsed and parsed[key] is not None}

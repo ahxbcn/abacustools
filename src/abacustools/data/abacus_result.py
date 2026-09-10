@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
+from functools import lru_cache
 from io import StringIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Union
 
 import numpy as np
 
+from abacustools.data.versions import resolve_version
 from abacustools.io.abacus import ReadInput
 
 
@@ -38,16 +40,6 @@ grouped_params = {
 
 _RELAX_CALCULATIONS = {"relax", "cell-relax", "md"}
 _FLOAT = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[EeDd][-+]?\d+)?"
-_RELAX_STEP_RE = re.compile(r"STEP\s+OF\s+RELAXATION\s*:\s*(\d+)", re.IGNORECASE)
-_RELAX_FORCE_RE = re.compile(
-    rf"largest\s+gradient\s+in\s+force\s+is\s+({_FLOAT})\s*(?:eV\s*/\s*A|eV/Angstrom)?",
-    re.IGNORECASE,
-)
-_RELAX_STRESS_RE = re.compile(
-    rf"largest\s+gradient\s+in\s+stress\s+is\s+({_FLOAT})\s*([A-Za-z/]*)",
-    re.IGNORECASE,
-)
-_RELAX_ENERGY_RE = re.compile(rf"(?:final\s+etot\s+is|!final_etot_is)\s+({_FLOAT})", re.IGNORECASE)
 _RELAX_ENERGY_DIFF_RE = re.compile(rf"etot\s+diff\s*\(\s*eV\s*\)\s*:\s*({_FLOAT})", re.IGNORECASE)
 
 
@@ -59,10 +51,34 @@ def _numbers(line: str) -> List[float]:
     return [_as_float(value) for value in re.findall(_FLOAT, line)]
 
 
-def read_relaxation_history(log_file: Union[str, Path]) -> List[Dict[str, Any]]:
+def _contains_any(line: str, keywords: Sequence[str]) -> bool:
+    """Return whether a lowercased log line contains one of the keywords."""
+    return any(keyword.lower() in line for keyword in keywords)
+
+
+@lru_cache(maxsize=None)
+def _compiled(patterns: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
+    """Compile and cache the regular expressions of one version profile."""
+    return tuple(re.compile(pattern, re.IGNORECASE) for pattern in patterns)
+
+
+def _first_match(patterns: tuple[str, ...], line: str) -> Optional[float]:
+    """Return the value captured by the first matching pattern, if any."""
+    for pattern in _compiled(patterns):
+        match = pattern.search(line)
+        if match is not None:
+            return _as_float(match.group(1))
+    return None
+
+
+def read_relaxation_history(
+    log_file: Union[str, Path],
+    version: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """Read per-ionic-step geometry-optimization metrics from an ABACUS log."""
     path = Path(log_file)
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    profile = resolve_version(version, job_dir=path.parent, text="\n".join(lines[:128]))
     records: Dict[int, Dict[str, Any]] = {}
     current_step: Optional[int] = None
 
@@ -80,27 +96,27 @@ def read_relaxation_history(log_file: Union[str, Path]) -> List[Dict[str, Any]]:
         )
 
     for line in lines:
-        step_match = _RELAX_STEP_RE.search(line)
-        if step_match:
-            current_step = int(step_match.group(1))
+        step = _first_match(profile.relax_step_patterns, line)
+        if step is not None:
+            current_step = int(step)
             record(current_step)
             continue
         if current_step is None:
             continue
         item = record(current_step)
-        energy_match = _RELAX_ENERGY_RE.search(line)
-        if energy_match:
-            item["energy"] = _as_float(energy_match.group(1))
+        energy = _first_match(profile.relax_energy_patterns, line)
+        if energy is not None:
+            item["energy"] = energy
         energy_diff_match = _RELAX_ENERGY_DIFF_RE.search(line)
         if energy_diff_match:
             item["energy_change"] = _as_float(energy_diff_match.group(1))
-        force_match = _RELAX_FORCE_RE.search(line)
-        if force_match:
-            item["max_force"] = _as_float(force_match.group(1))
-        stress_match = _RELAX_STRESS_RE.search(line)
-        if stress_match:
-            item["max_stress"] = _as_float(stress_match.group(1))
-        if "relaxation is converged" in line.lower():
+        force = _first_match(profile.relax_force_patterns, line)
+        if force is not None:
+            item["max_force"] = force
+        stress = _first_match(profile.relax_stress_patterns, line)
+        if stress is not None:
+            item["max_stress"] = stress
+        if _contains_any(line.lower(), profile.relax_converged_keywords):
             item["converged"] = True
 
     history = [records[step] for step in sorted(records)]
@@ -328,7 +344,11 @@ def _parse_stress_block(lines: List[str], start: int) -> List[List[float]]:
     return stress
 
 
-def collect_scf_results(job_dir: str, metrics: List[str]) -> Dict[str, Any]:
+def collect_scf_results(
+    job_dir: str,
+    metrics: List[str],
+    version: Optional[str] = None,
+) -> Dict[str, Any]:
     """Collect SCF results from the final electronic iteration."""
     param_groups = split_param_by_group(metrics)
     if "scf_results" not in param_groups:
@@ -344,9 +364,12 @@ def collect_scf_results(job_dir: str, metrics: List[str]) -> Dict[str, Any]:
     except FileNotFoundError:
         return _empty_results(param_groups["scf_results"])
 
+    profile = resolve_version(version, job_dir=job_path)
     last_line = next((line.strip() for line in reversed(lines) if line.strip()), None)
     normal_end = (
-        None if last_line is None else "Total  Time  :" in last_line
+        None
+        if last_line is None
+        else _contains_any(last_line.lower(), profile.normal_end_keywords)
     )
 
     energies: List[float] = []
@@ -359,29 +382,29 @@ def collect_scf_results(job_dir: str, metrics: List[str]) -> Dict[str, Any]:
 
     for line_number, line in enumerate(lines):
         lower_line = line.lower()
-        if "e_kohnsham" in lower_line:
+        if _contains_any(lower_line, profile.energy_keywords):
             values = _numbers(line)
             if values:
                 energies.append(values[-1])
-        elif "density error" in lower_line:
+        elif _contains_any(lower_line, profile.density_error_keywords):
             values = _numbers(line)
             if values:
                 drhos.append(values[-1])
-        elif "final etot" in lower_line:
+        elif _contains_any(lower_line, profile.final_energy_keywords):
             values = _numbers(line)
             if values:
                 final_energies.append(values[-1])
-        elif "efermi" in lower_line:
+        elif _contains_any(lower_line, profile.fermi_keywords):
             values = _numbers(line)
             if values:
                 efermis.append(values[-1])
-        elif "charge density convergence is achieved" in lower_line:
+        elif _contains_any(lower_line, profile.scf_converged_keywords):
             converged = True
-        elif "total-force" in lower_line:
+        elif _contains_any(lower_line, profile.force_header_keywords):
             force = _parse_force_block(lines, line_number)
             if force:
                 forces.append(force)
-        elif "total-stress" in lower_line:
+        elif _contains_any(lower_line, profile.stress_header_keywords):
             stress = _parse_stress_block(lines, line_number)
             if stress:
                 stresses.append(stress)
@@ -401,7 +424,11 @@ def collect_scf_results(job_dir: str, metrics: List[str]) -> Dict[str, Any]:
     return {metric: available[metric] for metric in param_groups["scf_results"]}
 
 
-def collect_vdw_results(job_dir: str, metrics: List[str]) -> Dict[str, Any]:
+def collect_vdw_results(
+    job_dir: str,
+    metrics: List[str],
+    version: Optional[str] = None,
+) -> Dict[str, Any]:
     """Collect the final DFT-D dispersion energy in eV."""
     param_groups = split_param_by_group(metrics)
     if "vdw_results" not in param_groups:
@@ -416,9 +443,10 @@ def collect_vdw_results(job_dir: str, metrics: List[str]) -> Dict[str, Any]:
     except FileNotFoundError:
         return _empty_results(param_groups["vdw_results"])
 
+    profile = resolve_version(version, job_dir=job_path)
     vdw_energies: List[float] = []
     for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
-        if "e_vdw" in line.lower():
+        if _contains_any(line.lower(), profile.vdw_keywords):
             values = _numbers(line)
             if values:
                 # ABACUS prints the dispersion energy in Rydberg and eV.
@@ -428,7 +456,11 @@ def collect_vdw_results(job_dir: str, metrics: List[str]) -> Dict[str, Any]:
     return {metric: available[metric] for metric in param_groups["vdw_results"]}
 
 
-def collect_relax_results(job_dir: str, metrics: List[str]) -> Dict[str, Any]:
+def collect_relax_results(
+    job_dir: str,
+    metrics: List[str],
+    version: Optional[str] = None,
+) -> Dict[str, Any]:
     """Collect ionic relaxation results from the final relaxation step."""
     param_groups = split_param_by_group(metrics)
     if "relax_results" not in param_groups:
@@ -448,17 +480,18 @@ def collect_relax_results(job_dir: str, metrics: List[str]) -> Dict[str, Any]:
     except FileNotFoundError:
         return _empty_results(param_groups["relax_results"])
 
+    profile = resolve_version(version, job_dir=job_path)
     largest_forces: List[float] = []
     largest_stresses: List[float] = []
     relax_converged = False
     for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
-        lower_line = line.lower()
-        values = _numbers(line)
-        if "largest gradient in force is" in lower_line and values:
-            largest_forces.append(values[-1])
-        elif "largest gradient in stress is" in lower_line and values:
-            largest_stresses.append(values[-1])
-        elif "relaxation is converged" in lower_line:
+        force = _first_match(profile.relax_force_patterns, line)
+        if force is not None:
+            largest_forces.append(force)
+        stress = _first_match(profile.relax_stress_patterns, line)
+        if stress is not None:
+            largest_stresses.append(stress)
+        if _contains_any(line.lower(), profile.relax_converged_keywords):
             relax_converged = True
 
     available = {
@@ -490,9 +523,20 @@ def _default_params(job_dir: str) -> List[str]:
 def get_result_from_job(
     job_dir: str,
     param_names: Optional[Sequence[str]],
-    version: str,
+    version: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Collect requested results from one ABACUS job directory."""
+    """Collect requested results from one ABACUS job directory.
+
+    Args:
+        job_dir: ABACUS job directory containing ``INPUT`` and ``OUT.*``.
+        param_names: Result names to collect; all result names when ``None``.
+        version: ABACUS version hint such as ``"develop"`` or
+            ``"3.10.1LTS"``.  ``None``/``"auto"`` (the default) selects the
+            version declared by the running log.
+
+    Returns:
+        Mapping of the requested result names to their values.
+    """
     if param_names is not None:
         params = list(param_names)
     else:
@@ -504,9 +548,15 @@ def get_result_from_job(
     results: Dict[str, Any] = {}
 
     if "scf_results" in param_groups:
-        results.update(collect_scf_results(job_dir, param_groups["scf_results"]))
+        results.update(
+            collect_scf_results(job_dir, param_groups["scf_results"], version)
+        )
     if "vdw_results" in param_groups:
-        results.update(collect_vdw_results(job_dir, param_groups["vdw_results"]))
+        results.update(
+            collect_vdw_results(job_dir, param_groups["vdw_results"], version)
+        )
     if "relax_results" in param_groups:
-        results.update(collect_relax_results(job_dir, param_groups["relax_results"]))
+        results.update(
+            collect_relax_results(job_dir, param_groups["relax_results"], version)
+        )
     return results

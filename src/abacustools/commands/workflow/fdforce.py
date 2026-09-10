@@ -10,6 +10,8 @@ from typing import Any
 
 import numpy as np
 
+from abacustools.data.versions import default_version
+
 from .common import (
     clear_generated_jobs,
     kpoint_filename,
@@ -42,7 +44,7 @@ def _register_prepare_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _register_postprocess_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("-j", "--job", type=Path, required=True)
-    parser.add_argument("-v", "--version", default="LTS3.10.1")
+    parser.add_argument("-v", "--version", default=default_version())
     parser.add_argument("-o", "--output", default="fdforce_results.json")
 
 

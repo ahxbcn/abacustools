@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from abacustools.data.versions import default_version
+
 from .common import (
     clear_generated_jobs,
     kpoint_filename,
@@ -56,7 +58,7 @@ def _register_postprocess_arguments(parser: argparse.ArgumentParser, spec: Conve
         help="Directory containing the prepared convergence-test calculations.",
     )
     parser.add_argument(
-        "-v", "--version", default="LTS3.10.1",
+        "-v", "--version", default=default_version(),
         help="ABACUS version used for the calculations.",
     )
     parser.add_argument(

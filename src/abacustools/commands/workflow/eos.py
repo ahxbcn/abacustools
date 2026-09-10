@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from abacustools.data.eos import EosFit, fit_birch_murnaghan
+from abacustools.data.versions import default_version
 
 from .common import (
     clear_generated_jobs,
@@ -80,7 +81,7 @@ def _register_postprocess_arguments(parser: argparse.ArgumentParser) -> None:
         help="Directory containing the prepared EOS calculations.",
     )
     parser.add_argument(
-        "-v", "--version", default="LTS3.10.1",
+        "-v", "--version", default=default_version(),
         help="ABACUS version used for the calculations.",
     )
     parser.add_argument(

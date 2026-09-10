@@ -84,7 +84,7 @@ class DOSData:
         energy = np.asarray(dos["energy"])
         dosdata = np.asarray(dos["data"])
         if efermi is None:
-            efermi = get_result_from_job(abacusjob_dir, ["efermi"], "LTS3.10.1")["efermi"]
+            efermi = get_result_from_job(abacusjob_dir, ["efermi"])["efermi"]
 
         return DOSData(energy=energy, dosdata=dosdata, efermi=efermi)
     
@@ -163,7 +163,7 @@ class PDOSData:
         """
         energy, pdosdata = PDOSData.read_projected_dos(abacus_job)
         if efermi is None:
-            efermi = get_result_from_job(abacus_job, ["efermi"], "LTS3.10.1")["efermi"]
+            efermi = get_result_from_job(abacus_job, ["efermi"])["efermi"]
 
         return PDOSData(energy=energy, pdosdata=pdosdata, efermi=efermi)
 

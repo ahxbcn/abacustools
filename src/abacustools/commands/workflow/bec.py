@@ -13,6 +13,7 @@ from typing import Any, Iterable, Optional
 import numpy as np
 
 from abacustools.core.constant import ANG_TO_BOHR, BOHR_TO_ANG
+from abacustools.data.versions import default_version
 from abacustools.io.abacus import ReadKpt, WriteInput, WriteKpt, kspacing2kpt
 
 from .common import (
@@ -76,7 +77,7 @@ def _register_postprocess_arguments(parser: argparse.ArgumentParser) -> None:
         help="Directory containing the prepared BEC calculations.",
     )
     parser.add_argument(
-        "-v", "--version", default="LTS3.10.1",
+        "-v", "--version", default=default_version(),
         help="ABACUS version used for the calculations.",
     )
     parser.add_argument(

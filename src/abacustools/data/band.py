@@ -305,7 +305,6 @@ class BandData:
         abacusresult = get_result_from_job(
             abacusjob_dir,
             ["efermi"],
-            "LTS3.10.1",
         )
         if efermi is None:
             efermi = abacusresult.get("efermi")

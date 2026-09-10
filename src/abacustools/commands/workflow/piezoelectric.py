@@ -12,6 +12,7 @@ from typing import Any, Iterable, Optional
 import numpy as np
 
 from abacustools.core.constant import ELEMENTARY_CHARGE
+from abacustools.data.versions import default_version
 from abacustools.io.abacus import WriteInput, WriteKpt
 from abacustools.io.stru import AbacusSTRU
 
@@ -90,7 +91,7 @@ def _register_postprocess_arguments(parser: argparse.ArgumentParser) -> None:
         help="Directory containing the prepared piezoelectric calculations.",
     )
     parser.add_argument(
-        "-v", "--version", default="LTS3.10.1",
+        "-v", "--version", default=default_version(),
         help="ABACUS version used for the calculations.",
     )
     parser.add_argument(
@@ -683,7 +684,7 @@ def _summary(tensor: list[list[float]]) -> str:
 def postprocess_piezoelectric(
     jobs: Iterable[str | Path],
     *,
-    version: str = "LTS3.10.1",
+    version: Optional[str] = None,
 ) -> tuple[dict[str, Any], list[list[float]]]:
     """Postprocess one or more prepared piezoelectric jobs.
 

@@ -12,6 +12,7 @@ from abacustools.data.abacus_result import (
     get_result_from_job,
     grouped_params,
 )
+from abacustools.data.versions import default_version
 
 
 RESULT_PARAMETERS = tuple(
@@ -161,7 +162,7 @@ def register_parser(subparsers) -> None:
     parser.add_argument(
         "-v",
         "--version",
-        default="LTS3.10.1",
+        default=default_version(),
         help="Version of ABACUS used in the jobs.",
     )
     parser.set_defaults(handler=run)
