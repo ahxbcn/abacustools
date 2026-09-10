@@ -108,7 +108,6 @@ def _write_relax_plot(path: Path, history: list[dict[str, Any]]) -> None:
         raise RuntimeError("cannot plot geometry optimization history: no relaxation steps found")
     import matplotlib.pyplot as plt
 
-    steps = [item["step"] for item in history]
     figure, axes = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
     energy_steps = [item["step"] for item in history if item["energy"] is not None]
     energies = [item["energy"] for item in history if item["energy"] is not None]

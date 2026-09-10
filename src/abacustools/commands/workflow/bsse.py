@@ -213,7 +213,7 @@ def postprocess(args: argparse.Namespace) -> int:
                 ghost_a_b_energy = corrected_energy
             else:
                 ghost_b_a_energy = corrected_energy
-        print(f"  applied LTS 3.10.1 DFT-D ghost-atom correction")
+        print("  applied LTS 3.10.1 DFT-D ghost-atom correction")
 
     e_orig_interaction = (
         jobs["full system"]["energy"]

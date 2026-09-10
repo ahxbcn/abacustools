@@ -16,7 +16,6 @@ from abacustools.integrations.abacuslite import (
     AbacusLiteUnavailableError,
     calculator_from_job,
     calculator_from_structure,
-    result_to_dict,
     structure_to_atoms,
     write_result,
 )

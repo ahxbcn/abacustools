@@ -46,7 +46,7 @@ class AbacusNAO:
         if self.orbs:
             orb_meshs = set([len(orb['data']) for orb in self.orbs])
             if len(orb_meshs) > 1:
-                raise ValueError(f"Inconsistent mesh size in given orb data")
+                raise ValueError("Inconsistent mesh size in given orb data")
             self.mesh = orb_meshs.pop()
         else:
             self.mesh = 0

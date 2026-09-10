@@ -1,6 +1,7 @@
 from typing import Dict, Any, List
-import os, sys
+import os
 import re
+import sys
 
 def ReadInput(INPUTf: str = None, input_lines: str = None) -> Dict[str, Any]:
     """
@@ -21,26 +22,26 @@ def ReadInput(INPUTf: str = None, input_lines: str = None) -> Dict[str, Any]:
         if len(s_split) > 1:
             try:
                 return [int(x) for x in s_split]
-            except:
+            except (TypeError, ValueError):
                 pass
             try:
                 return [float(x) for x in s_split]
-            except:
+            except (TypeError, ValueError):
                 pass
         else:
             try:
                 return int(s)
-            except:
+            except (TypeError, ValueError):
                 pass
             try:
                 return float(s)
-            except:
+            except (TypeError, ValueError):
                 pass
             return s
 
     input_content = {}
 
-    if INPUTf != None:
+    if INPUTf is not None:
         if not os.path.isfile(INPUTf):
             print(f"Can not find the file {INPUTf}")
             return input_content
@@ -48,7 +49,7 @@ def ReadInput(INPUTf: str = None, input_lines: str = None) -> Dict[str, Any]:
             with open(INPUTf, "r") as f:
                 input_lines = f.readlines()
 
-    if input_lines == None:
+    if input_lines is None:
         print(INPUTf)
         print("Please provide the INPUT file name of INPUT lines")
         return input_content
@@ -208,7 +209,7 @@ def ReadKpt(kptpath):
             if input_param.get("basis_type","").lower() == "lcao" and IsTrue(input_param.get("gamma_only",False)):
                 print("Have set gamma_only in INPUT file, will use 1 1 1 for KPOINT.")
                 return [1,1,1,0,0,0],"gamma"
-            elif kspacing != None and kspacing != 0:
+            elif kspacing is not None and kspacing != 0:
                 
                 if not os.path.isfile(struf):
                     print("  Can not find the STRU file, and try to read KPOINT from KPT file")
@@ -221,7 +222,7 @@ def ReadKpt(kptpath):
                     from abacustools.io.stru import AbacusSTRU
                     
                     stru = AbacusSTRU.read(struf)
-                    if stru == None:
+                    if stru is None:
                         print("  Can not read the STRU file:",struf)
                         sys.exit(1)
                     cell = stru.get_cell(bohr=True)
@@ -239,7 +240,8 @@ def ReadKpt(kptpath):
             print("ERROR: Can not find the INPUT/KPT file in the path:",kptpath)
             sys.exit(1)
     elif os.path.isfile(kptpath):
-        with open(kptpath) as f1: lines = [i for i in f1.readlines() if i.split("#")[0].strip() != ""]
+        with open(kptpath) as f1:
+            lines = [i for i in f1.readlines() if i.split("#")[0].strip() != ""]
         model = lines[2].split()[0].lower()
         if model.startswith("m"):
             model = "mp"

@@ -503,13 +503,22 @@ class BandData:
         if below_fermi:
             # VBM: look for bands below Fermi level, maximize energy
             energy_init = -float("inf")
-            compare = lambda val, best: val > best
-            condition = lambda val: val < -tol
+
+            def compare(val, best):
+                return val > best
+
+            def condition(val):
+                return val < -tol
+
         else:
             # CBM: look for bands above Fermi level, minimize energy
             energy_init = float("inf")
-            compare = lambda val, best: val < best
-            condition = lambda val: val >= -tol
+
+            def compare(val, best):
+                return val < best
+
+            def condition(val):
+                return val >= -tol
 
         edge_energy_global = energy_init
         edge_indices_global = []
@@ -739,7 +748,6 @@ class BandData:
             First column: k-path cumulative distance
             Subsequent columns: Band energies for each band
         """
-        import os
         from pathlib import Path
 
         filepath = Path(filename)

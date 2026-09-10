@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing import List, Tuple, Union, Dict, Any, Optional, Literal, overload
 import copy
 import traceback
@@ -1511,7 +1511,7 @@ class AbacusSTRU:
         """
         Find high symmetry kpoints, recommended k-point path and other information related to the symmetry of the structure.
         """
-        from ase.atom import atomic_numbers, chemical_symbols
+        from ase.atom import atomic_numbers
         import seekpath
 
         # Ensure atom.element is not None
@@ -1677,12 +1677,14 @@ def read_stru_file(stru:str = "STRU"):
     def get_block(keyname):
         block = []
         for i,line in enumerate(lines):
-            if line.strip() == "": continue
+            if line.strip() == "":
+                continue
             elif line.split('#')[0].strip() == keyname:
                 for ij in range(i+1,len(lines)):
                     if lines[ij].strip() == "" or \
                         lines[ij].strip()[0] in ["#"] or\
-                        ("//" in lines[ij] and lines[ij].strip()[:2] in ["//"]): continue
+                        ("//" in lines[ij] and lines[ij].strip()[:2] in ["//"]):
+                        continue
                     elif lines[ij].strip() in ABACUS_STRU_KEY_WORD:
                         return block
                     else:
@@ -1692,7 +1694,8 @@ def read_stru_file(stru:str = "STRU"):
     
     if not os.path.isfile(stru):
         return None
-    with open(stru) as f1: lines = f1.readlines()  
+    with open(stru) as f1:
+        lines = f1.readlines()
     atomic_species = get_block("ATOMIC_SPECIES")
     numerical_orbital = get_block("NUMERICAL_ORBITAL")
     lattice_constant = get_block("LATTICE_CONSTANT")
@@ -1700,8 +1703,8 @@ def read_stru_file(stru:str = "STRU"):
     atom_positions = get_block("ATOMIC_POSITIONS")
     dpks = get_block("NUMERICAL_DESCRIPTOR")
     pawf = get_block("PAW_FILES")
-    lattice_constant = 1.0 if lattice_constant == None else float(lattice_constant[0].split()[0]) 
-    dpks = None if dpks == None else dpks[0].strip()
+    lattice_constant = 1.0 if lattice_constant is None else float(lattice_constant[0].split()[0]) 
+    dpks = None if dpks is None else dpks[0].strip()
     
     #read species
     pp = []
@@ -1717,7 +1720,7 @@ def read_stru_file(stru:str = "STRU"):
         pp = None
         
     #read orbital
-    if numerical_orbital == None:
+    if numerical_orbital is None:
         orb = None
     else:
         orb = []
@@ -1725,7 +1728,7 @@ def read_stru_file(stru:str = "STRU"):
             orb.append(line.split()[0])
     
     # read paw files
-    if pawf == None:
+    if pawf is None:
         paw = None
     else:
         paw = []
@@ -1737,7 +1740,7 @@ def read_stru_file(stru:str = "STRU"):
     try:
         for line in lattice_vector:
             cell.append([float(i) for i in line.split()[:3]])
-    except:
+    except (TypeError, ValueError):
         traceback.print_exc()
         print("WARNING: LATTICE_VECTORS is incorrect !!!!!!")
     #read coordinate and coordinate type and atom number of each type
@@ -1933,11 +1936,11 @@ def write_stru_file(
                         cc += "mag %12.8f %12.8f %12.8f " % tuple(magmom[icoord + j])
                     elif len(magmom[icoord + j]) == 1:
                         cc += "mag %12.8f " % magmom[icoord + j][0]
-                elif magmom[icoord + j] != None:
+                elif magmom[icoord + j] is not None:
                     cc += "mag %12.8f " % magmom[icoord + j]
-            if angle1 and angle1[icoord + j] != None:
+            if angle1 and angle1[icoord + j] is not None:
                     cc += "angle1 %f " % angle1[icoord + j]
-            if angle2 and angle2[icoord + j] != None:
+            if angle2 and angle2[icoord + j] is not None:
                     cc += "angle2 %f " % angle2[icoord + j]
             if constrain and constrain[icoord + j]:
                 if isinstance(constrain[icoord + j],list) and len(constrain[icoord + j]) == 3:
