@@ -9,10 +9,11 @@ them and write the result.
 from __future__ import annotations
 
 import copy
-from typing import Iterable, Optional, Sequence, Tuple, Union
+from typing import Any, Iterable, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+from abacustools.core.constant import ANG_TO_BOHR
 from abacustools.io.stru import AbacusSTRU
 
 
@@ -42,6 +43,31 @@ def _direction_index(direction: Union[str, int]) -> int:
 def _copy(structure: AbacusSTRU) -> AbacusSTRU:
     """Return an independent copy so edits never touch the input."""
     return copy.deepcopy(structure)
+
+
+def _positive_int(value: Any, name: str) -> int:
+    """Validate a positive whole number."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as error:
+        raise StructureEditError(f"{name} must be a whole number, got {value!r}") from error
+    if not np.isfinite(number) or number != int(number):
+        raise StructureEditError(f"{name} must be a whole number, got {value!r}")
+    if int(number) <= 0:
+        raise StructureEditError(f"{name} must be positive, got {value!r}")
+    return int(number)
+
+
+def _finite_float(value: Any, name: str, *, allow_zero: bool = False) -> float:
+    """Validate a finite number."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as error:
+        raise StructureEditError(f"{name} must be a number, got {value!r}") from error
+    if not np.isfinite(number) or (number < 0 if allow_zero else number <= 0):
+        qualifier = "non-negative" if allow_zero else "positive"
+        raise StructureEditError(f"{name} must be a {qualifier} number, got {value!r}")
+    return number
 
 
 def _validate_coordinate_range(
@@ -280,27 +306,133 @@ def make_supercell(structure: AbacusSTRU, repeats: Sequence[int]) -> AbacusSTRU:
     """
     if len(repeats) != 3:
         raise StructureEditError("a supercell needs three repetition factors")
-    factors = []
-    for repeat in repeats:
-        try:
-            number = float(repeat)
-        except (TypeError, ValueError) as error:
-            raise StructureEditError(f"invalid repetition factor: {repeat}") from error
-        if not np.isfinite(number) or number != int(number):
-            raise StructureEditError(
-                f"repetition factors must be whole numbers, got {repeat}"
-            )
-        factor = int(number)
-        if factor <= 0:
-            raise StructureEditError(
-                f"repetition factors must be positive, got {factor}"
-            )
-        factors.append(factor)
+    factors = [_positive_int(repeat, "repetition factor") for repeat in repeats]
     return structure.supercell(factors)
+
+
+def _restore_element_attributes(edited: AbacusSTRU, source: AbacusSTRU) -> None:
+    """Copy per-element attributes that an ASE round trip may have dropped.
+
+    ``ase.build.make_supercell`` rebuilds the atoms and loses ``Atoms.info``,
+    which is where the pseudopotential and orbital file names travel, and ASE
+    fills in zero magnetic moments and velocities that the source never had.
+    """
+    templates: dict[Optional[str], Any] = {}
+    uniform_mag: dict[Optional[str], Optional[Any]] = {}
+    has_moment: dict[Optional[str], bool] = {}
+    for atom in source.atoms:
+        templates.setdefault(atom.element, atom)
+        siblings = [other for other in source.atoms if other.element == atom.element]
+        values = {other.mag for other in siblings}
+        uniform_mag[atom.element] = values.pop() if len(values) == 1 else None
+        has_moment[atom.element] = any(
+            other.mag is not None or other.type_mag for other in siblings
+        )
+    keeps_velocity = any(atom.velocity is not None for atom in source.atoms)
+    for atom in edited.atoms:
+        template = templates.get(atom.element)
+        if template is None:
+            continue
+        atom.pp = atom.pp or template.pp
+        atom.orb = atom.orb or template.orb
+        atom.paw = atom.paw or template.paw
+        if not has_moment.get(atom.element, False):
+            atom.mag = None
+        elif atom.mag is None and uniform_mag.get(atom.element) is not None:
+            atom.mag = uniform_mag[atom.element]
+        if not keeps_velocity:
+            atom.velocity = None
+
+
+def build_slab(
+    structure: AbacusSTRU,
+    *,
+    miller_indices: Sequence[int] = (1, 0, 0),
+    layers: int = 3,
+    surface_supercell: Sequence[int] = (1, 1),
+    vacuum: float = 15.0,
+    vacuum_direction: str = "c",
+) -> AbacusSTRU:
+    """Cut a surface slab out of a bulk structure.
+
+    The surface is created along the third lattice vector and can be moved to
+    another direction afterwards.  Movement constraints are not carried over,
+    because the cut removes atoms: apply them to the slab with :func:`fix_atoms`.
+
+    Args:
+        structure: Bulk structure to cut.
+        miller_indices: Three Miller indices of the surface, such as ``(1, 0, 0)``.
+        layers: Number of repeating units along the surface normal.
+        surface_supercell: Repetitions along the two in-plane directions.
+        vacuum: Empty space between the slab and its periodic image, in Angstrom.
+        vacuum_direction: Lattice direction that receives the vacuum, ``a``,
+            ``b`` or ``c``.
+
+    Returns:
+        AbacusSTRU: The slab, with pseudopotential, orbital and magnetic data
+        restored per element.
+
+    Raises:
+        StructureEditError: If a parameter is invalid or the structure cannot be
+            passed through ASE.
+    """
+    if len(miller_indices) != 3:
+        raise StructureEditError("miller_indices needs three integers")
+    miller = tuple(int(value) for value in miller_indices)
+    if all(value == 0 for value in miller):
+        raise StructureEditError("miller_indices must not all be zero")
+    layer_count = _positive_int(layers, "layers")
+    if len(surface_supercell) != 2:
+        raise StructureEditError("surface_supercell needs two factors")
+    repeats = tuple(
+        _positive_int(value, "surface supercell factor") for value in surface_supercell
+    )
+    thickness = _finite_float(vacuum, "vacuum", allow_zero=True)
+    direction = str(vacuum_direction).strip().lower()
+    if direction not in {"a", "b", "c"}:
+        raise StructureEditError(
+            f"unknown vacuum direction: {vacuum_direction}; use a, b or c"
+        )
+    empty_labels = sorted(
+        {atom.label for atom in structure.atoms if atom.label and "empty" in atom.label}
+    )
+    if empty_labels:
+        raise StructureEditError(
+            "the structure contains empty atoms (" + ", ".join(empty_labels) + "); "
+            "ASE cannot represent them, so cut the slab from a structure without them"
+        )
+
+    from ase.build import make_supercell as ase_make_supercell
+    from ase.build import surface as ase_surface
+
+    atoms = structure.to("ase")
+    slab = ase_surface(
+        atoms, miller, layer_count, vacuum=thickness / 2, periodic=True
+    )
+    if repeats != (1, 1):
+        slab = ase_make_supercell(
+            slab, [[repeats[0], 0, 0], [0, repeats[1], 0], [0, 0, 1]]
+        )
+    # ase.build.surface labels the atoms with layer tags, which ABACUS has no
+    # field for; dropping them keeps the conversion warning meaningful.
+    slab.arrays.pop("tags", None)
+
+    metadata = dict(structure.metadata)
+    metadata["atom_type"] = "cartesian"
+    metadata.setdefault("lattice_constant", ANG_TO_BOHR)
+    edited = AbacusSTRU.from_ase(slab, metadata=metadata)
+    _restore_element_attributes(edited, structure)
+    edited.sort()
+    if direction == "a":
+        edited.permute_lat_vec(mode="cab", rotate_cart_coord=True)
+    elif direction == "b":
+        edited.permute_lat_vec(mode="bca", rotate_cart_coord=True)
+    return edited
 
 
 __all__ = [
     "StructureEditError",
+    "build_slab",
     "fix_atoms",
     "make_supercell",
     "select_atoms",

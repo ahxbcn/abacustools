@@ -10,6 +10,7 @@ import pytest
 
 from abacustools.data.structure import (
     StructureEditError,
+    build_slab,
     fix_atoms,
     make_supercell,
     select_atoms,
@@ -184,6 +185,82 @@ def test_fix_atoms_rejects_an_empty_selection() -> None:
         fix_atoms(_structure(), indices=[], elements=None)
 
 
+def test_build_slab_cuts_a_surface_with_vacuum_along_c() -> None:
+    structure = _structure()
+
+    slab = build_slab(structure, miller_indices=(1, 0, 0), layers=2, vacuum=15.0)
+
+    lengths = np.linalg.norm(np.asarray(slab.cell, dtype=float), axis=1)
+    assert slab.natoms > 0
+    assert lengths[2] >= 15.0
+    assert lengths[2] > lengths[0]
+    # The pseudopotential data survives the ASE round trip.
+    assert set(slab.pps) == {"Si.upf", "O.upf"}
+    assert set(slab.orbs) == {"Si.orb", "O.orb"}
+    # Only the element that had a moment keeps one; ASE's zero fill is removed.
+    assert {atom.mag for atom in slab.atoms} == {1.5, None}
+    assert structure.natoms == 3
+
+
+def test_build_slab_moves_the_vacuum_to_the_requested_direction() -> None:
+    structure = _structure()
+
+    slab = build_slab(
+        structure,
+        miller_indices=(1, 0, 0),
+        layers=1,
+        vacuum=12.0,
+        vacuum_direction="a",
+    )
+
+    lengths = np.linalg.norm(np.asarray(slab.cell, dtype=float), axis=1)
+    assert lengths[0] >= 12.0
+    assert lengths[0] > lengths[1]
+
+
+def test_build_slab_applies_an_in_plane_supercell() -> None:
+    structure = _structure()
+
+    plain = build_slab(structure, layers=1, vacuum=5.0)
+    wider = build_slab(structure, layers=1, vacuum=5.0, surface_supercell=(2, 1))
+
+    assert wider.natoms == 2 * plain.natoms
+    assert set(wider.pps) == {"Si.upf", "O.upf"}
+
+
+def test_build_slab_adds_atoms_with_more_layers() -> None:
+    structure = _structure()
+
+    one = build_slab(structure, layers=1, vacuum=5.0)
+    three = build_slab(structure, layers=3, vacuum=5.0)
+
+    assert three.natoms > one.natoms
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"miller_indices": (0, 0, 0)}, "must not all be zero"),
+        ({"miller_indices": (1, 0)}, "three integers"),
+        ({"layers": 0}, "must be positive"),
+        ({"vacuum": -1.0}, "non-negative"),
+        ({"vacuum_direction": "d"}, "unknown vacuum direction"),
+        ({"surface_supercell": (1,)}, "two factors"),
+    ],
+)
+def test_build_slab_rejects_bad_parameters(kwargs, message: str) -> None:
+    with pytest.raises(StructureEditError, match=message):
+        build_slab(_structure(), **kwargs)
+
+
+def test_build_slab_rejects_empty_atoms() -> None:
+    structure = _structure()
+    structure.atoms[0].label = "Si_empty"
+
+    with pytest.raises(StructureEditError, match="empty atoms"):
+        build_slab(structure)
+
+
 def _write_structure(tmp_path: Path) -> Path:
     source = tmp_path / "source.STRU"
     assert _structure().write(str(source))
@@ -232,3 +309,21 @@ def test_editstru_vacuum_reports_json(tmp_path: Path, capsys) -> None:
     assert payload["action"] == "vacuum"
     assert payload["atoms_after"] == 3
     assert payload["cell_lengths"][2] == pytest.approx(14.0)
+
+
+def test_editstru_slab_writes_a_slab(tmp_path: Path) -> None:
+    source = _write_structure(tmp_path)
+    output = tmp_path / "slab.STRU"
+
+    assert main([
+        "file", "editstru", "slab", str(source),
+        "-o", str(output), "--miller", "1", "0", "0",
+        "--layers", "2", "--vacuum", "10", "--vacuum-direction", "c",
+    ]) == 0
+
+    slab = AbacusSTRU.read(str(output))
+    assert slab is not None
+    assert slab.natoms > 0
+    assert set(slab.pps) == {"Si.upf", "O.upf"}
+    lengths = np.linalg.norm(np.asarray(slab.cell, dtype=float), axis=1)
+    assert lengths[2] >= 10.0

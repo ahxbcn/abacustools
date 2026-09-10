@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 
 from abacustools.data.structure import (
+    build_slab,
     fix_atoms,
     make_supercell,
     select_atoms,
@@ -45,6 +46,17 @@ def _positive_float(value: str) -> float:
         raise argparse.ArgumentTypeError(f"not a number: {value}") from error
     if number <= 0:
         raise argparse.ArgumentTypeError(f"must be positive: {value}")
+    return number
+
+
+def _non_negative_float(value: str) -> float:
+    """Return a non-negative float or raise a parser error."""
+    try:
+        number = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(f"not a number: {value}") from error
+    if number < 0:
+        raise argparse.ArgumentTypeError(f"must not be negative: {value}")
     return number
 
 
@@ -206,6 +218,51 @@ def _register_fix(subparsers) -> None:
     )
 
 
+def _register_slab(subparsers) -> None:
+    """Register ``file editstru slab``."""
+    parser = subparsers.add_parser(
+        "slab",
+        help="Cut a surface slab out of a bulk structure.",
+    )
+    _add_common_arguments(parser, "slab")
+    parser.add_argument(
+        "--miller",
+        type=int,
+        nargs=3,
+        default=(1, 0, 0),
+        metavar=("H", "K", "L"),
+        help="Miller indices of the surface, default: 1 0 0.",
+    )
+    parser.add_argument(
+        "--layers",
+        type=_positive_int,
+        default=3,
+        metavar="N",
+        help="Repeating units along the surface normal, default: 3.",
+    )
+    parser.add_argument(
+        "--surface-supercell",
+        type=_positive_int,
+        nargs=2,
+        default=(1, 1),
+        metavar=("A", "B"),
+        help="Repetitions along the two in-plane directions, default: 1 1.",
+    )
+    parser.add_argument(
+        "--vacuum",
+        type=_non_negative_float,
+        default=15.0,
+        metavar="ANGSTROM",
+        help="Empty space between the slab and its periodic image, default: 15.",
+    )
+    parser.add_argument(
+        "--vacuum-direction",
+        default="c",
+        choices=("a", "b", "c"),
+        help="Lattice direction that receives the vacuum, default: c.",
+    )
+
+
 def register_parser(subparsers) -> None:
     """Register the ``file editstru`` parser and its actions."""
     parser = subparsers.add_parser(
@@ -220,6 +277,7 @@ def register_parser(subparsers) -> None:
     )
     _register_supercell(actions)
     _register_vacuum(actions)
+    _register_slab(actions)
     _register_select(actions)
     _register_fix(actions)
 
@@ -246,6 +304,15 @@ def _edited_structure(
     if args.action == "vacuum":
         return with_vacuum(
             structure, args.thickness, direction=args.direction, center=args.center
+        )
+    if args.action == "slab":
+        return build_slab(
+            structure,
+            miller_indices=args.miller,
+            layers=args.layers,
+            surface_supercell=args.surface_supercell,
+            vacuum=args.vacuum,
+            vacuum_direction=args.vacuum_direction,
         )
     if args.action == "select":
         return select_atoms(structure, remove=args.remove, **_selection(args))

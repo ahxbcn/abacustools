@@ -75,6 +75,7 @@ orbital file names, movement constraints and magnetic moments:
 ```text
 abacustools file editstru supercell STRU -o SUPER -n 2 2 1
 abacustools file editstru vacuum    STRU -o SLAB  -t 15 --direction c --center
+abacustools file editstru slab      STRU -o SLAB  --miller 1 0 0 --layers 3 --vacuum 15
 abacustools file editstru select    STRU -o SUB   --elements Si O
 abacustools file editstru select    STRU -o FREE  --indices 1 3 --remove
 abacustools file editstru fix       STRU -o FIXED --coords 0 0.2 --direction c --direct
@@ -91,6 +92,17 @@ Selections are additive filters (an atom must match every filter), while
 `--indices` are one-based, as in the other abacustools commands. `--coords`
 uses Cartesian coordinates unless `--direct` requests fractional ones, and
 `--direction` accepts `a`/`b`/`c` or `x`/`y`/`z`.
+
+`slab` cuts a surface with `ase.build.surface`: `--miller` selects the surface,
+`--layers` counts repeating units along the surface normal, `--supercell` sets
+the in-plane repetitions and `--vacuum` the empty space between the slab and its
+periodic image in Angstrom. The normal is placed along `c` and can be moved to
+`a` or `b` with `--vacuum-direction`. Pseudopotential, orbital and magnetic data
+are restored per element afterwards, because rebuilding the in-plane supercell
+through ASE drops that mapping; the zero moments and velocities ASE fills in for
+structures that had none are removed again. Movement constraints are not carried
+over by the cut, so apply them to the slab with `fix`. Structures with empty
+atoms are rejected, because ASE cannot represent those labels.
 
 Conversions issue a `StructureConversionWarning` when ABACUS-specific data
 such as pseudopotential/orbital filenames, spin settings, velocities,
