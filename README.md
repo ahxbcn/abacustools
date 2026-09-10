@@ -165,6 +165,18 @@ The postprocessing stage reports total energy per atom, convergence deltas,
 incomplete tasks, a recommended first value within the tolerance, a JSON
 report, and a convergence plot. `cutoff` is an alias for `ecutwfc`.
 
+The equation of state can be fitted from volume-scaled calculations:
+
+```text
+abacustools workflow eos prepare -j JOB --start 0.90 --end 1.10 --step 0.025
+abacustools workflow eos postprocess -j JOB
+```
+
+The prepare stage generates one fixed-volume SCF (or ionic-relaxation) job per
+volume scale; the postprocess stage reads their energies and fits a third-order
+Birch-Murnaghan equation of state, writing the equilibrium volume, bulk
+modulus, and its pressure derivative to `eos_results.json` and `eos.png`.
+
 Use `abacustools postprocess result --help` to see all supported result
 parameters. If `--param` is omitted, the command selects the results relevant
 to the job's calculation type and displays scalar results as compact,
