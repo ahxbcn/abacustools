@@ -265,11 +265,20 @@ def _move_text(atom: dict[str, Any]) -> str:
     return " ".join("1" if flag else "0" for flag in move)
 
 
-def _print_atom_table(atoms: list[dict[str, Any]]) -> None:
-    """Print the per-atom table with the columns the structure actually has."""
-    columns = [
-        "index", "label", "element", "fractional", "cartesian", "wyckoff",
+def _print_table(columns: list[str], rows: list[list[str]]) -> None:
+    """Print a right-aligned table whose columns fit their content."""
+    widths = [
+        max([len(header)] + [len(row[index]) for row in rows])
+        for index, header in enumerate(columns)
     ]
+    print("  " + " ".join(header.rjust(width) for header, width in zip(columns, widths)))
+    for row in rows:
+        print("  " + " ".join(value.rjust(width) for value, width in zip(row, widths)))
+
+
+def _atom_table(atoms: list[dict[str, Any]]) -> tuple[list[str], list[list[str]]]:
+    """Build the per-atom table from the columns the structure actually has."""
+    columns = ["index", "label", "element", "fractional", "cartesian", "wyckoff"]
     optional = [
         name
         for name, present in (
@@ -305,13 +314,23 @@ def _print_atom_table(atoms: list[dict[str, Any]]) -> None:
             values.append(_display_value(atom["velocity"]))
         rows.append(values)
 
-    widths = [
-        max(len(header), *(len(row[index]) for row in rows))
-        for index, header in enumerate(columns)
+    return columns, rows
+
+
+def _inequivalent_table(positions: list[dict[str, Any]]) -> tuple[list[str], list[list[str]]]:
+    """Build the table of symmetry-inequivalent positions."""
+    columns = ["representative", "element", "wyckoff", "fractional", "equivalent atoms"]
+    rows = [
+        [
+            str(position["representative_index"]),
+            str(position["element"]),
+            str(position["wyckoff"] or "-"),
+            _display_value(position["fractional"]),
+            _display_value(position["equivalent_indices"]),
+        ]
+        for position in positions
     ]
-    print("  " + " ".join(header.rjust(width) for header, width in zip(columns, widths)))
-    for row in rows:
-        print("  " + " ".join(value.rjust(width) for value, width in zip(row, widths)))
+    return columns, rows
 
 
 def _print_report(result: dict[str, Any]) -> None:
@@ -337,14 +356,7 @@ def _print_report(result: dict[str, Any]) -> None:
     else:
         print(f"symmetry: unavailable ({symmetry.get('error', 'unknown reason')})")
     print("symmetry-inequivalent positions:")
-    print("  representative equivalent atoms element wyckoff fractional")
-    for position in result["inequivalent_positions"]:
-        print(
-            f"  {position['representative_index']:>13} "
-            f"{_display_value(position['equivalent_indices']):>17} "
-            f"{position['element']:>7} {position['wyckoff'] or '-':>7} "
-            f"{_display_value(position['fractional']):>28}"
-        )
+    _print_table(*_inequivalent_table(result["inequivalent_positions"]))
     print("resources:")
     print("  label pseudopotential orbital")
     for label in result["label_counts"]:
@@ -354,7 +366,7 @@ def _print_report(result: dict[str, Any]) -> None:
             f"{_display_value(result['resources']['orbitals'].get(label)):>18}"
         )
     print("atoms:")
-    _print_atom_table(result["atoms"])
+    _print_table(*_atom_table(result["atoms"]))
 
 
 def run(args: argparse.Namespace) -> int:

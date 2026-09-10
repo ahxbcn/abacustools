@@ -128,6 +128,33 @@ class TestStructureInfo(unittest.TestCase):
         self.assertIn("0 0 0", report)
         self.assertIn("0.1 0.2 0.3", report)
 
+    def test_inequivalent_table_ends_with_equivalent_atoms(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "STRU"
+            path.write_text(STRU, encoding="utf-8")
+            output = StringIO()
+            with redirect_stdout(output):
+                run(Namespace(
+                    filename=path,
+                    input_format=None,
+                    cell=None,
+                    symprec=1e-5,
+                    angle_tolerance=5.0,
+                    json=False,
+                ))
+            report = output.getvalue()
+
+        header = next(line for line in report.splitlines() if "representative" in line)
+        self.assertEqual(
+            header.split(),
+            ["representative", "element", "wyckoff", "fractional", "equivalent", "atoms"],
+        )
+        row = next(
+            line for line in report.splitlines()
+            if line.strip().startswith("1 ") and "Si" in line
+        )
+        self.assertEqual(row.split()[-2:], ["1", "2"])
+
     def test_json_cli_output_and_xyz_without_cell(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "molecule.xyz"
