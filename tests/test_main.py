@@ -38,13 +38,31 @@ class TestMain(unittest.TestCase):
 
         self.assertEqual(error.exception.code, 2)
 
-    def test_no_command_prints_help(self) -> None:
-        with patch("sys.stdout") as stdout:
+    def test_no_command_prints_help_when_not_interactive(self) -> None:
+        with patch("sys.stdout") as stdout, patch(
+            "abacustools.main._is_interactive", return_value=False
+        ):
             status = main([])
 
         self.assertEqual(status, 0)
         output = "".join(call.args[0] for call in stdout.write.call_args_list)
         self.assertIn("version", output)
+
+    def test_no_command_launches_menu_when_interactive(self) -> None:
+        with patch("abacustools.main._is_interactive", return_value=True), patch(
+            "abacustools.main.run_menu", return_value=0
+        ) as run_menu:
+            status = main([])
+
+        self.assertEqual(status, 0)
+        run_menu.assert_called_once()
+
+    def test_menu_subcommand_launches_menu(self) -> None:
+        with patch("abacustools.main.run_menu", return_value=0) as run_menu:
+            status = main(["menu"])
+
+        self.assertEqual(status, 0)
+        run_menu.assert_called_once()
 
 
 class TestPostprocessAliases(unittest.TestCase):

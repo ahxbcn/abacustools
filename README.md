@@ -22,6 +22,21 @@ abacustools post bader -j JOB
 abacustools pp bader -j JOB
 ```
 
+## Interactive menu
+
+Running `abacustools` with no arguments in a terminal opens an interactive,
+Multiwfn/VASPKIT-style menu. The same menu is available explicitly:
+
+```text
+abacustools menu
+```
+
+The menu mirrors the command tree: navigate with an entry number (or name /
+alias), press `b` to go back and `q` to quit. Selecting a command prompts for
+its arguments, prints the equivalent non-interactive command, runs it, and
+waits for ENTER before returning. When input is not a terminal (for example in
+a pipeline or CI), `abacustools` prints the help instead.
+
 `file stru` converts between ABACUS `STRU` and common structure formats
 supported by ASE, including POSCAR/VASP, CIF, XYZ, EXTXYZ, and XSF. The input
 and output formats are inferred from filenames, or can be set explicitly with

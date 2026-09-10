@@ -30,6 +30,7 @@ works without `PYTHONPATH`. If you cannot install, prefix commands with
 
 ```bash
 abacustools --help                        # CLI help (also: <family> --help)
+abacustools menu                          # interactive multi-level menu
 python -m pytest tests                    # full test suite
 python -m pytest tests/test_bader.py -q   # one module
 ruff check src tests                      # lint (ruff defaults; no config file)
@@ -48,6 +49,7 @@ src/abacustools/
   io/                # read/write file formats (STRU, INPUT, KPT, pseudo, NAO)
   core/              # config, constants, job/process handling, submission
   integrations/      # adapters to external tools (e.g. abacuslite)
+  menu/              # interactive multi-level menu (argparse reflection)
 tests/               # pytest suite (test_*.py)
 ```
 
@@ -66,6 +68,10 @@ rendering only.
 3. Register the module in `commands/<family>/__init__.py`.
 4. Add `tests/test_<name>.py`.
 5. Document the command in `README.md`.
+
+New commands appear in the interactive menu automatically: `abacustools/menu/`
+reflects the argparse tree, so keep argument definitions declarative and avoid
+menu-specific branching in command modules.
 
 ## Code style
 

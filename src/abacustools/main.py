@@ -15,12 +15,20 @@ from abacustools.commands.job import register_parser as register_job_parser
 from abacustools.commands.workflow import (
     register_parser as register_workflow_parser,
 )
+from abacustools.menu.runner import run_menu
 
 
 def _version_command(args: argparse.Namespace) -> int:
     """Print the installed abacustools version."""
     print(f"{args._prog} {__version__}")
     return 0
+
+
+def _is_interactive() -> bool:
+    """Return True when both stdin and stdout are attached to a terminal."""
+    stdin = getattr(sys.stdin, "isatty", None)
+    stdout = getattr(sys.stdout, "isatty", None)
+    return bool(stdin and stdin()) and bool(stdout and stdout())
 
 
 def _create_parser(prog: str) -> argparse.ArgumentParser:
@@ -47,6 +55,18 @@ def _create_parser(prog: str) -> argparse.ArgumentParser:
         help="Show the installed abacustools version.",
     )
     version_parser.set_defaults(handler=_version_command)
+
+    menu_parser = subparsers.add_parser(
+        "menu",
+        help="Launch the interactive menu.",
+    )
+    menu_parser.set_defaults(
+        handler=lambda namespace: run_menu(
+            parser, prog=getattr(namespace, "_prog", "abacustools")
+        ),
+        _menu_exclude=True,
+    )
+
     register_file_parser(subparsers)
     register_job_parser(subparsers)
     register_postprocess_parser(subparsers)
@@ -66,6 +86,8 @@ def main(
     namespace = parser.parse_args(arguments)
 
     if namespace.command is None:
+        if _is_interactive():
+            return run_menu(parser, prog=prog)
         parser.print_help()
         return 0
 
