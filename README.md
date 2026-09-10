@@ -81,7 +81,8 @@ abacustools file editstru select    STRU -o SUB   --elements Si O
 abacustools file editstru select    STRU -o FREE  --indices 1 3 --remove
 abacustools file editstru fix       STRU -o FIXED --coords 0 0.2 --direction c --direct
 abacustools file editstru fix       STRU -o FIXED --elements O --move x y --free-others
-abacustools file editstru coords    STRU -o DIRECT --direct
+abacustools file editstru direct    STRU -o DIRECT
+abacustools file editstru cartesian STRU -o CART
 ```
 
 `supercell` replicates along the lattice vectors. `vacuum` extends one lattice
@@ -95,12 +96,12 @@ Selections are additive filters (an atom must match every filter), while
 uses Cartesian coordinates unless `--direct` requests fractional ones, and
 `--direction` accepts `a`/`b`/`c` or `x`/`y`/`z`.
 
-`coords` rewrites the same structure with the positions in the other
-representation: `--direct` writes an `ATOMIC_POSITIONS Direct` block and
-`--cartesian` the Cartesian one. Atoms, cell and every other attribute stay
-untouched, so converting back and forth returns the original structure. Unlike
-`file stru --direct`, the action refuses to replace an existing output unless
-`--override` is given.
+`direct` and `cartesian` rewrite the same structure with an
+`ATOMIC_POSITIONS Direct` or `ATOMIC_POSITIONS Cartesian` block. Atoms, cell and
+every other attribute stay untouched, so converting forth and back returns the
+original structure, and asking for the representation the file already uses
+changes nothing. Unlike `file stru --direct`, these actions refuse to replace an
+existing output unless `--override` is given.
 
 `slab` cuts a surface with `ase.build.surface`: `--miller` selects the surface,
 `--layers` counts repeating units along the surface normal, `--supercell` sets

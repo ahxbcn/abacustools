@@ -288,28 +288,14 @@ def _register_slab(subparsers) -> None:
     )
 
 
-def _register_coords(subparsers) -> None:
-    """Register ``file editstru coords``."""
-    parser = subparsers.add_parser(
-        "coords",
-        help="Write the atomic positions in the other representation.",
-    )
-    _add_common_arguments(parser, "coords")
-    mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument(
-        "--direct",
-        dest="coordinate_mode",
-        action="store_const",
-        const="direct",
-        help="Write fractional (direct) coordinates.",
-    )
-    mode.add_argument(
-        "--cartesian",
-        dest="coordinate_mode",
-        action="store_const",
-        const="cartesian",
-        help="Write Cartesian coordinates.",
-    )
+def _register_coordinate_actions(subparsers) -> None:
+    """Register ``file editstru direct`` and ``file editstru cartesian``."""
+    for name, help_text in (
+        ("direct", "Write the atomic positions as fractional (direct) coordinates."),
+        ("cartesian", "Write the atomic positions as Cartesian coordinates."),
+    ):
+        parser = subparsers.add_parser(name, help=help_text)
+        _add_common_arguments(parser, name)
 
 
 def register_parser(subparsers) -> None:
@@ -329,7 +315,7 @@ def register_parser(subparsers) -> None:
     _register_slab(actions)
     _register_select(actions)
     _register_fix(actions)
-    _register_coords(actions)
+    _register_coordinate_actions(actions)
 
 
 def _formula(structure: AbacusSTRU) -> str:
@@ -372,8 +358,8 @@ def _edited_structure(
         return fix_atoms(
             structure, move=move, free_others=args.free_others, **_selection(args)
         )
-    if args.action == "coords":
-        return set_coordinate_mode(structure, args.coordinate_mode)
+    if args.action in {"direct", "cartesian"}:
+        return set_coordinate_mode(structure, args.action)
     raise RuntimeError(f"unknown editstru action: {args.action}")
 
 
@@ -405,16 +391,16 @@ def _run_action(args: argparse.Namespace) -> int:
             1 for atom in edited.atoms if tuple(atom.move or ()) == (False, False, False)
         ),
     }
-    if args.action == "coords":
-        payload["coordinate_mode"] = args.coordinate_mode
+    if args.action in {"direct", "cartesian"}:
+        payload["coordinates"] = args.action
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
     print(f"  {args.action}: {args.filename} -> {output}")
     print(f"  atoms: {payload['atoms_before']} -> {payload['atoms_after']}")
     print(f"  formula: {payload['formula']}")
-    if args.action == "coords":
-        print(f"  coordinate mode: {args.coordinate_mode}")
+    if args.action in {"direct", "cartesian"}:
+        print(f"  coordinates: {args.action}")
     if payload["fixed_atoms"]:
         print(f"  fixed atoms: {payload['fixed_atoms']} of {payload['atoms_after']}")
     print(

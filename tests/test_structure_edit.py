@@ -411,14 +411,14 @@ def test_editstru_slab_fix_flag_sets_constraints(tmp_path: Path) -> None:
     assert set(free_slab.moves) == {(True, True, True)}
 
 
-def test_editstru_coords_writes_the_requested_representation(tmp_path: Path) -> None:
+def test_editstru_coordinate_actions_write_each_representation(tmp_path: Path) -> None:
     source = _write_structure(tmp_path)
     original = AbacusSTRU.read(str(source))
     assert original is not None
 
     direct = tmp_path / "direct.STRU"
     assert main([
-        "file", "editstru", "coords", str(source), "-o", str(direct), "--direct",
+        "file", "editstru", "direct", str(source), "-o", str(direct),
     ]) == 0
     assert "ATOMIC_POSITIONS\nDirect" in direct.read_text(encoding="utf-8")
     converted = AbacusSTRU.read(str(direct))
@@ -431,7 +431,7 @@ def test_editstru_coords_writes_the_requested_representation(tmp_path: Path) -> 
 
     cartesian = tmp_path / "cartesian.STRU"
     assert main([
-        "file", "editstru", "coords", str(direct), "-o", str(cartesian), "--cartesian",
+        "file", "editstru", "cartesian", str(direct), "-o", str(cartesian),
     ]) == 0
     assert "ATOMIC_POSITIONS\nCartesian" in cartesian.read_text(encoding="utf-8")
     back = AbacusSTRU.read(str(cartesian))
@@ -444,11 +444,20 @@ def test_editstru_coords_writes_the_requested_representation(tmp_path: Path) -> 
     assert back.pps == original.pps
 
 
-def test_editstru_coords_requires_a_mode(tmp_path: Path) -> None:
+def test_editstru_coordinate_actions_are_idempotent(tmp_path: Path) -> None:
     source = _write_structure(tmp_path)
+    output = tmp_path / "cartesian.STRU"
 
-    with pytest.raises(SystemExit):
-        main([
-            "file", "editstru", "coords", str(source),
-            "-o", str(tmp_path / "out.STRU"),
-        ])
+    # Asking for the representation the structure already uses changes nothing.
+    assert main([
+        "file", "editstru", "cartesian", str(source), "-o", str(output),
+    ]) == 0
+
+    original = AbacusSTRU.read(str(source))
+    converted = AbacusSTRU.read(str(output))
+    assert original is not None and converted is not None
+    np.testing.assert_allclose(
+        np.asarray(converted.coords, dtype=float),
+        np.asarray(original.coords, dtype=float),
+        atol=1e-8,
+    )
