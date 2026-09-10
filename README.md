@@ -324,6 +324,35 @@ supercell is selected so each lattice vector is at least 10 Angstrom long.
 Custom paths can be passed as JSON with `--qpath` and
 `--high-symm-points`.
 
+Lattice thermal conductivities can be calculated with phono3py using third-order
+force constants. The prepare stage generates the displaced supercells below
+`fc3-*`, plus an optional independent `fc2-*` set, and writes the exact
+phono3py displacement dataset to `phono3py_disp.yaml`; the postprocess stage
+reads the forces, fits `fc2`/`fc3` and solves the phonon Boltzmann transport
+equation. phono3py is required for this workflow and is imported only when it
+runs:
+
+```text
+abacustools workflow thermal-conductivity prepare -j JOB
+abacustools workflow thermal-conductivity prepare -j JOB \
+  --supercell-fc3 2 2 2 --supercell-fc2 4 4 4 \
+  --displacement-stepsize-fc3 0.03 --displacement-stepsize-fc2 0.01
+abacustools workflow thermal-conductivity postprocess -j JOB --mesh 15 15 15
+abacustools workflow thermal-conductivity postprocess -j JOB --lbte \
+  --tmin 200 --tmax 400 --tstep 50
+```
+
+`kappa` is an alias of `thermal-conductivity`. Without `--supercell-fc3` the
+supercell is selected so each lattice vector is at least `--min-supercell-length`
+(10 Angstrom) long; without `--supercell-fc2`, `fc2` reuses the `fc3` supercell.
+An explicit gamma/MP `KPT` mesh is divided by the supercell repetitions so the
+k-point density stays roughly constant, while `kspacing` and `gamma_only` input
+are used unchanged. The postprocess stage writes the conductivity tensor per
+temperature, the RTA reference values when `--lbte` is used, a
+`thermal_conductivity.png` plot, and the phono3py `kappa-*.hdf5` below `JOB`,
+and it fails with an explicit error when a force calculation is missing or did
+not converge.
+
 Molecular vibration frequencies can be calculated with selected atoms using
 central finite differences. The workflow writes equilibrium and displaced
 force calculations below `vib/`:

@@ -11,6 +11,7 @@ from . import fdstress as fdstress_workflow
 from . import kspacing as kspacing_workflow
 from . import phonon as phonon_workflow
 from . import piezoelectric as piezoelectric_workflow
+from . import thermal_conductivity as thermal_conductivity_workflow
 from . import vacancy as vacancy_workflow
 from . import vibration as vibration_workflow
 from . import workfunc as workfunc_workflow
@@ -39,6 +40,7 @@ def register_parser(subparsers) -> None:
     fdstress_workflow.register_parser(workflow_subparsers)
     phonon_workflow.register_parser(workflow_subparsers)
     piezoelectric_workflow.register_parser(workflow_subparsers)
+    thermal_conductivity_workflow.register_parser(workflow_subparsers)
     vacancy_workflow.register_parser(workflow_subparsers)
     vibration_workflow.register_parser(workflow_subparsers)
     workfunc_workflow.register_parser(workflow_subparsers)
