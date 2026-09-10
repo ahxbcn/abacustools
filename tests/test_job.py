@@ -142,6 +142,27 @@ def _two_element_library(tmp_path: Path) -> tuple[Path, Path]:
     return source, library
 
 
+def _upf_text(relativistic: str = "scalar", has_so: str = "F") -> str:
+    """Return a minimal UPF 2 file with the requested relativistic metadata."""
+    return (
+        '<UPF version="2.0.1">\n'
+        f'  <PP_HEADER element="H" z_valence="1.0" l_max="0" mesh_size="3" '
+        f'relativistic="{relativistic}" has_so="{has_so}"/>\n'
+        "  <PP_MESH>\n"
+        '    <PP_R type="real" size="3">0.0 1.0 2.0</PP_R>\n'
+        '    <PP_RAB type="real" size="3">1.0 1.0 1.0</PP_RAB>\n'
+        "  </PP_MESH>\n"
+        '  <PP_LOCAL size="3">-4.0 -2.0 -1.0</PP_LOCAL>\n'
+        "  <PP_NONLOCAL>\n"
+        '    <PP_BETA.1 index="1" angular_momentum="0" cutoff_radius_index="2" '
+        'cutoff_radius="1.5" size="3">1.0 2.0 3.0</PP_BETA.1>\n'
+        '    <PP_DIJ size="1">1.0</PP_DIJ>\n'
+        "  </PP_NONLOCAL>\n"
+        '  <PP_RHOATOM size="3">0.1 0.2 0.3</PP_RHOATOM>\n'
+        "</UPF>\n"
+    )
+
+
 def test_prepare_writes_complete_lcao_job(tmp_path: Path) -> None:
     source, library = _source_and_library(tmp_path)
     jobs = InputPreparer(
@@ -828,6 +849,71 @@ def test_prepare_keeps_quiet_for_the_configured_variant(
         ).run()[0].path
 
     assert (job / "H_gga_7au_100Ry_2s2p1d.orb").is_file()
+
+
+def _pseudopotential_library(
+    tmp_path: Path, relativistic: str = "scalar", has_so: str = "F"
+) -> tuple[Path, Path]:
+    """Write a one-element job whose pseudopotential has the given metadata."""
+    source, library = _source_and_library(tmp_path)
+    (library / "H.upf").write_text(
+        _upf_text(relativistic, has_so), encoding="utf-8"
+    )
+    return source, library
+
+
+def test_prepare_warns_for_scalar_pseudopotentials_with_nspin4(tmp_path: Path) -> None:
+    source, library = _pseudopotential_library(tmp_path)
+
+    with pytest.warns(UserWarning, match="nspin=4 requires pseudopotentials"):
+        job = InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="pw",
+            pp_path=library,
+            nspin=4,
+            kpt=[1, 1, 1],
+        ).run()[0].path
+
+    # The warning must not stop the job, which is still a noncollinear one.
+    inputs = ReadInput(job / "INPUT")
+    assert inputs["nspin"] == 4
+    assert inputs["noncolin"] == 1
+
+
+def test_prepare_accepts_fully_relativistic_pseudopotentials(tmp_path: Path) -> None:
+    source, library = _pseudopotential_library(tmp_path, relativistic="full", has_so="T")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        job = InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="pw",
+            pp_path=library,
+            nspin=4,
+            kpt=[1, 1, 1],
+        ).run()[0].path
+
+    assert ReadInput(job / "INPUT")["noncolin"] == 1
+
+
+def test_prepare_checks_spin_orbit_support_only_for_nspin4(tmp_path: Path) -> None:
+    source, library = _pseudopotential_library(tmp_path)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="pw",
+            pp_path=library,
+            nspin=2,
+            kpt=[1, 1, 1],
+        ).run()
 
 
 def test_validate_reports_unknown_keyword_and_missing_resource(tmp_path: Path) -> None:

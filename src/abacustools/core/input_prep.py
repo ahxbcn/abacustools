@@ -22,6 +22,7 @@ from abacustools.io.abacus import (
     WriteInput,
     WriteKpt,
 )
+from abacustools.io.pseudo import UPF
 from abacustools.io.stru import MASS_DICT, AbacusSTRU
 
 
@@ -126,6 +127,32 @@ def _orbital_cutoff(filename: str) -> Optional[float]:
         return float(match.group(1))
     except ValueError:
         return None
+
+
+def _spin_orbit_support(path: Path) -> Optional[bool]:
+    """Return whether a pseudopotential supports spin-orbit calculations.
+
+    Fully relativistic (spinor) pseudopotentials either declare
+    ``relativistic="full"`` in ``PP_HEADER`` or carry tabulated spin-orbit
+    projectors (``has_so``).  Files that cannot be read as UPF return ``None``.
+
+    Args:
+        path: Pseudopotential file.
+
+    Returns:
+        ``True`` when spin-orbit support is declared, ``False`` when the file
+        declares another flavour, and ``None`` when it cannot be interpreted.
+    """
+    try:
+        header = UPF.read_from_file(path).header
+    except (OSError, ValueError):
+        return None
+    attributes = {
+        str(key).lower(): str(value).strip().lower() for key, value in header.items()
+    }
+    if attributes.get("relativistic") == "full":
+        return True
+    return attributes.get("has_so") in {"t", "true", "1"}
 
 
 _RESOURCE_DIRECTORY_PREFIXES = {
@@ -885,6 +912,31 @@ class InputPreparer:
                 stacklevel=3,
             )
 
+    def _check_spin_orbit_pseudopotentials(
+        self, resources: Mapping[Path, str]
+    ) -> None:
+        """Warn when a spinor calculation uses pseudopotentials without SO data.
+
+        ``nspin=4`` needs a fully relativistic pseudopotential, but the job is
+        still prepared: the warning names the files that do not declare it.
+        """
+        unsupported = []
+        for path in resources:
+            if path.suffix.lower() != ".upf":
+                continue
+            support = _spin_orbit_support(path)
+            if support is True:
+                continue
+            unsupported.append(path.name if support is False else f"{path.name} (unreadable)")
+        if unsupported:
+            warnings.warn(
+                "nspin=4 requires pseudopotentials that explicitly support fully "
+                "relativistic (spinor) calculations; these do not declare it: "
+                + ", ".join(sorted(unsupported))
+                + ". The job was still prepared.",
+                stacklevel=3,
+            )
+
     def run(self) -> list[PreparedJob]:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         inputs_template = self._base_inputs()
@@ -905,6 +957,8 @@ class InputPreparer:
                 recommendations = [pp_cutoffs[element] for element in _unique(structure.elements) if element in pp_cutoffs]
                 if recommendations:
                     inputs["ecutwfc"] = max(recommendations)
+            if self.nspin == 4:
+                self._check_spin_orbit_pseudopotentials(resources)
 
             destination = self._destination(source, index)
             destination.mkdir(parents=True, exist_ok=False)

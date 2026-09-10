@@ -206,6 +206,13 @@ default. Requesting an unavailable variant with `--variant` reports which
 library could not provide it and which set is used instead, while a variant
 inherited from the configuration falls back silently.
 
+Spin-orbit and noncollinear calculations (`--nspin 4`, or `--soc`) need
+pseudopotentials that explicitly support them, which UPF files declare as
+`relativistic="full"` or through tabulated spin-orbit projectors (`has_so`).
+The job is still prepared when a selected pseudopotential only declares
+scalar-relativistic support, but the warning names the files, so a setup such
+as the SG15 set (scalar only) cannot be used for spin-orbit work unnoticed.
+
 Upstream libraries also publish the recommended cutoff radius of every element
 as `<orbital directory>_<VARIANT>_..._StandardRcut.json` next to the orbital
 directory, with an `Others` fallback. When such an index is present, the
