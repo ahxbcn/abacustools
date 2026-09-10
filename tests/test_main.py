@@ -11,13 +11,6 @@ from abacustools.version import __version__
 
 
 class TestMain(unittest.TestCase):
-    def test_version_subcommand(self) -> None:
-        with patch("sys.stdout") as stdout:
-            status = main(["version"])
-
-        self.assertEqual(status, 0)
-        stdout.write.assert_any_call(f"abacustools {__version__}")
-
     def test_version_option(self) -> None:
         with patch("sys.stdout") as stdout:
             with self.assertRaises(SystemExit) as error:
@@ -26,11 +19,25 @@ class TestMain(unittest.TestCase):
         self.assertEqual(error.exception.code, 0)
         stdout.write.assert_any_call(f"abacustools {__version__}\n")
 
-    def test_version_subcommand_rejects_arguments(self) -> None:
-        with self.assertRaises(SystemExit) as error:
-            main(["version", "extra"])
+    def test_banner_prints_for_subcommands(self) -> None:
+        with patch("sys.stdout") as stdout, patch(
+            "abacustools.main.run_menu", return_value=0
+        ):
+            main(["menu"])
 
-        self.assertEqual(error.exception.code, 2)
+        output = "".join(call.args[0] for call in stdout.write.call_args_list)
+        self.assertIn("Tools for accompanying using ABACUS", output)
+        self.assertIn(__version__, output)
+
+    def test_banner_shows_name_and_version(self) -> None:
+        with patch("sys.stdout") as stdout, patch(
+            "abacustools.main._is_interactive", return_value=False
+        ):
+            main([])
+
+        output = "".join(call.args[0] for call in stdout.write.call_args_list)
+        self.assertIn("Tools for accompanying using ABACUS", output)
+        self.assertIn(__version__, output)
 
     def test_unknown_command_reports_argparse_error(self) -> None:
         with self.assertRaises(SystemExit) as error:
@@ -46,7 +53,7 @@ class TestMain(unittest.TestCase):
 
         self.assertEqual(status, 0)
         output = "".join(call.args[0] for call in stdout.write.call_args_list)
-        self.assertIn("version", output)
+        self.assertIn("postprocess", output)
 
     def test_no_command_launches_menu_when_interactive(self) -> None:
         with patch("abacustools.main._is_interactive", return_value=True), patch(

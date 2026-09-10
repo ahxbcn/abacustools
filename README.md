@@ -3,11 +3,10 @@ Collection of tools used for performing DFT calculation with ABACUS.
 ## Command-line subcommands
 
 Subcommands are registered in the package with Python's
-`argparse.add_subparsers()`. The top-level command provides `version` and
-nested `file` subcommands:
+`argparse.add_subparsers()`. The top-level command provides nested `file`
+subcommands:
 
 ```text
-abacustools version
 abacustools file input INPUT
 abacustools file stru STRU
 abacustools file kpt KPT
@@ -25,7 +24,8 @@ abacustools pp bader -j JOB
 ## Interactive menu
 
 Running `abacustools` with no arguments in a terminal opens an interactive,
-Multiwfn/VASPKIT-style menu. The same menu is available explicitly:
+Multiwfn/VASPKIT-style menu (an ASCII-art banner with the name and version is
+printed first). The same menu is available explicitly:
 
 ```text
 abacustools menu

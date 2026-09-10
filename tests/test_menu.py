@@ -42,7 +42,7 @@ class TestBuildMenu(unittest.TestCase):
         root = build_menu(_create_parser("abacustools"))
         self.assertEqual(
             [child.name for child in root.children],
-            ["version", "file", "job", "postprocess", "workflow"],
+            ["file", "job", "postprocess", "workflow"],
         )
 
     def test_captures_family_aliases(self) -> None:

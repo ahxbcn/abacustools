@@ -18,10 +18,24 @@ from abacustools.commands.workflow import (
 from abacustools.menu.runner import run_menu
 
 
-def _version_command(args: argparse.Namespace) -> int:
-    """Print the installed abacustools version."""
-    print(f"{args._prog} {__version__}")
-    return 0
+_BANNER = "\n".join(
+    [
+        "        _                                  _                    _",
+        "  __ _ | |__    __ _   ___   -   -   ___  | |_     ___    ___  | |  ___",
+        " / _` || '_ \\  / _` | / __| | | | | / __| | __|   / _ \\  / _ \\ | | / __|",
+        "| (_| || |_) || (_| || (__  | |_| | \\__ \\ | |_   | (_) || (_) || | \\__ \\",
+        " \\__,_||_.__/  \\__,_| \\___|  \\__,_| |___/  \\__|   \\___/  \\___/ |_| |___/",
+    ]
+)
+
+
+def _print_banner() -> None:
+    """Print the ASCII-art banner with the program name and version."""
+    print()
+    print(_BANNER)
+    print()
+    print(f"  Tools for accompanying using ABACUS    version {__version__}")
+    print()
 
 
 def _is_interactive() -> bool:
@@ -50,22 +64,15 @@ def _create_parser(prog: str) -> argparse.ArgumentParser:
         title="subcommands",
     )
 
-    version_parser = subparsers.add_parser(
-        "version",
-        help="Show the installed abacustools version.",
-    )
-    version_parser.set_defaults(handler=_version_command)
-
     menu_parser = subparsers.add_parser(
         "menu",
         help="Launch the interactive menu.",
     )
-    menu_parser.set_defaults(
-        handler=lambda namespace: run_menu(
-            parser, prog=getattr(namespace, "_prog", "abacustools")
-        ),
-        _menu_exclude=True,
-    )
+
+    def _menu_handler(namespace: argparse.Namespace) -> int:
+        return run_menu(parser, prog=getattr(namespace, "_prog", "abacustools"))
+
+    menu_parser.set_defaults(handler=_menu_handler, _menu_exclude=True)
 
     register_file_parser(subparsers)
     register_job_parser(subparsers)
@@ -83,6 +90,9 @@ def main(
     """Run the ``abacustools`` command-line interface."""
     arguments = list(sys.argv[1:] if argv is None else argv)
     parser = _create_parser(prog)
+
+    _print_banner()
+
     namespace = parser.parse_args(arguments)
 
     if namespace.command is None:
