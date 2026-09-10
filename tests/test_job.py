@@ -995,6 +995,50 @@ def test_prepare_accepts_known_set_parameters(tmp_path: Path) -> None:
     assert inputs["smearing_sigma"] == pytest.approx(0.02)
 
 
+def test_prepare_hints_about_ambiguous_orbital_radii(tmp_path: Path) -> None:
+    source, _ = _source_and_library(tmp_path)
+    library = tmp_path / "custom"
+    library.mkdir()
+    (library / "H.upf").write_text("pseudo", encoding="utf-8")
+    for radius in (6, 7, 10):
+        (library / f"H_gga_{radius}au_100Ry_2s2p1d.orb").write_text(
+            f"{radius}au", encoding="utf-8"
+        )
+
+    with pytest.warns(UserWarning, match="several orbital cutoffs exist"):
+        job = InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="lcao",
+            pp_path=library,
+            orb_path=library,
+            kpt=[1, 1, 1],
+        ).run()[0].path
+
+    # The fallback keeps the historical behaviour: the first name in sort order.
+    assert (job / "H_gga_10au_100Ry_2s2p1d.orb").is_file()
+
+
+def test_prepare_stays_quiet_when_the_index_selects_the_radius(tmp_path: Path) -> None:
+    source, _ = _source_and_library(tmp_path)
+    orbitals = _v2_library(tmp_path / "sg15", {"DZP": {"H": 7}})
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        job = InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="lcao",
+            pp_path=tmp_path / "sg15",
+            orb_path=orbitals,
+            kpt=[1, 1, 1],
+        ).run()[0].path
+
+    assert (job / "H_gga_7au_100Ry_2s2p1d.orb").is_file()
+
+
 def test_validate_reports_unknown_keyword_and_missing_resource(tmp_path: Path) -> None:
     job = tmp_path / "job"
     job.mkdir()

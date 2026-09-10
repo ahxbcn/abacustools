@@ -224,7 +224,10 @@ Upstream libraries also publish the recommended cutoff radius of every element
 as `<orbital directory>_<VARIANT>_..._StandardRcut.json` next to the orbital
 directory, with an `Others` fallback. When such an index is present, the
 matching `<radius>au` orbital is selected; otherwise the first candidate of the
-chosen variant is used, as before.
+chosen variant is used, as before. A library without an index whose elements
+offer several radii, such as a locally collected `custom` set, reports the radii
+and the file that was picked, and points at the index format for choosing them
+explicitly.
 
 Because upstream sometimes renames these directories (`Orbitals` became
 `Orbitals_v2.0`), a configured path that no longer exists is resolved to the

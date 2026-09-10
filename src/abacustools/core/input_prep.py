@@ -43,6 +43,7 @@ _MAGNETIC_F_ELEMENTS = {
 }
 _ORBITAL_INDEX = {"p": 1, "d": 2, "f": 3}
 _ORBITAL_CUTOFF = re.compile(r"(?<![0-9.])(\d+(?:\.\d+)?)\s*Ry", re.IGNORECASE)
+_ORBITAL_RADIUS = re.compile(r"(?<![0-9.])(\d+(?:\.\d+)?)au(?![0-9])", re.IGNORECASE)
 
 
 class InputPreparationError(RuntimeError):
@@ -135,6 +136,18 @@ def _orbital_cutoff(filename: str) -> Optional[float]:
         return float(match.group(1))
     except ValueError:
         return None
+
+
+def _orbital_radii(paths: Iterable[Path]) -> list[float]:
+    """Return the cutoff radii encoded in a set of orbital file names."""
+    radii = set()
+    for path in paths:
+        for match in _ORBITAL_RADIUS.finditer(path.name):
+            try:
+                radii.add(float(match.group(1)))
+            except ValueError:
+                continue
+    return sorted(radii)
 
 
 def _spin_orbit_support(path: Path) -> Optional[bool]:
@@ -268,7 +281,7 @@ def _select_resource(
     variant: Optional[str],
     cutoffs: Optional[Mapping[str, float]] = None,
     variant_required: bool = False,
-) -> Path:
+) -> tuple[Path, list[float]]:
     """Pick one resource file for an element, honouring the orbital variant.
 
     A library without variant directories is unaffected.  A library that only
@@ -284,6 +297,10 @@ def _select_resource(
         cutoffs: Recommended cutoff radii published by the library.
         variant_required: Warn when an explicitly requested variant cannot be
             honoured, instead of silently picking the best candidate.
+
+    Returns:
+        tuple: The chosen file and, when it had to fall back although the element
+        offers several cutoff radii, the radii that were available.
     """
     candidates = list(resources)
     matched = False
@@ -319,8 +336,8 @@ def _select_resource(
             pattern = re.compile(rf"(?<![0-9]){cutoff:g}au(?![0-9])")
             matching = [path for path in candidates if pattern.search(path.name)]
             if matching:
-                return matching[0]
-    return candidates[0]
+                return matching[0], []
+    return candidates[0], _orbital_radii(candidates)
 
 
 def _collect_library(
@@ -386,13 +403,42 @@ def _collect_library(
         by_element.setdefault(element, []).append(resource)
     cutoffs = _standard_rcut_index(root, variant) if resource_type == "orb" else {}
     wanted = None if elements is None else {str(element) for element in elements}
+    ambiguous: list[tuple[str, list[float], Path]] = []
     for element, resources in by_element.items():
         if wanted is not None and element not in wanted:
             continue
-        mapping[element] = _select_resource(
+        selected, radii = _select_resource(
             element, resources, root, variant, cutoffs, variant_required
         )
+        mapping[element] = selected
+        # Only orbitals encode a cutoff radius; pseudopotential directories that
+        # happen to sit next to them must not report the same ambiguity.
+        if resource_type == "orb" and len(radii) > 1:
+            ambiguous.append((element, radii, selected))
+    if ambiguous:
+        warnings.warn(
+            f"no standard cutoff index was found for {root} and several orbital "
+            f"cutoffs exist for {_describe_ambiguity(ambiguous)}; the first file of "
+            "each element is used. Add an "
+            "'<orbital directory>_<VARIANT>_..._StandardRcut.json' index mapping "
+            "elements to cutoffs, or keep one radius per element, to choose them "
+            "explicitly.",
+            stacklevel=3,
+        )
     return mapping
+
+
+def _describe_ambiguity(
+    ambiguous: Sequence[tuple[str, list[float], Path]],
+) -> str:
+    """Summarise elements that had several cutoff radii to choose from."""
+    described = [
+        f"{element} ({', '.join(f'{radius:g}au' for radius in radii)} -> {path.name})"
+        for element, radii, path in ambiguous[:3]
+    ]
+    if len(ambiguous) > 3:
+        described.append(f"and {len(ambiguous) - 3} more element(s)")
+    return ", ".join(described)
 
 
 def _recommended_cutoffs(path: Optional[PathLike]) -> dict[str, float]:
