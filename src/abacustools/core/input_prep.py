@@ -107,8 +107,76 @@ def _element_from_filename(filename: str) -> Optional[str]:
     return element if element in MASS_DICT else None
 
 
-def _collect_library(path: Optional[PathLike], resource_type: Optional[str] = None) -> dict[str, Path]:
-    """Collect element-to-file mappings from a resource directory."""
+def _variant_token(path: Path, root: Path, element: str) -> Optional[str]:
+    """Return the SZ/DZP/TZDP-style token of a resource path, if it has one.
+
+    Resource libraries such as SG15 and Dojo store one directory per element
+    and variant, named like ``Si_DZP``.
+    """
+    directories = path.relative_to(root).parts[:-1]
+    if not directories:
+        return None
+    name = Path(directories[0]).name
+    for separator in ("_", "-", "."):
+        prefix = f"{element}{separator}"
+        if name.lower().startswith(prefix.lower()):
+            return name[len(prefix) :] or None
+    return None
+
+
+def _matches_variant(path: Path, root: Path, element: str, variant: str) -> bool:
+    """Return whether a resource path belongs to the requested variant."""
+    token = _variant_token(path, root, element)
+    if token is not None:
+        return token.lower() == variant.lower()
+    directories = path.relative_to(root).parts[:-1]
+    return bool(directories) and Path(directories[0]).name.lower() == variant.lower()
+
+
+def _select_resource(
+    element: str,
+    resources: Sequence[Path],
+    root: Path,
+    variant: Optional[str],
+) -> Path:
+    """Pick one resource file for an element, honouring the orbital variant.
+
+    A library without variant directories is unaffected.  A library that only
+    provides other variants raises instead of silently using a different basis.
+    """
+    if variant:
+        matching = [
+            path for path in resources if _matches_variant(path, root, element, variant)
+        ]
+        if matching:
+            return matching[0]
+        available = sorted(
+            {
+                token
+                for path in resources
+                if (token := _variant_token(path, root, element)) is not None
+            }
+        )
+        if available:
+            raise InputPreparationError(
+                f"no {variant} resource for {element} in {root}; available variants: "
+                + ", ".join(available)
+            )
+    return resources[0]
+
+
+def _collect_library(
+    path: Optional[PathLike],
+    resource_type: Optional[str] = None,
+    variant: Optional[str] = None,
+) -> dict[str, Path]:
+    """Collect element-to-file mappings from a resource directory.
+
+    Args:
+        path: Library file or directory.
+        resource_type: One of ``pp``, ``orb`` or ``paw``.
+        variant: Orbital variant such as ``DZP``, see :func:`_select_resource`.
+    """
     if path is None:
         return {}
     root = Path(path).expanduser()
@@ -150,9 +218,12 @@ def _collect_library(path: Optional[PathLike], resource_type: Optional[str] = No
             continue
         priority = 0 if preferred_suffixes and resource.suffix.lower() in preferred_suffixes else 1
         candidates.append((priority, resource.name, element, resource.resolve()))
+
+    by_element: dict[str, list[Path]] = {}
     for _, _, element, resource in sorted(candidates):
-        if element not in mapping:
-            mapping[element] = resource
+        by_element.setdefault(element, []).append(resource)
+    for element, resources in by_element.items():
+        mapping[element] = _select_resource(element, resources, root, variant)
     return mapping
 
 
@@ -298,6 +369,7 @@ class InputPreparer:
         library: Optional[str] = None,
         pp_path: Optional[PathLike] = None,
         orb_path: Optional[PathLike] = None,
+        orb_variant: Optional[str] = None,
         paw_path: Optional[PathLike] = None,
         input_template: Optional[PathLike] = None,
         kpt: Optional[Sequence[int]] = None,
@@ -332,6 +404,15 @@ class InputPreparer:
             if orb_path is not None
             else configured_resources.get("orb") or legacy_orb
         )
+        configured_variant = (
+            configured_resources.get("orb_variant")
+            or CONFIG.get("resources", {}).get("orb_variant")
+        )
+        self.orb_variant = (
+            orb_variant if orb_variant is not None else configured_variant
+        )
+        if self.orb_variant is not None:
+            self.orb_variant = str(self.orb_variant)
         self.paw_path = paw_path if paw_path is not None else os.environ.get("ABACUS_PAW_PATH")
         self.input_template = input_template
         self.kpt = list(kpt) if kpt is not None else None
@@ -540,7 +621,7 @@ class InputPreparer:
             orb_resources = _resource_assignments(
                 structure,
                 source_dir,
-                _collect_library(self.orb_path, "orb"),
+                _collect_library(self.orb_path, "orb", variant=self.orb_variant),
                 "orb",
                 required=True,
                 configured_path=self.orb_path,

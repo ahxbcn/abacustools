@@ -33,6 +33,10 @@ bader:
 # Fill these machine-dependent paths in ~/.abacustools/config.yaml.
 resources:
   default: apns
+  # Orbital variant to use when a library stores SZ/DZP/TZDP subdirectories,
+  # such as the SG15 and Dojo libraries. A library can override it with its own
+  # `orb_variant` entry.
+  orb_variant: "DZP"
   libraries:
     apns:
       pp: null
@@ -46,6 +50,7 @@ resources:
     sg15:
       pp: null
       orb: null
+      # orb_variant: "TZDP"
 
 input_templates:
   scf:

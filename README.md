@@ -136,6 +136,31 @@ symbol, preferring the `.upf`/`.orb`/`.paw` suffix matching the resource type;
 subdirectories are searched too. Two optional index files make the mapping
 explicit:
 
+Libraries that store one directory per element and orbital variant, such as
+SG15 and Dojo (`Si_SZ/`, `Si_DZP/`, `Si_TZDP/`), are resolved to the variant
+selected by `resources.orb_variant`, which defaults to `DZP`. A library can
+override it, and `--variant` overrides both for a single run:
+
+```yaml
+resources:
+  orb_variant: "DZP"
+  libraries:
+    sg15:
+      pp: /path/to/SG15_ONCV_v1.0_upf
+      orb: /path/to/SG15_v1.0/Orbitals
+      orb_variant: "TZDP"
+```
+
+```text
+abacustools job prepare -f STRUCTURE --library sg15 --variant SZ
+```
+
+When an element has variant directories but not the requested one, the
+preparation stops and lists the variants that are available instead of
+silently using a different basis. Libraries without variant directories are
+unaffected, and an `element.json` mapping takes precedence over variant
+selection.
+
 ```yaml
 # element.json: element -> file name, resolved below the library directory
 {"Si": "Si_ONCV_PBE-1.0.upf", "O": "O_ONCV_PBE-1.0.upf"}

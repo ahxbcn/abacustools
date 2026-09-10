@@ -71,6 +71,16 @@ def _source_and_library(tmp_path: Path) -> tuple[Path, Path]:
     return source, library
 
 
+def _variant_library(root: Path) -> Path:
+    """Write an SG15-style library with SZ/DZP/TZDP orbital directories."""
+    for variant, shell in (("SZ", "1s1p"), ("DZP", "2s2p1d"), ("TZDP", "3s3p2d")):
+        directory = root / f"H_{variant}"
+        directory.mkdir(parents=True)
+        (directory / f"H_gga_7au_100Ry_{shell}.orb").write_text(variant, encoding="utf-8")
+    (root / "H.upf").write_text("pseudo", encoding="utf-8")
+    return root
+
+
 def test_prepare_writes_complete_lcao_job(tmp_path: Path) -> None:
     source, library = _source_and_library(tmp_path)
     jobs = InputPreparer(
@@ -307,6 +317,89 @@ def test_prepare_rejects_a_template_with_another_basis(tmp_path: Path) -> None:
             orb_path=library,
             input_template=template,
         ).run()
+
+
+def test_prepare_defaults_to_the_dzp_orbital_variant(tmp_path: Path) -> None:
+    source, _ = _source_and_library(tmp_path)
+    library = _variant_library(tmp_path / "variance")
+
+    job = InputPreparer(
+        source,
+        output_dir=tmp_path / "jobs",
+        filetype="stru",
+        basis="lcao",
+        pp_path=library,
+        orb_path=library,
+        kpt=[1, 1, 1],
+    ).run()[0].path
+
+    assert (job / "H_gga_7au_100Ry_2s2p1d.orb").read_text(encoding="utf-8") == "DZP"
+    assert not (job / "H_gga_7au_100Ry_1s1p.orb").exists()
+    assert "H_gga_7au_100Ry_2s2p1d.orb" in (job / "STRU").read_text(encoding="utf-8")
+
+
+def test_prepare_honours_the_requested_orbital_variant(tmp_path: Path) -> None:
+    source, _ = _source_and_library(tmp_path)
+    library = _variant_library(tmp_path / "variance")
+
+    job = InputPreparer(
+        source,
+        output_dir=tmp_path / "jobs",
+        filetype="stru",
+        basis="lcao",
+        pp_path=library,
+        orb_path=library,
+        orb_variant="TZDP",
+        kpt=[1, 1, 1],
+    ).run()[0].path
+
+    assert (job / "H_gga_7au_100Ry_3s3p2d.orb").read_text(encoding="utf-8") == "TZDP"
+
+
+def test_prepare_reports_unavailable_orbital_variants(tmp_path: Path) -> None:
+    source, _ = _source_and_library(tmp_path)
+    library = _variant_library(tmp_path / "variance")
+
+    with pytest.raises(InputPreparationError, match="available variants: DZP, SZ, TZDP"):
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="lcao",
+            pp_path=library,
+            orb_path=library,
+            orb_variant="QZP",
+            kpt=[1, 1, 1],
+        ).run()
+
+
+def test_prepare_library_variant_overrides_the_global_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, _ = _source_and_library(tmp_path)
+    library = _variant_library(tmp_path / "variance")
+    monkeypatch.setitem(
+        CONFIG,
+        "resources",
+        {
+            "default": "test",
+            "orb_variant": "SZ",
+            "libraries": {
+                "test": {"pp": str(library), "orb": str(library), "orb_variant": "TZDP"}
+            },
+        },
+    )
+
+    job = InputPreparer(
+        source,
+        output_dir=tmp_path / "jobs",
+        filetype="stru",
+        basis="lcao",
+        library="test",
+        kpt=[1, 1, 1],
+    ).run()[0].path
+
+    assert (job / "H_gga_7au_100Ry_3s3p2d.orb").is_file()
 
 
 def test_validate_reports_unknown_keyword_and_missing_resource(tmp_path: Path) -> None:
