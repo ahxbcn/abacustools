@@ -67,6 +67,31 @@ different symmetry tolerances. Structures without a three-dimensional cell
 are still summarized, but symmetry and Wyckoff positions are reported as
 unavailable.
 
+Structures can also be edited into a new file. Every action reads a structure,
+writes a separate OUTPUT (existing files are only replaced with `--override`)
+and keeps the atom attributes it does not touch, such as pseudopotential and
+orbital file names, movement constraints and magnetic moments:
+
+```text
+abacustools file editstru supercell STRU -o SUPER -n 2 2 1
+abacustools file editstru vacuum    STRU -o SLAB  -t 15 --direction c --center
+abacustools file editstru select    STRU -o SUB   --elements Si O
+abacustools file editstru select    STRU -o FREE  --indices 1 3 --remove
+abacustools file editstru fix       STRU -o FIXED --coords 0 0.2 --direction c --direct
+abacustools file editstru fix       STRU -o FIXED --elements O --move x y --free-others
+```
+
+`supercell` replicates along the lattice vectors. `vacuum` extends one lattice
+vector by the given thickness in Angstrom, optionally shifting the atoms so the
+extra space is split between both sides. `select` keeps, or with `--remove`
+drops, the atoms matching `--indices`, `--elements` or a `--coords` window.
+`fix` sets the movement constraint of the selection: the atoms may only move
+along the axes given to `--move`, and `--free-others` releases the rest.
+Selections are additive filters (an atom must match every filter), while
+`--indices` are one-based, as in the other abacustools commands. `--coords`
+uses Cartesian coordinates unless `--direct` requests fractional ones, and
+`--direction` accepts `a`/`b`/`c` or `x`/`y`/`z`.
+
 Conversions issue a `StructureConversionWarning` when ABACUS-specific data
 such as pseudopotential/orbital filenames, spin settings, velocities,
 movement constraints, or `NUMERICAL_DESCRIPTOR` cannot be represented by the
