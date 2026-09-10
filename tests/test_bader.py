@@ -124,6 +124,16 @@ def test_fft_grid_from_log(tmp_path: Path) -> None:
     assert fft_grid_from_log(tmp_path / "missing.log") is None
 
 
+def test_fft_grid_from_develop_log(tmp_path: Path) -> None:
+    log = tmp_path / "running_scf.log"
+    log.write_text(
+        "                              ABACUS v3.11.0-beta9\n"
+        "            FFT grid for charge/potential = [ 24, 24, 24 ]\n",
+        encoding="utf-8",
+    )
+    assert fft_grid_from_log(log) == (24, 24, 24)
+
+
 def test_bader_command_cube_nspin1(tmp_path: Path) -> None:
     job = tmp_path / "job"
     output = job / "OUT.ABACUS"

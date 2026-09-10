@@ -37,7 +37,10 @@ from abacustools.io.stru import AbacusSTRU
 BOHR2A = BOHR_TO_ANG
 A2BOHR = ANG_TO_BOHR
 
-_FFT_GRID_PATTERN = re.compile(r"fft grid for charge/potential\s*=\s*\[([^\]]+)\]")
+# ABACUS LTS logs write "fft grid", develop writes "FFT grid".
+_FFT_GRID_PATTERN = re.compile(
+    r"fft grid for charge/potential\s*=\s*\[([^\]]+)\]", re.IGNORECASE
+)
 
 
 class BaderError(RuntimeError):
