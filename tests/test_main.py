@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import tempfile
 import unittest
 from unittest.mock import patch
 
-from abacustools.main import main
+from abacustools.main import _create_parser, main
 from abacustools.version import __version__
 
 
@@ -44,6 +45,18 @@ class TestMain(unittest.TestCase):
         self.assertEqual(status, 0)
         output = "".join(call.args[0] for call in stdout.write.call_args_list)
         self.assertIn("version", output)
+
+
+class TestPostprocessAliases(unittest.TestCase):
+    def test_post_and_pp_aliases_resolve_to_postprocess(self) -> None:
+        parser = _create_parser("abacustools")
+        with tempfile.TemporaryDirectory() as directory:
+            canonical = parser.parse_args(["postprocess", "result", "-j", directory])
+            post = parser.parse_args(["post", "result", "-j", directory])
+            short = parser.parse_args(["pp", "result", "-j", directory])
+
+        self.assertIs(post.handler, canonical.handler)
+        self.assertIs(short.handler, canonical.handler)
 
 
 if __name__ == "__main__":

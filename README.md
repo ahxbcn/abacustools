@@ -14,6 +14,14 @@ abacustools file kpt KPT
 abacustools file stru INPUT OUTPUT
 ```
 
+The `postprocess` command family also has the shorter aliases `post` and `pp`:
+
+```text
+abacustools postprocess bader -j JOB
+abacustools post bader -j JOB
+abacustools pp bader -j JOB
+```
+
 `file stru` converts between ABACUS `STRU` and common structure formats
 supported by ASE, including POSCAR/VASP, CIF, XYZ, EXTXYZ, and XSF. The input
 and output formats are inferred from filenames, or can be set explicitly with

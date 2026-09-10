@@ -12,6 +12,7 @@ def register_parser(subparsers) -> None:
     """Register ``postprocess`` and its nested subcommands."""
     postprocess_parser = subparsers.add_parser(
         "postprocess",
+        aliases=["post", "pp"],
         help="Postprocess ABACUS calculation results.",
     )
     postprocess_subparsers = postprocess_parser.add_subparsers(
