@@ -96,6 +96,18 @@ resources:
       orb: /path/to/Dojo-NC-SR/Orbitals
 ```
 
+The KPT file shipped with each generated job is controlled by `--kpt` and
+`--kpt-model`. The gamma and MP models take three or six mesh values, while the
+direct, cartesian and line models take one group per k-point or node, so the
+option is repeated for every group:
+
+```text
+abacustools job prepare -f STRUCTURE --kpt 9 9 9
+abacustools job prepare -f STRUCTURE --kpt 0 0 0 --kpt 0.5 0 0 --kpt-model direct
+abacustools job prepare -f STRUCTURE \
+  --kpt 0 0 0 10 G --kpt 0.5 0.5 0 1 X --kpt-model line
+```
+
 Both the top-level parser and each subcommand provide their own help text:
 
 ```text

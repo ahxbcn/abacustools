@@ -266,7 +266,8 @@ def ReadKpt(kptpath):
             nk = int(lines[1].split()[0])
             kpt = []
             for i in range(nk):
-                kpt.append([float(ii) for ii in lines[2+i].split()[:4]])
+                # lines[2] holds the model name, so the k-points start at lines[3].
+                kpt.append([float(ii) for ii in lines[3+i].split()[:4]])
             return kpt,model
         elif model in ["line", "line_cartesian"]:
             kpt = []
@@ -284,80 +285,189 @@ def ReadKpt(kptpath):
         print(f"ERROR: {kptpath} is not a file or path!!!")
         sys.exit(1)
 
-def WriteKpt(kpoint_list:List = [1,1,1,0,0,0],file_name:str = "KPT", model="gamma"):
-    '''
-    Docs for KPT file: https://abacus.deepmodeling.com/en/latest/advanced/input_files/kpt.html
-    ABACUS KPT support three models:
-    - gamma/mp: is the Monkhorst-Pack method, such as:
-    
-        K_POINTS //keyword for start
-        0 //total number of k-point, `0' means generate automatically
-        Gamma //which kind of Monkhorst-Pack method, `Gamma' or `MP'
-        2 2 2 0 0 0 //first three number: subdivisions along recpri. vectors
-                    //last three number: shift of the mesh
-        
-    - direct/cartessian: set the k-point explicitly, such as:
-        
-            K_POINTS
-            1
-            Direct
-            0.0 0.0 0.0 1.0  // the last number is the weight of this k-point
-            
-    - line: set the k-point along a line, such as:
-            
-                K_POINTS
-                2  // number of high symmetry k-points along the
-                Line
-                0.0 0.0 0.0 10  // Gamma the last number is number of k-points between this and next k-point
-                0.5 0.0 0.0 1 
-    
-    For gamma/mp model, the k-point_list should be a list of 6 values, such as:
-    [2,2,2,0,0,0]
-    
-    For explicitly model, the k-point_list should be a list of list of 3 or 4 values, such as:
-    [[0.0,0.0,0.0,1.0],[0.5,0.0,0.0,1.0]]
-    
-    For line model, the k-point_list should be a list of list of 4 or 5 values (the last value is a string of comment), such as:
-    [[0.0,0.0,0.0,10],[0.5,0.0,0.0,1]] or
-    [[0.0,0.0,0.0,10 "#Gamma"],[0.5,0.0,0.0,1,"//"],[0.5,0.5,0.0,1,"//"]]         
-    '''
-    if model.lower() in ["gamma","mp"]:
-        model_ = "Gamma" if model.lower() == "gamma" else "MP"
-        with open(file_name,'w') as f1:
-            f1.write(F"K_POINTS\n0\n{model_}\n")
-            if len(kpoint_list) == 3:
-                kpoint_list += [0,0,0]
-            f1.write(" ".join([str(i) for i in kpoint_list]))
-    elif model.lower() in ["direct","cartessian"]:
-        # normalize the weight
-        kpt = []
-        if len(kpoint_list[0]) == 3:
-            kpt = [i+[1.0/len(kpoint_list)] for i in kpoint_list]
-        elif len(kpoint_list[0]) == 4:
-            total_weight = sum([i[3] for i in kpoint_list])
-            kpt = [i[:3]+[i[3]/total_weight] for i in kpoint_list]
-        else:
-            print(f"ERROR: model is {model}, the kpoint_list is not correct!!!\n{kpoint_list}")
-            sys.exit(1)
-            
-        with open(file_name,'w') as f1:
-            f1.write(f"K_POINTS\n{len(kpoint_list)}\n{model.capitalize()}\n")
-            for i in kpt:
-                f1.write("%17.11f %17.11f %17.11f %17.11f\n" % tuple(i))
-    elif model.lower() in ["line", "line_cartesian"]:
-        with open(file_name,'w') as f1:
-            f1.write(f"K_POINTS\n{len(kpoint_list)}\n")
-            if model.lower() == "line":
-                f1.write("Line\n")
-            else:
-                f1.write("Line_Cartesian\n")
-            for i in kpoint_list:
-                if len(i) == 4:
-                    f1.write("%17.11f %17.11f %17.11f %4d\n" % tuple(i))
-                elif len(i) == 5:
-                    if not (i[-1].startswith("#") or i[-1].startswith("//")):
-                        i[-1] = "#"+i[-1]
-                    f1.write("%17.11f %17.11f %17.11f %4d %s\n" % tuple(i))
+_KPT_MODELS = ("gamma", "mp", "direct", "cartesian", "line", "line_cartesian")
+_KPT_MODEL_ALIASES = {"cartessian": "cartesian"}
+_KPT_HEADERS = {
+    "gamma": "Gamma",
+    "mp": "MP",
+    "direct": "Direct",
+    "cartesian": "Cartesian",
+    "line": "Line",
+    "line_cartesian": "Line_Cartesian",
+}
+
+
+def NormalizeKptModel(model: str) -> str:
+    """Return the canonical KPT model name.
+
+    The misspelling ``cartessian`` is accepted as an alias of ``cartesian``
+    because it was the only spelling the writer understood historically.
+    """
+    name = str(model).strip().lower()
+    name = _KPT_MODEL_ALIASES.get(name, name)
+    if name not in _KPT_MODELS:
+        raise ValueError(
+            f"unsupported KPT model: {model!r}; supported models are {list(_KPT_MODELS)}"
+        )
+    return name
+
+
+def _kpt_number(value, description: str) -> float:
+    """Convert one KPT value to a float with a readable error message."""
+    if isinstance(value, bool):
+        raise ValueError(f"KPT {description} must be a number, got {value!r}")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"KPT {description} must be a number, got {value!r}") from error
+
+
+def _kpt_text(value: float) -> str:
+    """Format a KPT number, keeping integral values free of a decimal part."""
+    number = float(value)
+    if number == int(number):
+        return str(int(number))
+    return repr(number)
+
+
+def _kpt_groups(kpoint_list) -> list:
+    """Split a flat or nested k-point argument into a list of groups."""
+    if isinstance(kpoint_list, (str, bytes)) or not isinstance(kpoint_list, (list, tuple)):
+        raise ValueError("kpoint_list must be a list of values")
+    values = list(kpoint_list)
+    if not values:
+        raise ValueError("kpoint_list must not be empty")
+    if all(isinstance(value, (list, tuple)) for value in values):
+        return [list(value) for value in values]
+    return [values]
+
+
+def _gamma_kpt_values(kpoint_list) -> list:
+    """Validate a gamma/MP mesh and return its six values."""
+    groups = _kpt_groups(kpoint_list)
+    if len(groups) != 1:
+        raise ValueError("gamma/mp KPT accepts a single mesh group")
+    values = groups[0]
+    if len(values) not in (3, 6):
+        raise ValueError(f"gamma/mp KPT expects three or six values, got {len(values)}")
+    mesh = []
+    for value in values[:3]:
+        number = _kpt_number(value, "mesh subdivision")
+        if number <= 0 or number != int(number):
+            raise ValueError(
+                f"KPT mesh subdivisions must be positive integers, got {value!r}"
+            )
+        mesh.append(int(number))
+    shifts = [_kpt_number(value, "mesh shift") for value in values[3:]]
+    return mesh + shifts + [0.0] * (3 - len(shifts))
+
+
+def _explicit_kpt_points(kpoint_list) -> list:
+    """Validate explicit k-points and return them with normalized weights."""
+    groups = _kpt_groups(kpoint_list)
+    widths = {len(group) for group in groups}
+    if not widths <= {3, 4}:
+        raise ValueError(
+            "each explicit k-point needs three coordinates and an optional weight"
+        )
+    if len(widths) > 1:
+        raise ValueError("explicit k-points must either all define a weight or none")
+    points = [
+        [_kpt_number(value, "coordinate") for value in group[:3]] for group in groups
+    ]
+    if widths == {4}:
+        weights = [_kpt_number(group[3], "weight") for group in groups]
+        total = sum(weights)
+        if total == 0:
+            raise ValueError("KPT weights must not sum to zero")
+        weights = [weight / total for weight in weights]
     else:
-        print(f"ERROR: model is {model}, not support now!!!")
-        sys.exit(1)
+        weights = [1.0 / len(groups)] * len(groups)
+    return [point + [weight] for point, weight in zip(points, weights)]
+
+
+def _line_kpt_nodes(kpoint_list) -> list:
+    """Validate line-mode nodes and return coordinates, counts and comments."""
+    groups = _kpt_groups(kpoint_list)
+    if len(groups) < 2:
+        raise ValueError("a line KPT needs at least two high-symmetry points")
+    nodes = []
+    for group in groups:
+        if len(group) not in (4, 5):
+            raise ValueError(
+                "each line KPT node needs three coordinates, a point count and an "
+                "optional comment"
+            )
+        coords = [_kpt_number(value, "coordinate") for value in group[:3]]
+        count = _kpt_number(group[3], "point count")
+        if count <= 0 or count != int(count):
+            raise ValueError(
+                f"line KPT point counts must be positive integers, got {group[3]!r}"
+            )
+        comment = None
+        if len(group) == 5:
+            comment = str(group[4])
+            if not comment.startswith(("#", "//")):
+                comment = "#" + comment
+        nodes.append((coords, int(count), comment))
+    return nodes
+
+
+def FormatKpt(kpoint_list:List = [1,1,1,0,0,0], model="gamma") -> str:
+    """Return the content of an ABACUS KPT file.
+
+    Args:
+        kpoint_list: Mesh values for gamma/mp, or one group per k-point/node.
+        model (str): One of gamma, mp, direct, cartesian, line, line_cartesian.
+
+    Returns:
+        str: The KPT file content.
+
+    Raises:
+        ValueError: If the model is unknown or the values do not match it.
+    """
+    name = NormalizeKptModel(model)
+    if name in ("gamma", "mp"):
+        values = _gamma_kpt_values(kpoint_list)
+        body = " ".join(_kpt_text(value) for value in values)
+        return f"K_POINTS\n0\n{_KPT_HEADERS[name]}\n{body}\n"
+    if name in ("direct", "cartesian"):
+        points = _explicit_kpt_points(kpoint_list)
+        rows = "".join(
+            "%17.11f %17.11f %17.11f %17.11f\n" % tuple(point) for point in points
+        )
+        return f"K_POINTS\n{len(points)}\n{_KPT_HEADERS[name]}\n{rows}"
+
+    nodes = _line_kpt_nodes(kpoint_list)
+    rows = ""
+    for coords, count, comment in nodes:
+        row = "%17.11f %17.11f %17.11f %4d" % (coords[0], coords[1], coords[2], count)
+        if comment:
+            row += " " + comment
+        rows += row + "\n"
+    return f"K_POINTS\n{len(nodes)}\n{_KPT_HEADERS[name]}\n{rows}"
+
+
+def WriteKpt(kpoint_list:List = [1,1,1,0,0,0],file_name:str = "KPT", model="gamma"):
+    """Write an ABACUS KPT file.
+
+    Docs for KPT file: https://abacus.deepmodeling.com/en/latest/advanced/input_files/kpt.html
+    Supported models are gamma, mp, direct, cartesian, line and line_cartesian.
+
+    For the gamma/mp model the k-point_list holds three or six mesh values, such
+    as ``[2,2,2,0,0,0]``.  For the direct/cartesian model it holds one group of
+    three coordinates plus an optional weight per k-point, such as
+    ``[[0.0,0.0,0.0,1.0],[0.5,0.0,0.0,1.0]]``.  For the line models it holds one
+    group of three coordinates, a point count and an optional comment per node,
+    such as ``[[0.0,0.0,0.0,10],[0.5,0.0,0.0,1]]``.
+
+    Args:
+        kpoint_list (List): K-point mesh or node list, see above.
+        file_name (str): Output file name.
+        model (str): KPT model name.
+
+    Raises:
+        ValueError: If the model is unknown or the values do not match it.
+    """
+    with open(file_name, "w") as f1:
+        f1.write(FormatKpt(kpoint_list, model))

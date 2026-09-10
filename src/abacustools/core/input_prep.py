@@ -13,7 +13,13 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence, Union
 
 from abacustools.core.config import CONFIG
-from abacustools.io.abacus import ReadInput, WriteInput, WriteKpt
+from abacustools.io.abacus import (
+    FormatKpt,
+    NormalizeKptModel,
+    ReadInput,
+    WriteInput,
+    WriteKpt,
+)
 from abacustools.io.stru import MASS_DICT, AbacusSTRU
 
 
@@ -79,6 +85,27 @@ def _is_enabled(value: Any) -> bool:
         return float(value) > 0
     except (TypeError, ValueError):
         return str(value).strip().lower() in {"true", "t", "yes", "y"}
+
+
+def _normalize_kpt(kpt: Sequence[Any], model: str) -> list:
+    """Group a flat or nested KPT argument for the requested model.
+
+    The gamma/mp models take a single mesh group, while the explicit and line
+    models take one group per k-point or node.  A flat list is treated as one
+    group so that ``kpt=[2, 2, 2]`` keeps working for gamma/mp.
+    """
+    name = NormalizeKptModel(model)
+    values = list(kpt)
+    if not values:
+        raise ValueError("kpt must not be empty")
+    nested = all(isinstance(value, (list, tuple)) for value in values)
+    if name in ("gamma", "mp"):
+        if nested:
+            if len(values) != 1:
+                raise ValueError("gamma/mp kpt accepts a single mesh group")
+            values = list(values[0])
+        return values
+    return [list(value) for value in values] if nested else [values]
 
 
 def _element_from_filename(filename: str) -> Optional[str]:
@@ -355,10 +382,11 @@ class InputPreparer:
             raise ValueError("nspin must be 1, 2, or 4")
         if self.soc and self.nspin != 4:
             self.nspin = 4
-        if self.kpt is not None and len(self.kpt) not in (3, 6):
-            raise ValueError("kpt must contain three or six values")
-        if self.kpt_model not in ("gamma", "mp", "direct", "cartesian", "line", "line_cartesian"):
-            raise ValueError(f"unsupported KPT model: {self.kpt_model}")
+        self.kpt_model = NormalizeKptModel(self.kpt_model)
+        if self.kpt is not None:
+            self.kpt = _normalize_kpt(self.kpt, self.kpt_model)
+            # Validate before any directory is created.
+            FormatKpt(self.kpt, self.kpt_model)
 
     def _sources(self) -> list[Path]:
         sources = []
@@ -522,7 +550,7 @@ class InputPreparer:
         filename = str(inputs.get("kpoint_file", "KPT"))
         (destination / filename).parent.mkdir(parents=True, exist_ok=True)
         if self.kpt is not None:
-            WriteKpt(list(self.kpt), destination / filename, model=self.kpt_model)
+            WriteKpt(self.kpt, destination / filename, model=self.kpt_model)
             return
         if _is_enabled(inputs.get("gamma_only")) or _is_enabled(inputs.get("kspacing")):
             return

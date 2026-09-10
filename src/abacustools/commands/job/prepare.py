@@ -39,11 +39,23 @@ def register_parser(subparsers) -> None:
     )
     parser.add_argument("--paw", default=None, type=Path, help="PAW file or library directory.")
     parser.add_argument("--input", default=None, type=Path, metavar="INPUT", help="INPUT template.")
-    parser.add_argument("--kpt", default=None, type=int, nargs="+", help="Three or six Gamma/MP KPT values.")
+    parser.add_argument(
+        "--kpt",
+        default=None,
+        action="append",
+        nargs="+",
+        type=parse_input_value,
+        metavar="VALUE",
+        help=(
+            "KPT values. Gamma/MP take three or six mesh values; the direct, "
+            "cartesian and line models take one group per k-point or node, so "
+            "repeat the option for each group."
+        ),
+    )
     parser.add_argument(
         "--kpt-model", default="gamma",
         choices=("gamma", "mp", "direct", "cartesian", "line", "line_cartesian"),
-        help="KPT model used with --kpt.",
+        help="KPT model used with --kpt, default: gamma.",
     )
     basis = parser.add_mutually_exclusive_group()
     basis.add_argument("--basis", choices=("pw", "lcao"), default=None)
