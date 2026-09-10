@@ -1,5 +1,6 @@
 """The ``abacustools postprocess`` command family."""
 
+from . import bader as bader_command
 from . import band as band_command
 from . import cohp as cohp_command
 from . import dos as dos_command
@@ -19,6 +20,7 @@ def register_parser(subparsers) -> None:
         title="postprocess subcommands",
         required=True,
     )
+    bader_command.register_parser(postprocess_subparsers)
     band_command.register_parser(postprocess_subparsers)
     cohp_command.register_parser(postprocess_subparsers)
     dos_command.register_parser(postprocess_subparsers)

@@ -1,11 +1,13 @@
-from typing import List, Optional, Tuple, Literal
+from typing import Optional, Sequence, Tuple, Union, Literal
 import os
+import struct
 
 import numpy as np
 
 from ase.data import atomic_numbers
 
 from abacustools.core.constant import (
+    ANG_TO_BOHR,
     BOHR_TO_ANG,
     ELEMENTARY_CHARGE,
     RY_TO_EV,
@@ -56,6 +58,310 @@ def _charge_to_potential(chg, cell):
     return potential / VACUUM_PERMITTIVITY * ELEMENTARY_CHARGE * -1 * 1e10
 
 
+def _restart_grid_index(miller: np.ndarray, grid_shape) -> np.ndarray:
+    """Map Miller indices onto non-negative FFT-array indices (``g mod n``)."""
+    shape = np.asarray(grid_shape, dtype=np.int64)
+    return np.mod(np.asarray(miller, dtype=np.int64), shape)
+
+
+def _scatter_rhog(rhog: np.ndarray, miller: np.ndarray, grid_shape) -> np.ndarray:
+    full = np.zeros(tuple(int(n) for n in grid_shape), dtype=np.complex128)
+    index = _restart_grid_index(miller, grid_shape)
+    full[index[:, 0], index[:, 1], index[:, 2]] = rhog
+    return full
+
+
+def _gather_rhog(full: np.ndarray, miller: np.ndarray, grid_shape) -> np.ndarray:
+    index = _restart_grid_index(miller, grid_shape)
+    return full[index[:, 0], index[:, 1], index[:, 2]]
+
+
+def miller_indices_within_cutoff(reciprocal_lattice: np.ndarray, cutoff: float) -> np.ndarray:
+    """Enumerate the Miller indices of all G-vectors with ``|G|**2 <= cutoff``.
+
+    Args:
+        reciprocal_lattice: (3, 3) array whose rows are the reciprocal lattice
+            vectors including the ``2*pi`` factor, i.e. as returned by
+            :func:`_reciprocal_lattice`.
+        cutoff: Maximum squared length of ``G``, in Bohr^-2.
+
+    Returns:
+        An ``(ngm, 3)`` integer array of Miller indices, sorted by ``|G|**2``
+        and then lexicographically for reproducibility.
+    """
+    reciprocal = np.asarray(reciprocal_lattice, dtype=float)
+    if reciprocal.shape != (3, 3):
+        raise ValueError(f"reciprocal_lattice must have shape (3, 3), got {reciprocal.shape}")
+    if cutoff <= 0.0:
+        raise ValueError("cutoff must be positive")
+    norms = np.linalg.norm(reciprocal, axis=1)
+    if np.any(norms == 0.0):
+        raise ValueError("reciprocal_lattice must be non-singular")
+    bounds = np.ceil(np.sqrt(cutoff) / norms).astype(np.int64) + 1
+    axes = [np.arange(-bound, bound + 1) for bound in bounds]
+    miller = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 3)
+    squared = np.sum((miller @ reciprocal) ** 2, axis=1)
+    keep = miller[squared <= cutoff * (1.0 + 1e-12)]
+    keep_squared = np.sum((keep @ reciprocal) ** 2, axis=1)
+    order = np.lexsort((keep[:, 2], keep[:, 1], keep[:, 0], keep_squared))
+    return keep[order]
+
+
+class RestartCharge:
+    """Reader/writer and FFT converter for ABACUS ``*-CHARGE-DENSITY.restart``.
+
+    ABACUS stores the charge density in reciprocal space as complex Fourier
+    coefficients ``rho(G)`` on the plane-wave basis. The binary layout (native
+    little-endian) follows the Quantum ESPRESSO-like format documented in
+    ``source/module_io/rhog_io.h`` of ABACUS::
+
+        int32   3
+        int32   gamma_only
+        int32   ngm_g
+        int32   nspin
+        int32   3
+        int32   9
+        float64[9]  GT  (row-major; inv(latvec), latvec in units of lat0, G in 2*pi/lat0)
+        int32   9
+        int32   ngm_g * 3
+        int32[ngm_g*3]  Miller indices (gx, gy, gz) of every G-vector
+        int32   ngm_g * 3
+        for each spin channel:
+            int32             ngm_g
+            complex128[ngm_g] rho(G)
+            int32             ngm_g
+
+    The FFT convention matches ABACUS ``PW_Basis``::
+
+        rho(G) = (1/N) * sum_r rho(r) * exp(-i G.r)
+        rho(r) =         sum_G rho(G) * exp(+i G.r)
+
+    so with numpy ``rho(G) = fftn(rho(r)) / N`` and ``rho(r) = N * ifftn(rho(G))``.
+
+    Note:
+        Only ``gamma_only=False`` files can be converted between real and
+        reciprocal space. Files with ``gamma_only=True`` can still be read and
+        written, but :meth:`to_real` and :meth:`from_real` raise
+        :class:`NotImplementedError` because the half-sphere reconstruction
+        depends on ABACUS-specific G-vector ordering.
+    """
+
+    def __init__(
+        self,
+        rhog: np.ndarray,
+        miller: np.ndarray,
+        reciprocal_lattice: np.ndarray,
+        gamma_only: bool = False,
+    ):
+        rhog = np.asarray(rhog, dtype=np.complex128)
+        if rhog.ndim == 1:
+            rhog = rhog[np.newaxis, :]
+        miller = np.asarray(miller, dtype=np.int64)
+        reciprocal_lattice = np.asarray(reciprocal_lattice, dtype=float)
+
+        if miller.ndim != 2 or miller.shape[1] != 3:
+            raise ValueError(f"miller must have shape (ngm, 3), got {miller.shape}")
+        if rhog.ndim != 2 or rhog.shape[1] != miller.shape[0]:
+            raise ValueError(
+                f"rhog must have shape (nspin, {miller.shape[0]}), got {rhog.shape}"
+            )
+        if reciprocal_lattice.shape != (3, 3):
+            raise ValueError(
+                f"reciprocal_lattice must have shape (3, 3), got {reciprocal_lattice.shape}"
+            )
+
+        self._rhog = rhog
+        self._miller = miller
+        self._reciprocal_lattice = reciprocal_lattice
+        self._gamma_only = bool(gamma_only)
+
+    @property
+    def rhog(self) -> np.ndarray:
+        """The complex G-space coefficients, shape ``(nspin, ngm)``."""
+        return self._rhog
+
+    @property
+    def miller(self) -> np.ndarray:
+        """The Miller indices of the stored G-vectors, shape ``(ngm, 3)``."""
+        return self._miller
+
+    @property
+    def reciprocal_lattice(self) -> np.ndarray:
+        """The row-major matrix stored in the file (``inv(latvec)``, latvec in units of lat0)."""
+        return self._reciprocal_lattice
+
+    @property
+    def gamma_only(self) -> bool:
+        """Whether the file was written in the gamma-only representation."""
+        return self._gamma_only
+
+    @property
+    def nspin(self) -> int:
+        """Number of spin channels stored in the file."""
+        return self._rhog.shape[0]
+
+    @property
+    def ngm(self) -> int:
+        """Number of G-vectors stored in the file."""
+        return self._miller.shape[0]
+
+    @classmethod
+    def read(cls, filename: str) -> "RestartCharge":
+        """Read an ABACUS ``*-CHARGE-DENSITY.restart`` file.
+
+        Args:
+            filename: Path to the restart file.
+
+        Returns:
+            A :class:`RestartCharge` holding ``rho(G)`` and the G-vectors.
+        """
+        with open(filename, "rb") as handle:
+            def read_int32() -> int:
+                raw = handle.read(4)
+                if len(raw) != 4:
+                    raise ValueError(f"unexpected end of restart file {filename}")
+                return struct.unpack("<i", raw)[0]
+
+            def read_float64(count: int) -> np.ndarray:
+                raw = handle.read(8 * count)
+                if len(raw) != 8 * count:
+                    raise ValueError(f"unexpected end of restart file {filename}")
+                return np.frombuffer(raw, dtype="<f8").copy()
+
+            def read_int32_array(count: int) -> np.ndarray:
+                raw = handle.read(4 * count)
+                if len(raw) != 4 * count:
+                    raise ValueError(f"unexpected end of restart file {filename}")
+                return np.frombuffer(raw, dtype="<i4").copy()
+
+            def expect(value: int, expected: int) -> None:
+                if value != expected:
+                    raise ValueError(
+                        f"malformed restart file {filename}: expected marker "
+                        f"{expected}, got {value}"
+                    )
+
+            expect(read_int32(), 3)
+            gamma_only = read_int32()
+            ngm = read_int32()
+            nspin = read_int32()
+            expect(read_int32(), 3)
+
+            expect(read_int32(), 9)
+            reciprocal_lattice = read_float64(9).reshape(3, 3)
+            expect(read_int32(), 9)
+
+            expect(read_int32(), 3 * ngm)
+            miller = read_int32_array(3 * ngm).reshape(ngm, 3)
+            expect(read_int32(), 3 * ngm)
+
+            rhog = np.empty((nspin, ngm), dtype=np.complex128)
+            for ispin in range(nspin):
+                expect(read_int32(), ngm)
+                raw = handle.read(16 * ngm)
+                if len(raw) != 16 * ngm:
+                    raise ValueError(f"unexpected end of restart file {filename}")
+                rhog[ispin] = np.frombuffer(raw, dtype="<c16")
+                expect(read_int32(), ngm)
+
+        return cls(rhog, miller, reciprocal_lattice, gamma_only=bool(gamma_only))
+
+    def write(self, filename: str) -> None:
+        """Write the current data to an ABACUS ``*-CHARGE-DENSITY.restart`` file.
+
+        Args:
+            filename: Path of the file to create.
+        """
+        ngm = self.ngm
+        with open(filename, "wb") as handle:
+            handle.write(struct.pack("<i", 3))
+            handle.write(struct.pack("<i", int(self._gamma_only)))
+            handle.write(struct.pack("<i", ngm))
+            handle.write(struct.pack("<i", self.nspin))
+            handle.write(struct.pack("<i", 3))
+
+            handle.write(struct.pack("<i", 9))
+            handle.write(np.ascontiguousarray(self._reciprocal_lattice, dtype="<f8").tobytes())
+            handle.write(struct.pack("<i", 9))
+
+            handle.write(struct.pack("<i", 3 * ngm))
+            handle.write(np.ascontiguousarray(self._miller, dtype="<i4").tobytes())
+            handle.write(struct.pack("<i", 3 * ngm))
+
+            for ispin in range(self.nspin):
+                handle.write(struct.pack("<i", ngm))
+                handle.write(np.ascontiguousarray(self._rhog[ispin], dtype="<c16").tobytes())
+                handle.write(struct.pack("<i", ngm))
+
+    def to_real(self, grid_shape) -> np.ndarray:
+        """Inverse FFT of ``rho(G)`` onto a real-space grid.
+
+        Args:
+            grid_shape: ``(nx, ny, nz)`` dimensions of the FFT grid. The grid is
+                not stored in the restart file, so it must be supplied (for
+                example from ``running_scf.log`` or from the STRU plus cutoff).
+
+        Returns:
+            A ``(nspin, nx, ny, nz)`` float array of the charge density in
+            ABACUS units (e/Bohr^3).
+        """
+        if self._gamma_only:
+            raise NotImplementedError(
+                "gamma_only restart files cannot be converted to real space yet"
+            )
+        shape = tuple(int(n) for n in grid_shape)
+        if len(shape) != 3 or any(n <= 0 for n in shape):
+            raise ValueError(f"grid_shape must be three positive integers, got {shape}")
+        npoints = int(np.prod(shape))
+        real = np.empty((self.nspin,) + shape, dtype=float)
+        for ispin in range(self.nspin):
+            full = _scatter_rhog(self._rhog[ispin], self._miller, shape)
+            real[ispin] = (np.fft.ifftn(full) * npoints).real
+        return real
+
+    @classmethod
+    def from_real(
+        cls,
+        rho: np.ndarray,
+        reciprocal_lattice: np.ndarray,
+        miller: np.ndarray,
+        gamma_only: bool = False,
+    ) -> "RestartCharge":
+        """Forward FFT of a real-space density into ``rho(G)``.
+
+        Args:
+            rho: Real-space density, either ``(nx, ny, nz)`` or
+                ``(nspin, nx, ny, nz)``, in ABACUS units (e/Bohr^3).
+            reciprocal_lattice: (3, 3) row-major reciprocal matrix in the ABACUS
+                convention (``inv(cell)``, without the ``2*pi`` factor).
+            miller: ``(ngm, 3)`` Miller indices of the G-vectors to keep.
+            gamma_only: Value stored in the file header. Only ``False`` is
+                supported for the FFT conversion.
+
+        Returns:
+            A :class:`RestartCharge` with the sampled ``rho(G)``.
+        """
+        if gamma_only:
+            raise NotImplementedError(
+                "gamma_only restart files cannot be converted from real space yet"
+            )
+        rho = np.asarray(rho, dtype=float)
+        if rho.ndim == 3:
+            rho = rho[np.newaxis, :]
+        if rho.ndim != 4:
+            raise ValueError(
+                f"rho must have shape (nx, ny, nz) or (nspin, nx, ny, nz), got {rho.shape}"
+            )
+        shape = rho.shape[1:]
+        npoints = int(np.prod(shape))
+        miller = np.asarray(miller, dtype=np.int64)
+        rhog = np.empty((rho.shape[0], miller.shape[0]), dtype=np.complex128)
+        for ispin in range(rho.shape[0]):
+            full = np.fft.fftn(rho[ispin]) / npoints
+            rhog[ispin] = _gather_rhog(full, miller, shape)
+        return cls(rhog, miller, reciprocal_lattice, gamma_only=gamma_only)
+
+
 class Grid:
     """The class for charge density and potential data
     
@@ -63,16 +369,16 @@ class Grid:
         data (np.ndarray): 3D numpy array of the grid data (charge density or potential), shape (Nx, Ny, Nz)
         cell (np.ndarray): 3x3 numpy array representing the lattice vectors
         atom_positions (np.ndarray): Nx3 numpy array of atomic positions in Cartesian coordinates
-        atom_types (List[int]): List of atomic types (atomic numbers)
-        atom_charges (List[float]): the charge of each atom
+        atom_types (Sequence[int]): atomic types (atomic numbers)
+        atom_charges (Sequence[float]): the charge of each atom
         origin (np.ndarray): 1D numpy array of length 3 representing the origin of the grid in Cartesian coordinates
     """
     def __init__(self, 
                  data: np.ndarray,
                  cell: np.ndarray,
                  atom_positions: Optional[np.ndarray] = None,
-                 atom_types: Optional[np.ndarray] = None,
-                 atom_charges: Optional[np.ndarray] = None,
+                 atom_types: Optional[Union[np.ndarray, Sequence]] = None,
+                 atom_charges: Optional[Union[np.ndarray, Sequence]] = None,
                  origin: Optional[np.ndarray] = np.zeros(3),
                  
                  ):
@@ -352,8 +658,8 @@ class Charge(Grid):
                  data: np.ndarray,
                  cell: np.ndarray,
                  atom_positions: Optional[np.ndarray] = None,
-                 atom_types: Optional[List[str]] = None,
-                 atom_charges: Optional[List[float]] = None,
+                 atom_types: Optional[Union[np.ndarray, Sequence]] = None,
+                 atom_charges: Optional[Union[np.ndarray, Sequence]] = None,
                  origin: np.ndarray = np.zeros(3)
                  ):
         super().__init__(data, cell, atom_positions, atom_types, atom_charges, origin)
@@ -387,7 +693,70 @@ class Charge(Grid):
         """
         pot = _charge_to_potential(self.data, self.cell)
         return Potential(pot, self.cell, self.atom_positions, self.atom_types, self.atom_charges, self.origin)  
-    
+
+    @classmethod
+    def from_restart(
+        cls,
+        restart_file: str,
+        grid_shape: Tuple[int, int, int],
+        cell: Optional[np.ndarray] = None,
+        atom_positions: Optional[np.ndarray] = None,
+        atom_types: Optional[Union[np.ndarray, Sequence]] = None,
+        atom_charges: Optional[Union[np.ndarray, Sequence]] = None,
+        origin: Optional[np.ndarray] = None,
+        spin: int = 0,
+        lat0: float = ANG_TO_BOHR,
+    ) -> "Charge":
+        """Build a Charge from an ABACUS ``*-CHARGE-DENSITY.restart`` file.
+
+        The real-space density is recovered with an inverse FFT and converted
+        from ABACUS units (e/Bohr^3) to e/Ang^3. When ``cell`` is omitted it is
+        reconstructed from the reciprocal matrix stored in the file; atomic
+        information is not part of the restart format and stays empty unless
+        supplied. ``lat0`` is the ABACUS ``LATTICE_CONSTANT`` in Bohr and is only
+        needed for the reconstruction (the common 1.889726 Bohr makes the STRU
+        vectors Angstrom).
+        """
+        restart = RestartCharge.read(restart_file)
+        if spin < 0 or spin >= restart.nspin:
+            raise IndexError(f"spin {spin} out of range for nspin={restart.nspin}")
+        data = restart.to_real(grid_shape)[spin] / BOHR2A**3
+        if cell is None:
+            cell = np.linalg.inv(restart.reciprocal_lattice) * lat0 * BOHR2A
+        if origin is None:
+            origin = np.zeros(3)
+        return cls(
+            data,
+            np.asarray(cell, dtype=float),
+            atom_positions,
+            None if atom_types is None else np.asarray(atom_types),
+            None if atom_charges is None else np.asarray(atom_charges),
+            origin,
+        )
+
+    def save_restart(
+        self,
+        filename: str,
+        miller: np.ndarray,
+        gamma_only: bool = False,
+        lat0: float = ANG_TO_BOHR,
+    ) -> None:
+        """Write the charge density to an ABACUS ``*-CHARGE-DENSITY.restart`` file.
+
+        Args:
+            filename: Path of the file to create.
+            miller: ``(ngm, 3)`` Miller indices of the plane waves to keep.
+            gamma_only: Value stored in the file header. Only ``False`` supports
+                the FFT conversion.
+            lat0: ABACUS ``LATTICE_CONSTANT`` in Bohr used to build the stored
+                reciprocal matrix (default matches a STRU with Angstrom vectors).
+        """
+        cell_bohr = np.asarray(self.cell, dtype=float) * ANG_TO_BOHR
+        reciprocal_lattice = lat0 * np.linalg.inv(cell_bohr)
+        rho_bohr = self.data * BOHR2A**3
+        restart = RestartCharge.from_real(rho_bohr, reciprocal_lattice, miller, gamma_only=gamma_only)
+        restart.write(filename)
+
     def supercell(self, sc: Tuple[int, int, int]):
         """Create a supercell of the charge density data.
         
@@ -421,8 +790,8 @@ class Potential(Grid):
         data: np.ndarray,
         cell: np.ndarray,
         atom_positions: Optional[np.ndarray] = None,
-        atom_types: Optional[List[str]] = None,
-        atom_charges: Optional[List[float]] = None,
+        atom_types: Optional[Union[np.ndarray, Sequence]] = None,
+        atom_charges: Optional[Union[np.ndarray, Sequence]] = None,
         origin: np.ndarray = np.zeros(3),
     ):
         super().__init__(data, cell, atom_positions, atom_types, atom_charges, origin)
