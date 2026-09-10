@@ -177,6 +177,20 @@ volume scale; the postprocess stage reads their energies and fits a third-order
 Birch-Murnaghan equation of state, writing the equilibrium volume, bulk
 modulus, and its pressure derivative to `eos_results.json` and `eos.png`.
 
+Vacancy formation energies can be computed from a supercell with an empty atom:
+
+```text
+abacustools workflow vacancy prepare -j JOB -s 2 2 2 -i 1 5
+abacustools workflow vacancy postprocess -j JOB
+```
+
+The prepare stage builds the pristine supercell, one defective supercell per
+requested atom index (the atom becomes an `empty` species), and reference
+elemental crystal jobs under `ref_element/`. After the cell-relaxation jobs and
+their `final_scf` follow-up have run, the postprocess stage computes
+`E_f = (E_defect + mu) - E_original * N_cells` and writes
+`vacancy_results.json`.
+
 Use `abacustools postprocess result --help` to see all supported result
 parameters. If `--param` is omitted, the command selects the results relevant
 to the job's calculation type and displays scalar results as compact,

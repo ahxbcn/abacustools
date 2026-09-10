@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Tuple, Union, Dict, Any, Optional, Literal
+from typing import List, Tuple, Union, Dict, Any, Optional, Literal, overload
 import copy
 import traceback
 import os
@@ -699,6 +699,12 @@ class AbacusSTRU:
     # write len function
     def __len__(self):
         return len(self._atoms)
+
+    @overload
+    def __getitem__(self, key: int) -> AbacusATOM: ...
+
+    @overload
+    def __getitem__(self, key: slice) -> List[AbacusATOM]: ...
 
     def __getitem__(self, key):
         """Get one or list of atoms"""
