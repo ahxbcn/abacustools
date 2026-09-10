@@ -22,6 +22,12 @@ class StructureEditError(RuntimeError):
 
 
 _DIRECTIONS = {"a": 0, "b": 1, "c": 2, "x": 0, "y": 1, "z": 2}
+_COORDINATE_MODES = {
+    "direct": "direct",
+    "fractional": "direct",
+    "cartesian": "cartesian",
+    "cart": "cartesian",
+}
 
 
 def _direction_index(direction: Union[str, int]) -> int:
@@ -87,6 +93,30 @@ def _validate_coordinate_range(
             f"coordinate range minimum {start:g} is larger than maximum {end:g}"
         )
     return start, end
+
+
+def set_coordinate_mode(structure: AbacusSTRU, mode: str) -> AbacusSTRU:
+    """Return a copy that writes its coordinates in the requested form.
+
+    The atoms keep their positions; only the representation written to the
+    structure file changes, so ``direct``/``fractional`` produces an
+    ``ATOMIC_POSITIONS Direct`` block and ``cartesian`` the Cartesian one.
+
+    Args:
+        structure: Structure to copy from.
+        mode: ``direct``/``fractional`` or ``cartesian``.
+
+    Returns:
+        AbacusSTRU: A new structure carrying the requested coordinate mode.
+    """
+    key = str(mode).strip().lower()
+    if key not in _COORDINATE_MODES:
+        raise StructureEditError(
+            f"unknown coordinate mode: {mode}; use direct (fractional) or cartesian"
+        )
+    edited = _copy(structure)
+    edited.metadata["atom_type"] = _COORDINATE_MODES[key]
+    return edited
 
 
 def select_indices(
@@ -486,6 +516,7 @@ __all__ = [
     "fix_atoms",
     "fix_slab_bottom",
     "make_supercell",
+    "set_coordinate_mode",
     "select_atoms",
     "select_indices",
     "with_vacuum",

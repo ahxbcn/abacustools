@@ -16,6 +16,7 @@ from abacustools.data.structure import (
     make_supercell,
     select_atoms,
     select_indices,
+    set_coordinate_mode,
     with_vacuum,
 )
 from abacustools.io.stru import AbacusATOM, AbacusSTRU
@@ -154,6 +155,25 @@ def test_select_atoms_rejects_an_empty_result() -> None:
     with pytest.raises(StructureEditError, match="no atoms"):
         # The index and the element filter cannot both match.
         select_atoms(_structure(), indices=[0], elements=["O"])
+
+
+def test_set_coordinate_mode_switches_the_representation() -> None:
+    structure = _structure()
+
+    direct = set_coordinate_mode(structure, "direct")
+    assert direct.metadata["atom_type"] == "direct"
+    # The positions themselves do not move.
+    np.testing.assert_allclose(np.asarray(direct.coords), np.asarray(structure.coords))
+    assert structure.metadata["atom_type"] == "cartesian"
+
+    assert set_coordinate_mode(direct, "fractional").metadata["atom_type"] == "direct"
+    assert set_coordinate_mode(direct, "cartesian").metadata["atom_type"] == "cartesian"
+    assert set_coordinate_mode(structure, "cart").metadata["atom_type"] == "cartesian"
+
+
+def test_set_coordinate_mode_rejects_an_unknown_mode() -> None:
+    with pytest.raises(StructureEditError, match="unknown coordinate mode"):
+        set_coordinate_mode(_structure(), "polar")
 
 
 def test_fix_atoms_by_index_and_range() -> None:
@@ -389,3 +409,46 @@ def test_editstru_slab_fix_flag_sets_constraints(tmp_path: Path) -> None:
     free_slab = AbacusSTRU.read(str(free_output))
     assert free_slab is not None
     assert set(free_slab.moves) == {(True, True, True)}
+
+
+def test_editstru_coords_writes_the_requested_representation(tmp_path: Path) -> None:
+    source = _write_structure(tmp_path)
+    original = AbacusSTRU.read(str(source))
+    assert original is not None
+
+    direct = tmp_path / "direct.STRU"
+    assert main([
+        "file", "editstru", "coords", str(source), "-o", str(direct), "--direct",
+    ]) == 0
+    assert "ATOMIC_POSITIONS\nDirect" in direct.read_text(encoding="utf-8")
+    converted = AbacusSTRU.read(str(direct))
+    assert converted is not None
+    np.testing.assert_allclose(
+        np.asarray(converted.coords_direct, dtype=float),
+        np.asarray(original.coords_direct, dtype=float),
+        atol=1e-8,
+    )
+
+    cartesian = tmp_path / "cartesian.STRU"
+    assert main([
+        "file", "editstru", "coords", str(direct), "-o", str(cartesian), "--cartesian",
+    ]) == 0
+    assert "ATOMIC_POSITIONS\nCartesian" in cartesian.read_text(encoding="utf-8")
+    back = AbacusSTRU.read(str(cartesian))
+    assert back is not None
+    np.testing.assert_allclose(
+        np.asarray(back.coords, dtype=float),
+        np.asarray(original.coords, dtype=float),
+        atol=1e-8,
+    )
+    assert back.pps == original.pps
+
+
+def test_editstru_coords_requires_a_mode(tmp_path: Path) -> None:
+    source = _write_structure(tmp_path)
+
+    with pytest.raises(SystemExit):
+        main([
+            "file", "editstru", "coords", str(source),
+            "-o", str(tmp_path / "out.STRU"),
+        ])

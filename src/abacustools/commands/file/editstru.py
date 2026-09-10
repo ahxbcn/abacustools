@@ -14,6 +14,7 @@ from abacustools.data.structure import (
     fix_atoms,
     make_supercell,
     select_atoms,
+    set_coordinate_mode,
     with_vacuum,
 )
 from abacustools.io.stru import AbacusSTRU
@@ -287,6 +288,30 @@ def _register_slab(subparsers) -> None:
     )
 
 
+def _register_coords(subparsers) -> None:
+    """Register ``file editstru coords``."""
+    parser = subparsers.add_parser(
+        "coords",
+        help="Write the atomic positions in the other representation.",
+    )
+    _add_common_arguments(parser, "coords")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
+        "--direct",
+        dest="coordinate_mode",
+        action="store_const",
+        const="direct",
+        help="Write fractional (direct) coordinates.",
+    )
+    mode.add_argument(
+        "--cartesian",
+        dest="coordinate_mode",
+        action="store_const",
+        const="cartesian",
+        help="Write Cartesian coordinates.",
+    )
+
+
 def register_parser(subparsers) -> None:
     """Register the ``file editstru`` parser and its actions."""
     parser = subparsers.add_parser(
@@ -304,6 +329,7 @@ def register_parser(subparsers) -> None:
     _register_slab(actions)
     _register_select(actions)
     _register_fix(actions)
+    _register_coords(actions)
 
 
 def _formula(structure: AbacusSTRU) -> str:
@@ -346,6 +372,8 @@ def _edited_structure(
         return fix_atoms(
             structure, move=move, free_others=args.free_others, **_selection(args)
         )
+    if args.action == "coords":
+        return set_coordinate_mode(structure, args.coordinate_mode)
     raise RuntimeError(f"unknown editstru action: {args.action}")
 
 
@@ -377,12 +405,16 @@ def _run_action(args: argparse.Namespace) -> int:
             1 for atom in edited.atoms if tuple(atom.move or ()) == (False, False, False)
         ),
     }
+    if args.action == "coords":
+        payload["coordinate_mode"] = args.coordinate_mode
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
     print(f"  {args.action}: {args.filename} -> {output}")
     print(f"  atoms: {payload['atoms_before']} -> {payload['atoms_after']}")
     print(f"  formula: {payload['formula']}")
+    if args.action == "coords":
+        print(f"  coordinate mode: {args.coordinate_mode}")
     if payload["fixed_atoms"]:
         print(f"  fixed atoms: {payload['fixed_atoms']} of {payload['atoms_after']}")
     print(
