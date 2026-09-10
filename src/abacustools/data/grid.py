@@ -474,14 +474,16 @@ class Grid:
             data_factor (float): Factor to multiply the data values (e.g., to convert units).
             box_factor (float): Factor to multiply the cell vectors (e.g., to convert units
         """
+        # Grid-step/origin/position precision sets the cell volume on read-back;
+        # 6 decimals corrupts it by ~1e-6, giving a non-integer integrated charge.
         with open(filename, 'w') as f:
             f.write("CUBE FILE\n")
             f.write("OUTER LOOP: X, MIDDLE LOOP: Y, INNER LOOP: Z\n")
-            f.write(f"{len(self.atom_types):5d} {self.origin[0] * box_factor:12.6f} {self.origin[1] * box_factor:12.6f} {self.origin[2] * box_factor:12.6f}\n")
+            f.write(f"{len(self.atom_types):5d} {self.origin[0] * box_factor:20.12f} {self.origin[1] * box_factor:20.12f} {self.origin[2] * box_factor:20.12f}\n")
             for i in range(3):
-                f.write(f"{self.data.shape[i]:5d} {self.cell[i,0] * box_factor/self.data.shape[i]:12.6f} {self.cell[i,1] * box_factor/self.data.shape[i]:12.6f} {self.cell[i,2] * box_factor/self.data.shape[i]:12.6f}\n")
+                f.write(f"{self.data.shape[i]:5d} {self.cell[i,0] * box_factor/self.data.shape[i]:20.12f} {self.cell[i,1] * box_factor/self.data.shape[i]:20.12f} {self.cell[i,2] * box_factor/self.data.shape[i]:20.12f}\n")
             for i in range(len(self.atom_types)):
-                f.write(f"{self.atom_types[i]:5d} {self.atom_charges[i]:12.6f} {self.atom_positions[i,0] * box_factor:12.6f} {self.atom_positions[i,1] * box_factor:12.6f} {self.atom_positions[i,2] * box_factor:12.6f}\n")
+                f.write(f"{self.atom_types[i]:5d} {self.atom_charges[i]:12.6f} {self.atom_positions[i,0] * box_factor:20.12f} {self.atom_positions[i,1] * box_factor:20.12f} {self.atom_positions[i,2] * box_factor:20.12f}\n")
             flat_data = self.data.flatten() * data_factor
             for i in range(0, len(flat_data), 6):
                 line_data = flat_data[i:i+6] 
