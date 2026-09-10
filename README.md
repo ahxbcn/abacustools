@@ -161,6 +161,17 @@ silently using a different basis. Libraries without variant directories are
 unaffected, and an `element.json` mapping takes precedence over variant
 selection.
 
+Upstream libraries also publish the recommended cutoff radius of every element
+as `<orbital directory>_<VARIANT>_..._StandardRcut.json` next to the orbital
+directory, with an `Others` fallback. When such an index is present, the
+matching `<radius>au` orbital is selected; otherwise the first candidate of the
+chosen variant is used, as before.
+
+Because upstream sometimes renames these directories (`Orbitals` became
+`Orbitals_v2.0`), a configured path that no longer exists is resolved to the
+uniquely matching sibling directory of the same resource type, with a warning.
+If several candidates match, the preparation stops and lists them.
+
 ```yaml
 # element.json: element -> file name, resolved below the library directory
 {"Si": "Si_ONCV_PBE-1.0.upf", "O": "O_ONCV_PBE-1.0.upf"}

@@ -107,6 +107,79 @@ def _element_from_filename(filename: str) -> Optional[str]:
     return element if element in MASS_DICT else None
 
 
+_RESOURCE_DIRECTORY_PREFIXES = {
+    "pp": ("pseudopotential",),
+    "orb": ("orbital",),
+    "paw": ("paw",),
+}
+
+
+def _resolve_library_path(path: Path, resource_type: Optional[str]) -> Path:
+    """Return a resource path, recovering from a reorganisation of the library.
+
+    Upstream libraries are occasionally reorganised, so a configured
+    ``.../Orbitals`` can become ``.../Orbitals_v2.0``.  When the configured path
+    is missing, a uniquely matching sibling directory of the same resource type
+    is used instead of failing.
+    """
+    if path.exists():
+        return path
+    prefixes = _RESOURCE_DIRECTORY_PREFIXES.get(resource_type or "", ())
+    candidates = []
+    if prefixes and path.parent.is_dir():
+        candidates = sorted(
+            child
+            for child in path.parent.iterdir()
+            if child.is_dir()
+            and any(child.name.lower().startswith(prefix) for prefix in prefixes)
+        )
+    if len(candidates) == 1:
+        warnings.warn(
+            f"resource path {path} does not exist; using {candidates[0]} instead",
+            stacklevel=4,
+        )
+        return candidates[0]
+    message = f"resource path does not exist: {path}"
+    if candidates:
+        message += "; candidate directories: " + ", ".join(str(item) for item in candidates)
+    raise InputPreparationError(message)
+
+
+def _standard_rcut_index(root: Path, variant: Optional[str]) -> dict[str, float]:
+    """Read the standard orbital cutoffs published next to an orbital library.
+
+    Upstream libraries ship ``<orbital directory>_<VARIANT>_..._StandardRcut.json``
+    files that name the recommended cutoff radius of every element, with an
+    ``Others`` fallback.  The index is only read when a variant is requested,
+    because the file name identifies the variant it belongs to.
+    """
+    if not variant:
+        return {}
+    for directory in (root, root.parent):
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*.json")):
+            name = path.name.lower()
+            if "standardrcut" not in name or variant.lower() not in name:
+                continue
+            try:
+                values = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                raise InputPreparationError(
+                    f"invalid standard cutoff index: {path}"
+                ) from error
+            if not isinstance(values, Mapping):
+                raise InputPreparationError(f"invalid standard cutoff index: {path}")
+            index = {}
+            for element, value in values.items():
+                try:
+                    index[str(element)] = float(value)
+                except (TypeError, ValueError):
+                    continue
+            return index
+    return {}
+
+
 def _variant_token(path: Path, root: Path, element: str) -> Optional[str]:
     """Return the SZ/DZP/TZDP-style token of a resource path, if it has one.
 
@@ -138,37 +211,50 @@ def _select_resource(
     resources: Sequence[Path],
     root: Path,
     variant: Optional[str],
+    cutoffs: Optional[Mapping[str, float]] = None,
 ) -> Path:
     """Pick one resource file for an element, honouring the orbital variant.
 
     A library without variant directories is unaffected.  A library that only
     provides other variants raises instead of silently using a different basis.
+    Within the selected variant the cutoff radius recommended by the library
+    index is preferred, falling back to the ``Others`` entry.
     """
+    candidates = list(resources)
     if variant:
         matching = [
-            path for path in resources if _matches_variant(path, root, element, variant)
+            path for path in candidates if _matches_variant(path, root, element, variant)
         ]
         if matching:
-            return matching[0]
-        available = sorted(
-            {
-                token
-                for path in resources
-                if (token := _variant_token(path, root, element)) is not None
-            }
-        )
-        if available:
-            raise InputPreparationError(
-                f"no {variant} resource for {element} in {root}; available variants: "
-                + ", ".join(available)
+            candidates = matching
+        else:
+            available = sorted(
+                {
+                    token
+                    for path in candidates
+                    if (token := _variant_token(path, root, element)) is not None
+                }
             )
-    return resources[0]
+            if available:
+                raise InputPreparationError(
+                    f"no {variant} resource for {element} in {root}; available variants: "
+                    + ", ".join(available)
+                )
+    if cutoffs:
+        cutoff = cutoffs.get(element, cutoffs.get("Others"))
+        if cutoff is not None:
+            pattern = re.compile(rf"(?<![0-9]){cutoff:g}au(?![0-9])")
+            matching = [path for path in candidates if pattern.search(path.name)]
+            if matching:
+                return matching[0]
+    return candidates[0]
 
 
 def _collect_library(
     path: Optional[PathLike],
     resource_type: Optional[str] = None,
     variant: Optional[str] = None,
+    elements: Optional[Iterable[str]] = None,
 ) -> dict[str, Path]:
     """Collect element-to-file mappings from a resource directory.
 
@@ -176,12 +262,14 @@ def _collect_library(
         path: Library file or directory.
         resource_type: One of ``pp``, ``orb`` or ``paw``.
         variant: Orbital variant such as ``DZP``, see :func:`_select_resource`.
+        elements: Elements to resolve; all of them when omitted.  Restricting
+            the mapping keeps an unrelated element that lacks the requested
+            variant, such as La in Dojo-NC-SR, from failing the whole run.
     """
     if path is None:
         return {}
     root = Path(path).expanduser()
-    if not root.exists():
-        raise InputPreparationError(f"resource path does not exist: {root}")
+    root = _resolve_library_path(root, resource_type)
     if root.is_file():
         element = _element_from_filename(root.name)
         if element is None:
@@ -222,8 +310,12 @@ def _collect_library(
     by_element: dict[str, list[Path]] = {}
     for _, _, element, resource in sorted(candidates):
         by_element.setdefault(element, []).append(resource)
+    cutoffs = _standard_rcut_index(root, variant) if resource_type == "orb" else {}
+    wanted = None if elements is None else {str(element) for element in elements}
     for element, resources in by_element.items():
-        mapping[element] = _select_resource(element, resources, root, variant)
+        if wanted is not None and element not in wanted:
+            continue
+        mapping[element] = _select_resource(element, resources, root, variant, cutoffs)
     return mapping
 
 
@@ -608,10 +700,11 @@ class InputPreparer:
 
     def _prepare_structure(self, source: Path, structure: AbacusSTRU, basis: str) -> dict[Path, str]:
         source_dir = source.parent
+        elements = _unique(structure.elements)
         pp_resources = _resource_assignments(
             structure,
             source_dir,
-            _collect_library(self.pp_path, "pp"),
+            _collect_library(self.pp_path, "pp", elements=elements),
             "pp",
             required=True,
             configured_path=self.pp_path,
@@ -621,7 +714,12 @@ class InputPreparer:
             orb_resources = _resource_assignments(
                 structure,
                 source_dir,
-                _collect_library(self.orb_path, "orb", variant=self.orb_variant),
+                _collect_library(
+                    self.orb_path,
+                    "orb",
+                    variant=self.orb_variant,
+                    elements=elements,
+                ),
                 "orb",
                 required=True,
                 configured_path=self.orb_path,
@@ -629,10 +727,14 @@ class InputPreparer:
             )
         else:
             # A plane-wave job neither ships nor references numerical orbitals.
-            structure.set_orb({element: None for element in _unique(structure.elements)})
+            structure.set_orb({element: None for element in elements})
             orb_resources = {}
         paw_resources = _resource_assignments(
-            structure, source_dir, _collect_library(self.paw_path, "paw"), "paw", required=False
+            structure,
+            source_dir,
+            _collect_library(self.paw_path, "paw", elements=elements),
+            "paw",
+            required=False,
         )
         resources = {}
         resources.update(pp_resources)

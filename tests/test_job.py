@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import warnings
 from pathlib import Path
 
@@ -79,6 +80,23 @@ def _variant_library(root: Path) -> Path:
         (directory / f"H_gga_7au_100Ry_{shell}.orb").write_text(variant, encoding="utf-8")
     (root / "H.upf").write_text("pseudo", encoding="utf-8")
     return root
+
+
+def _v2_library(root: Path, rcuts: dict[str, dict[str, float]]) -> Path:
+    """Write an orbital-v2.0 library: variant directories plus cutoff indexes."""
+    orbitals = root / "Orbitals_v2.0"
+    for variant, shell in (("SZ", "1s1p"), ("DZP", "2s2p1d"), ("TZDP", "3s3p2d")):
+        directory = orbitals / f"H_{variant}"
+        directory.mkdir(parents=True)
+        for radius in (7, 8, 10):
+            (directory / f"H_gga_{radius}au_100Ry_{shell}.orb").write_text(
+                variant, encoding="utf-8"
+            )
+    for variant, index in rcuts.items():
+        index_path = root / f"Orbitals_v2.0_{variant}_E100_StandardRcut.json"
+        index_path.write_text(json.dumps(index), encoding="utf-8")
+    (root / "H.upf").write_text("pseudo", encoding="utf-8")
+    return orbitals
 
 
 def test_prepare_writes_complete_lcao_job(tmp_path: Path) -> None:
@@ -400,6 +418,101 @@ def test_prepare_library_variant_overrides_the_global_default(
     ).run()[0].path
 
     assert (job / "H_gga_7au_100Ry_3s3p2d.orb").is_file()
+
+
+def test_prepare_uses_the_standard_cutoff_index(tmp_path: Path) -> None:
+    source, _ = _source_and_library(tmp_path)
+    orbitals = _v2_library(
+        tmp_path / "sg15",
+        {"DZP": {"H": 8, "Others": 10}, "TZDP": {"Others": 7}},
+    )
+
+    job = InputPreparer(
+        source,
+        output_dir=tmp_path / "jobs",
+        filetype="stru",
+        basis="lcao",
+        pp_path=tmp_path / "sg15",
+        orb_path=orbitals,
+        kpt=[1, 1, 1],
+    ).run()[0].path
+
+    assert (job / "H_gga_8au_100Ry_2s2p1d.orb").is_file()
+    assert not (job / "H_gga_10au_100Ry_2s2p1d.orb").exists()
+
+    tzdp = InputPreparer(
+        source,
+        output_dir=tmp_path / "tzdp-jobs",
+        filetype="stru",
+        basis="lcao",
+        pp_path=tmp_path / "sg15",
+        orb_path=orbitals,
+        orb_variant="TZDP",
+        kpt=[1, 1, 1],
+    ).run()[0].path
+    # H is not listed for TZDP, so the Others entry selects the 7au orbital.
+    assert (tzdp / "H_gga_7au_100Ry_3s3p2d.orb").is_file()
+
+
+def test_prepare_recovers_from_a_renamed_library_directory(tmp_path: Path) -> None:
+    source, _ = _source_and_library(tmp_path)
+    _v2_library(tmp_path / "sg15", {"DZP": {"H": 8}})
+
+    with pytest.warns(UserWarning, match="does not exist; using"):
+        job = InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="lcao",
+            pp_path=tmp_path / "sg15",
+            orb_path=tmp_path / "sg15" / "Orbitals",
+            kpt=[1, 1, 1],
+        ).run()[0].path
+
+    assert (job / "H_gga_8au_100Ry_2s2p1d.orb").is_file()
+
+
+def test_prepare_reports_ambiguous_library_directories(tmp_path: Path) -> None:
+    source, _ = _source_and_library(tmp_path)
+    root = tmp_path / "sg15"
+    for name in ("Orbitals_a", "Orbitals_b"):
+        directory = root / name / "H_DZP"
+        directory.mkdir(parents=True)
+        (directory / "H_gga_8au_100Ry_2s2p1d.orb").write_text("DZP", encoding="utf-8")
+    (root / "H.upf").write_text("pseudo", encoding="utf-8")
+
+    with pytest.raises(InputPreparationError, match="candidate directories: .*Orbitals_a"):
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="lcao",
+            pp_path=root,
+            orb_path=root / "Orbitals",
+            kpt=[1, 1, 1],
+        ).run()
+
+
+def test_prepare_ignores_an_unused_element_without_the_variant(tmp_path: Path) -> None:
+    """Dojo-NC-SR only ships TZDP orbitals for La, which must not break other jobs."""
+    source, _ = _source_and_library(tmp_path)
+    orbitals = _v2_library(tmp_path / "dojo", {"DZP": {"H": 8}})
+    lanthanum = orbitals / "La_TZDP"
+    lanthanum.mkdir()
+    (lanthanum / "La_gga_8au_100Ry_3s3p2d.orb").write_text("TZDP", encoding="utf-8")
+
+    job = InputPreparer(
+        source,
+        output_dir=tmp_path / "jobs",
+        filetype="stru",
+        basis="lcao",
+        pp_path=tmp_path / "dojo",
+        orb_path=orbitals,
+        kpt=[1, 1, 1],
+    ).run()[0].path
+
+    assert (job / "H_gga_8au_100Ry_2s2p1d.orb").is_file()
+    assert not (job / "La_gga_8au_100Ry_3s3p2d.orb").exists()
 
 
 def test_validate_reports_unknown_keyword_and_missing_resource(tmp_path: Path) -> None:
