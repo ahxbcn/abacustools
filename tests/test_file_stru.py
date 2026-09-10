@@ -135,5 +135,24 @@ class TestStructureConversion(unittest.TestCase):
             self.assertTrue(output.is_file())
 
 
+def test_str_summarises_composition_and_cell() -> None:
+    structure = AbacusSTRU(
+        cell=[[3.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 3.0]],
+        atoms=[
+            AbacusATOM(label="Si", element="Si", coord=(0.0, 0.0, 0.0)),
+            AbacusATOM(label="O", element="O", coord=(1.0, 1.0, 1.0)),
+            AbacusATOM(label="Si", element="Si", coord=(2.0, 2.0, 2.0)),
+        ],
+        metadata={"atom_type": "cartesian"},
+    )
+
+    text = str(structure)
+
+    assert text.splitlines()[0] == "ABACUS STRU object:Si2O1"
+    assert "NAtoms: 3" in text
+    assert "Cell vectors (Angstrom):" in text
+    assert "3.0000000" in text
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -10,7 +10,11 @@ import pytest
 import yaml
 
 from abacustools.core.config import CONFIG
-from abacustools.core.input_prep import InputPreparationError, InputPreparer
+from abacustools.core.input_prep import (
+    InputPreparationError,
+    InputPreparer,
+    _folder_name,
+)
 from abacustools.core.job import status_job, validate_job
 from abacustools.io.abacus import IsEnabled, ReadInput
 from abacustools.main import main
@@ -1118,6 +1122,37 @@ def test_prepare_reports_elements_missing_from_an_element_index(tmp_path: Path) 
             pp_path=library,
             kpt=[1, 1, 1],
         ).run()
+
+
+@pytest.mark.parametrize(
+    ("syntax", "expected"),
+    [
+        ("{x[:-5]}", "H"),
+        ("{x[0]}", "H"),
+        ("{i:03d}", "007"),
+        ("job_{i}", "job_7"),
+        ("run-{i:02d}-{x[:-5]}", "run-07-H"),
+        ("{{literal}}", "{literal}"),
+    ],
+)
+def test_folder_name_renders_supported_syntax(syntax: str, expected: str) -> None:
+    assert _folder_name(Path("H.stru"), 7, syntax) == expected
+
+
+@pytest.mark.parametrize(
+    "syntax",
+    [
+        "{x.__class__}",
+        "{x.upper()}",
+        "{i+1}",
+        "{x!r}",
+        "../{x}",
+        "/absolute/{x}",
+    ],
+)
+def test_folder_name_rejects_unsupported_syntax(syntax: str) -> None:
+    with pytest.raises(InputPreparationError):
+        _folder_name(Path("H.stru"), 7, syntax)
 
 
 def test_prepare_stays_quiet_when_the_index_selects_the_radius(tmp_path: Path) -> None:

@@ -130,6 +130,11 @@ in `input-params.json`, so a mistyped parameter is reported with a suggestion
 before any directory is created. A parameter of a newer ABACUS than the shipped
 list can still be passed through an INPUT template (`--input`).
 
+Generated folder names default to a zero-padded index. `--folder-syntax` builds
+them from an f-string over `{x}` (the source file name) and `{i}` (the index),
+such as `{x[:-5]}` or `{i:03d}`; any other expression, conversion or path that
+escapes the output directory is rejected.
+
 Pseudopotential and orbital paths are configured through libraries rather than
 through command-line paths: `--library NAME` selects one entry of
 `resources.libraries`, and `~/.abacustools/config.yaml` can hold any number of

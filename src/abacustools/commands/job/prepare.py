@@ -83,7 +83,14 @@ def register_parser(subparsers) -> None:
         "--copy-resources", "--copy-pp-orb", dest="copy_resources", action="store_true",
         help="Copy pseudopotentials/orbitals instead of creating symlinks.",
     )
-    parser.add_argument("--folder-syntax", default=None, help="Folder f-string syntax using x as the source filename.")
+    parser.add_argument(
+        "--folder-syntax",
+        default=None,
+        help=(
+            "Generated folder name as an f-string over {x} (source file name) and "
+            "{i} (index), such as {x[:-5]} or {i:03d}."
+        ),
+    )
     parser.add_argument("--override", "--overwrite", dest="override", action="store_true", help="Replace existing folders.")
     parser.set_defaults(handler=run)
 

@@ -548,17 +548,81 @@ def _install_resources(
             target.symlink_to(source)
 
 
+_FOLDER_FIELD = re.compile(r"^(?P<name>[xi])(?:\[(?P<index>[^\]]*)\])?$")
+
+
+def _apply_folder_index(value: Any, index: Optional[str]) -> Any:
+    """Apply the ``[...]`` part of a folder field to its value."""
+    if index is None:
+        return value
+    parts = [part.strip() for part in index.split(":")]
+    if len(parts) > 3:
+        raise InputPreparationError(f"invalid folder syntax index: [{index}]")
+    bounds = []
+    for part in parts:
+        if part == "":
+            bounds.append(None)
+            continue
+        try:
+            bounds.append(int(part))
+        except ValueError as error:
+            raise InputPreparationError(f"invalid folder syntax index: [{index}]") from error
+    if len(parts) == 1:
+        try:
+            return value[bounds[0]]
+        except IndexError as error:
+            raise InputPreparationError(f"folder syntax index out of range: [{index}]") from error
+    return value[slice(*bounds)]
+
+
+def _render_folder_name(syntax: str, source_name: str, index: int) -> str:
+    """Render a folder syntax with the source file name and index.
+
+    Only the ``{x}`` and ``{i}`` fields are evaluated, optionally sliced
+    (``{x[:-5]}``) or index-selected (``{x[0]}``) and formatted (``{i:03d}``).
+    The syntax is never handed to ``eval``, so it cannot reach any other name.
+
+    Args:
+        syntax: Configured folder f-string.
+        source_name: Source file name bound to ``x``.
+        index: Source index bound to ``i``.
+
+    Returns:
+        str: The rendered folder name.
+    """
+    import string
+
+    rendered = []
+    for literal, field, spec, conversion in string.Formatter().parse(syntax):
+        rendered.append(literal)
+        if field is None:
+            continue
+        if conversion is not None:
+            raise InputPreparationError(
+                f"folder syntax does not support conversions: {syntax}"
+            )
+        match = _FOLDER_FIELD.match(field)
+        if match is None:
+            raise InputPreparationError(
+                "folder syntax only supports the {x} and {i} fields, such as "
+                f"{{x[:-5]}} or {{i:03d}}: {syntax}"
+            )
+        value = _apply_folder_index(
+            source_name if match.group("name") == "x" else index, match.group("index")
+        )
+        try:
+            rendered.append(format(value, spec))
+        except (TypeError, ValueError) as error:
+            raise InputPreparationError(f"invalid folder syntax format: {syntax}") from error
+    return "".join(rendered)
+
+
 def _folder_name(source: Path, index: int, syntax: Optional[str]) -> str:
     if syntax is None:
         return f"{index:06d}"
-    try:
-        # Evaluate the configured f-string against the source name and index
-        # only, so a folder-syntax value cannot reach any other name.
-        value = eval("f" + repr(syntax), {"__builtins__": {}}, {"x": source.name, "i": index})
-    except Exception as error:
-        raise InputPreparationError(f"invalid folder syntax: {syntax}") from error
-    folder = Path(str(value))
-    if not str(value) or folder.is_absolute() or ".." in folder.parts:
+    value = _render_folder_name(syntax, source.name, index)
+    folder = Path(value)
+    if not value or folder.is_absolute() or ".." in folder.parts:
         raise InputPreparationError(f"folder syntax escapes output directory: {syntax}")
     return str(folder)
 

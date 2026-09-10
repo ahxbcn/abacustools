@@ -688,12 +688,15 @@ class AbacusSTRU:
             self.metadata.update(metadata)
 
     def __str__(self):
-        chem_labels = "".join([self.labels_uniq[i]+str(self.labels.count(self.labels_uniq[i])) for i in range(len(self.labels_uniq))])
+        """Summarise the composition, such as ``ABACUS STRU object:Si2O1``."""
+        chem_labels = "".join(
+            f"{label}{self.labels.count(label)}" for label in dict.fromkeys(self.labels)
+        )
         c = f"ABACUS STRU object:{chem_labels}\n"
         c += f"NAtoms: {self.natoms}\n"
         c += "Cell vectors (Angstrom):\n"
         for vec in self.cell:
-            c += f"  {vec[0]:%12.7f} {vec[1]:%12.7f} {vec[2]:%12.7f}\n"
+            c += f"  {vec[0]:12.7f} {vec[1]:12.7f} {vec[2]:12.7f}\n"
         return c
 
     # write len function
