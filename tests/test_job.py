@@ -246,6 +246,69 @@ def test_prepare_rejects_a_broken_element_index(tmp_path: Path) -> None:
     assert not (tmp_path / "jobs" / "000000").exists()
 
 
+def test_prepare_rejects_conflicting_basis_options(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+
+    with pytest.raises(ValueError, match="conflicts with --set basis_type"):
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="lcao",
+            pp_path=library,
+            orb_path=library,
+            set_params={"basis_type": "pw"},
+        )
+
+
+def test_prepare_rejects_unknown_basis_type(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+
+    with pytest.raises(ValueError, match="unsupported basis_type: bogus"):
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            pp_path=library,
+            set_params={"basis_type": "bogus"},
+        )
+
+
+def test_prepare_basis_type_choice_uses_matching_solver(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+
+    job = InputPreparer(
+        source,
+        output_dir=tmp_path / "jobs",
+        filetype="stru",
+        pp_path=library,
+        kpt=[1, 1, 1],
+        set_params={"basis_type": "pw"},
+    ).run()[0].path
+
+    inputs = ReadInput(job / "INPUT")
+    assert inputs["basis_type"] == "pw"
+    assert inputs["ks_solver"] == "dav_subspace"
+    assert not (job / "H.orb").exists()
+
+
+def test_prepare_rejects_a_template_with_another_basis(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+    template = tmp_path / "INPUT.template"
+    template.write_text("INPUT_PARAMETERS\nbasis_type pw\n", encoding="utf-8")
+
+    with pytest.raises(InputPreparationError, match="use a single basis"):
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="lcao",
+            pp_path=library,
+            orb_path=library,
+            input_template=template,
+        ).run()
+
+
 def test_validate_reports_unknown_keyword_and_missing_resource(tmp_path: Path) -> None:
     job = tmp_path / "job"
     job.mkdir()

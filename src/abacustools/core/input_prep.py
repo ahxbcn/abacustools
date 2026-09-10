@@ -343,7 +343,11 @@ class InputPreparer:
         self.dftu_param = dict(dftu_param) if dftu_param is not None else None
         self.init_mag = dict(init_mag) if init_mag is not None else None
         self.afm = afm
-        self.set_params = dict(set_params) if set_params is not None else {}
+        self.set_params = (
+            {str(key).lower(): value for key, value in set_params.items()}
+            if set_params is not None
+            else {}
+        )
         self.copy_resources = copy_resources
         self.folder_syntax = folder_syntax
         self.overwrite = overwrite
@@ -371,8 +375,22 @@ class InputPreparer:
                 f"unsupported job type: {self.job_type}; "
                 f"supported types are {list(available_job_types())}"
             )
-        if self.basis is not None and self.basis not in CONFIG.get("basis_settings", {}):
+        configured_bases = CONFIG.get("basis_settings", {})
+        if self.basis is not None and self.basis not in configured_bases:
             raise ValueError(f"unsupported basis: {self.basis}")
+        requested_basis = self.set_params.get("basis_type")
+        if requested_basis is not None:
+            requested_basis = str(requested_basis).lower()
+            if requested_basis not in configured_bases:
+                raise ValueError(
+                    f"unsupported basis_type: {requested_basis}; configured bases are "
+                    f"{', '.join(sorted(configured_bases)) or 'none'}"
+                )
+            if self.basis is not None and requested_basis != self.basis:
+                raise ValueError(
+                    f"--basis {self.basis} conflicts with --set basis_type "
+                    f"{requested_basis}; use a single basis"
+                )
         if self.nspin not in (1, 2, 4):
             raise ValueError("nspin must be 1, 2, or 4")
         if self.soc and self.nspin != 4:
@@ -399,8 +417,6 @@ class InputPreparer:
     def _base_inputs(self) -> dict[str, Any]:
         inputs = deepcopy(CONFIG["input_templates"][self.job_type])
         explicit_basis = self.basis
-        if explicit_basis in CONFIG.get("basis_settings", {}):
-            inputs.update(deepcopy(CONFIG["basis_settings"][explicit_basis]))
         if self.input_template is not None:
             template_path = Path(self.input_template).expanduser()
             if not template_path.is_file():
@@ -408,18 +424,32 @@ class InputPreparer:
             template = ReadInput(template_path)
             template.pop("calculation", None)
             inputs.update(template)
+        if explicit_basis is not None:
+            template_basis = inputs.get("basis_type")
+            if template_basis is not None and str(template_basis).lower() != explicit_basis:
+                raise InputPreparationError(
+                    f"INPUT template requests basis_type {template_basis} but "
+                    f"--basis {explicit_basis} was given; use a single basis"
+                )
+            inputs["basis_type"] = explicit_basis
 
         basis = explicit_basis or str(
             inputs.get("basis_type", CONFIG["abacus"].get("default_basis", "pw"))
         ).lower()
-        for key, value in CONFIG.get("basis_settings", {}).get(basis, {}).items():
-            inputs.setdefault(key, deepcopy(value))
-        inputs["basis_type"] = basis
 
         inputs.update(self.set_params)
         # The job type always wins over a template or --set calculation value.
         inputs["calculation"] = self.job_type
         basis = str(inputs.get("basis_type", basis)).lower()
+        settings = CONFIG.get("basis_settings", {})
+        if basis not in settings:
+            raise InputPreparationError(
+                f"unsupported basis_type: {basis}; configured bases are "
+                f"{', '.join(sorted(settings)) or 'none'}"
+            )
+        for key, value in settings[basis].items():
+            inputs.setdefault(key, deepcopy(value))
+        inputs["basis_type"] = basis
         if self.nspin == 2:
             inputs.update({"nspin": 2, "mixing_beta": 0.4, "symmetry": 0})
             if basis.startswith("lcao"):

@@ -117,6 +117,12 @@ require an orbital for every element. When neither `--kpt` nor a KPT file,
 `kspacing` or `gamma_only` is available, a 1x1x1 Gamma mesh is written and a
 warning is issued.
 
+The basis defaults of `basis_settings` (solver, diagonalization settings) are
+applied for the basis the job ends up using, so `--set basis_type pw` also
+selects the plane-wave solver. The basis may be given only once: `--basis` and
+`--set basis_type`, or `--basis` and a template with another `basis_type`, are
+rejected instead of producing a mixed INPUT.
+
 Pseudopotential and orbital paths are configured through libraries rather than
 through command-line paths: `--library NAME` selects one entry of
 `resources.libraries`, and `~/.abacustools/config.yaml` can hold any number of
