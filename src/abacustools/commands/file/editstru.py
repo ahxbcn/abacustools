@@ -60,6 +60,17 @@ def _non_negative_float(value: str) -> float:
     return number
 
 
+def _fraction(value: str) -> float:
+    """Return a fraction between 0 and 1 or raise a parser error."""
+    try:
+        number = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(f"not a number: {value}") from error
+    if number < 0 or number > 1:
+        raise argparse.ArgumentTypeError(f"must be between 0 and 1: {value}")
+    return number
+
+
 def _add_common_arguments(parser: argparse.ArgumentParser, action: str) -> None:
     """Register the arguments every edit action shares."""
     parser.add_argument("filename", type=_structure_file, metavar="STRUCTURE")
@@ -261,6 +272,19 @@ def _register_slab(subparsers) -> None:
         choices=("a", "b", "c"),
         help="Lattice direction that receives the vacuum, default: c.",
     )
+    parser.add_argument(
+        "--fix",
+        type=_fraction,
+        nargs="?",
+        const=0.5,
+        default=None,
+        metavar="FRACTION",
+        help=(
+            "Fix the atoms in the lower part of the slab along the vacuum "
+            "direction and free the rest; FRACTION of the slab thickness is "
+            "fixed, 0.5 (the bottom half) by default."
+        ),
+    )
 
 
 def register_parser(subparsers) -> None:
@@ -313,6 +337,7 @@ def _edited_structure(
             surface_supercell=args.surface_supercell,
             vacuum=args.vacuum,
             vacuum_direction=args.vacuum_direction,
+            fix_fraction=args.fix,
         )
     if args.action == "select":
         return select_atoms(structure, remove=args.remove, **_selection(args))
@@ -348,6 +373,9 @@ def _run_action(args: argparse.Namespace) -> int:
         "atoms_after": edited.natoms,
         "formula": _formula(edited),
         "cell_lengths": _cell_lengths(edited),
+        "fixed_atoms": sum(
+            1 for atom in edited.atoms if tuple(atom.move or ()) == (False, False, False)
+        ),
     }
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -355,6 +383,8 @@ def _run_action(args: argparse.Namespace) -> int:
     print(f"  {args.action}: {args.filename} -> {output}")
     print(f"  atoms: {payload['atoms_before']} -> {payload['atoms_after']}")
     print(f"  formula: {payload['formula']}")
+    if payload["fixed_atoms"]:
+        print(f"  fixed atoms: {payload['fixed_atoms']} of {payload['atoms_after']}")
     print(
         "  cell: "
         + " ".join(f"{value:.6f}" for value in payload["cell_lengths"])

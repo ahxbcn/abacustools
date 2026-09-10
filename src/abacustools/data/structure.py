@@ -352,6 +352,7 @@ def build_slab(
     surface_supercell: Sequence[int] = (1, 1),
     vacuum: float = 15.0,
     vacuum_direction: str = "c",
+    fix_fraction: Optional[float] = None,
 ) -> AbacusSTRU:
     """Cut a surface slab out of a bulk structure.
 
@@ -367,6 +368,9 @@ def build_slab(
         vacuum: Empty space between the slab and its periodic image, in Angstrom.
         vacuum_direction: Lattice direction that receives the vacuum, ``a``,
             ``b`` or ``c``.
+        fix_fraction: Fraction of the slab thickness to fix, counted from the
+            lowest atom along ``vacuum_direction``; ``0.5`` fixes the bottom
+            half and frees the rest, while ``None`` leaves every atom free.
 
     Returns:
         AbacusSTRU: The slab, with pseudopotential, orbital and magnetic data
@@ -427,13 +431,60 @@ def build_slab(
         edited.permute_lat_vec(mode="cab", rotate_cart_coord=True)
     elif direction == "b":
         edited.permute_lat_vec(mode="bca", rotate_cart_coord=True)
+    if fix_fraction is not None:
+        edited = fix_slab_bottom(edited, direction=direction, fraction=fix_fraction)
     return edited
+
+
+def fix_slab_bottom(
+    structure: AbacusSTRU,
+    *,
+    direction: Union[str, int] = "c",
+    fraction: float = 0.5,
+) -> AbacusSTRU:
+    """Fix the lower part of a slab and free the remaining atoms.
+
+    The fixed window spans the atoms' own extent along ``direction``: it starts
+    at the lowest atom and reaches ``fraction`` of the slab thickness above it,
+    so it does not depend on where the slab sits inside the cell.  With the
+    default fraction this is the bottom half of the slab.
+
+    Args:
+        structure: Slab to constrain.
+        direction: Direction of the slab normal, ``a``/``b``/``c``.
+        fraction: Part of the slab thickness to fix, between 0 and 1.
+
+    Returns:
+        AbacusSTRU: A new structure with updated ``move`` flags.
+    """
+    axis = _direction_index(direction)
+    try:
+        value = float(fraction)
+    except (TypeError, ValueError) as error:
+        raise StructureEditError(f"invalid fix fraction: {fraction!r}") from error
+    if not np.isfinite(value) or value < 0 or value > 1:
+        raise StructureEditError(
+            f"the fix fraction must be between 0 and 1, got {fraction!r}"
+        )
+    direct = np.asarray(structure.coords_direct, dtype=float)[:, axis]
+    lower = float(direct.min())
+    thickness = float(direct.max()) - lower
+    cutoff = lower + value * thickness
+    return fix_atoms(
+        structure,
+        coordinate_range=(lower, cutoff),
+        direction=axis,
+        cartesian=False,
+        move=(False, False, False),
+        free_others=True,
+    )
 
 
 __all__ = [
     "StructureEditError",
     "build_slab",
     "fix_atoms",
+    "fix_slab_bottom",
     "make_supercell",
     "select_atoms",
     "select_indices",

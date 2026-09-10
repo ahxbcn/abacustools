@@ -76,6 +76,7 @@ orbital file names, movement constraints and magnetic moments:
 abacustools file editstru supercell STRU -o SUPER -n 2 2 1
 abacustools file editstru vacuum    STRU -o SLAB  -t 15 --direction c --center
 abacustools file editstru slab      STRU -o SLAB  --miller 1 0 0 --layers 3 --vacuum 15
+abacustools file editstru slab      STRU -o SLAB  --miller 1 1 0 --layers 4 --fix
 abacustools file editstru select    STRU -o SUB   --elements Si O
 abacustools file editstru select    STRU -o FREE  --indices 1 3 --remove
 abacustools file editstru fix       STRU -o FIXED --coords 0 0.2 --direction c --direct
@@ -101,8 +102,16 @@ periodic image in Angstrom. The normal is placed along `c` and can be moved to
 are restored per element afterwards, because rebuilding the in-plane supercell
 through ASE drops that mapping; the zero moments and velocities ASE fills in for
 structures that had none are removed again. Movement constraints are not carried
-over by the cut, so apply them to the slab with `fix`. Structures with empty
-atoms are rejected, because ASE cannot represent those labels.
+over by the cut, so constrain the slab with `--fix` or with the `fix` action.
+Structures with empty atoms are rejected, because ASE cannot represent those
+labels.
+
+`--fix` constrains the slab right away: the atoms within a fraction of the slab
+thickness above its lowest atom stay fixed and every other atom is released. The
+window follows the vacuum direction and, unlike the plain `fix` action, is
+measured from the slab itself, so the default `--fix` fixes the bottom half
+regardless of where the slab sits inside the cell. Pass a value such as
+`--fix 0.25` to fix only the lowest quarter.
 
 Conversions issue a `StructureConversionWarning` when ABACUS-specific data
 such as pseudopotential/orbital filenames, spin settings, velocities,

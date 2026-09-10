@@ -12,6 +12,7 @@ from abacustools.data.structure import (
     StructureEditError,
     build_slab,
     fix_atoms,
+    fix_slab_bottom,
     make_supercell,
     select_atoms,
     select_indices,
@@ -261,6 +262,43 @@ def test_build_slab_rejects_empty_atoms() -> None:
         build_slab(structure)
 
 
+def test_fix_slab_bottom_fixes_the_lower_half() -> None:
+    # Fractional c is 0, 0.125 and 0.625, so the cut sits at 0.3125.
+    fixed = fix_slab_bottom(_structure(), direction="c")
+
+    assert fixed.moves[0] == (False, False, False)
+    assert fixed.moves[1] == (False, False, False)
+    assert fixed.moves[2] == (True, True, True)
+
+
+def test_fix_slab_bottom_honours_the_fraction() -> None:
+    everything = fix_slab_bottom(_structure(), fraction=1.0)
+    assert everything.moves == [(False, False, False)] * 3
+
+    lowest_only = fix_slab_bottom(_structure(), fraction=0.0)
+    assert lowest_only.moves[0] == (False, False, False)
+    assert lowest_only.moves[1] == (True, True, True)
+
+
+@pytest.mark.parametrize("fraction", [-0.1, 1.5])
+def test_fix_slab_bottom_rejects_a_bad_fraction(fraction: float) -> None:
+    with pytest.raises(StructureEditError, match="between 0 and 1"):
+        fix_slab_bottom(_structure(), fraction=fraction)
+
+
+def test_build_slab_can_fix_the_bottom_half() -> None:
+    slab = build_slab(_structure(), layers=3, vacuum=10.0, fix_fraction=0.5)
+
+    moves = slab.moves
+    assert (False, False, False) in moves
+    assert (True, True, True) in moves
+    # The fixed atoms are the ones lower along the vacuum direction.
+    direct = np.asarray(slab.coords_direct, dtype=float)[:, 2]
+    fixed = [value for value, move in zip(direct, moves) if move == (False, False, False)]
+    free = [value for value, move in zip(direct, moves) if move == (True, True, True)]
+    assert max(fixed) < min(free)
+
+
 def _write_structure(tmp_path: Path) -> Path:
     source = tmp_path / "source.STRU"
     assert _structure().write(str(source))
@@ -327,3 +365,27 @@ def test_editstru_slab_writes_a_slab(tmp_path: Path) -> None:
     assert set(slab.pps) == {"Si.upf", "O.upf"}
     lengths = np.linalg.norm(np.asarray(slab.cell, dtype=float), axis=1)
     assert lengths[2] >= 10.0
+
+
+def test_editstru_slab_fix_flag_sets_constraints(tmp_path: Path) -> None:
+    source = _write_structure(tmp_path)
+    output = tmp_path / "fixed.STRU"
+
+    assert main([
+        "file", "editstru", "slab", str(source),
+        "-o", str(output), "--layers", "3", "--vacuum", "10", "--fix",
+    ]) == 0
+
+    slab = AbacusSTRU.read(str(output))
+    assert slab is not None
+    assert (False, False, False) in slab.moves
+    assert (True, True, True) in slab.moves
+
+    free_output = tmp_path / "free.STRU"
+    assert main([
+        "file", "editstru", "slab", str(source),
+        "-o", str(free_output), "--layers", "3", "--vacuum", "10",
+    ]) == 0
+    free_slab = AbacusSTRU.read(str(free_output))
+    assert free_slab is not None
+    assert set(free_slab.moves) == {(True, True, True)}
