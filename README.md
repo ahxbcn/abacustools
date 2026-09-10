@@ -202,7 +202,9 @@ abacustools job prepare -f STRUCTURE --library apns --variant precision
 A variant name that is not mapped keeps the configured `orb` directory, so the
 SG15-style default (`DZP`) leaves an APNS library on its configured set. Set
 `orb_variant` inside a library entry to change which set that library uses by
-default.
+default. Requesting an unavailable variant with `--variant` reports which
+library could not provide it and which set is used instead, while a variant
+inherited from the configuration falls back silently.
 
 Upstream libraries also publish the recommended cutoff radius of every element
 as `<orbital directory>_<VARIANT>_..._StandardRcut.json` next to the orbital

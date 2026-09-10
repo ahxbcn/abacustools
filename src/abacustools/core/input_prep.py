@@ -233,6 +233,7 @@ def _select_resource(
     root: Path,
     variant: Optional[str],
     cutoffs: Optional[Mapping[str, float]] = None,
+    variant_required: bool = False,
 ) -> Path:
     """Pick one resource file for an element, honouring the orbital variant.
 
@@ -240,14 +241,25 @@ def _select_resource(
     provides other variants raises instead of silently using a different basis.
     Within the selected variant the cutoff radius recommended by the library
     index is preferred, falling back to the ``Others`` entry.
+
+    Args:
+        element: Element symbol the resources belong to.
+        resources: Candidate files of this element, best first.
+        root: Resource directory the candidates were collected from.
+        variant: Requested variant such as ``DZP`` or ``precision``.
+        cutoffs: Recommended cutoff radii published by the library.
+        variant_required: Warn when an explicitly requested variant cannot be
+            honoured, instead of silently picking the best candidate.
     """
     candidates = list(resources)
+    matched = False
     if variant:
         matching = [
             path for path in candidates if _matches_variant(path, root, element, variant)
         ]
         if matching:
             candidates = matching
+            matched = True
         else:
             available = sorted(
                 {
@@ -261,6 +273,12 @@ def _select_resource(
                     f"no {variant} resource for {element} in {root}; available variants: "
                     + ", ".join(available)
                 )
+    if variant_required and not matched:
+        warnings.warn(
+            f"the configured orbital library {root} has no {variant} variant; "
+            "using its default orbital set",
+            stacklevel=4,
+        )
     if cutoffs:
         cutoff = cutoffs.get(element, cutoffs.get("Others"))
         if cutoff is not None:
@@ -276,6 +294,7 @@ def _collect_library(
     resource_type: Optional[str] = None,
     variant: Optional[str] = None,
     elements: Optional[Iterable[str]] = None,
+    variant_required: bool = False,
 ) -> dict[str, Path]:
     """Collect element-to-file mappings from a resource directory.
 
@@ -286,6 +305,7 @@ def _collect_library(
         elements: Elements to resolve; all of them when omitted.  Restricting
             the mapping keeps an unrelated element that lacks the requested
             variant, such as La in Dojo-NC-SR, from failing the whole run.
+        variant_required: Warn when the requested variant is unavailable.
     """
     if path is None:
         return {}
@@ -336,7 +356,9 @@ def _collect_library(
     for element, resources in by_element.items():
         if wanted is not None and element not in wanted:
             continue
-        mapping[element] = _select_resource(element, resources, root, variant, cutoffs)
+        mapping[element] = _select_resource(
+            element, resources, root, variant, cutoffs, variant_required
+        )
     return mapping
 
 
@@ -527,6 +549,7 @@ class InputPreparer:
         self.orb_variant = (
             orb_variant if orb_variant is not None else configured_variant
         )
+        self.orb_variant_explicit = orb_variant is not None
         if self.orb_variant is not None:
             self.orb_variant = str(self.orb_variant)
         configured_variants = configured_resources.get("orb_variants") or {}
@@ -750,6 +773,8 @@ class InputPreparer:
                     "orb",
                     variant=self.orb_variant,
                     elements=elements,
+                    variant_required=self.orb_variant_explicit
+                    and not self._variant_is_mapped(),
                 ),
                 "orb",
                 required=True,
@@ -781,10 +806,14 @@ class InputPreparer:
         precision).  ``orb_variants`` maps the latter, so the same ``--variant``
         and ``orb_variant`` settings select either kind.
         """
-        variant = (self.orb_variant or "").lower()
-        if variant and variant in self.orb_variants:
-            return self.orb_variants[variant]
+        if self._variant_is_mapped():
+            return self.orb_variants[(self.orb_variant or "").lower()]
         return self.orb_path
+
+    def _variant_is_mapped(self) -> bool:
+        """Return whether ``orb_variants`` maps the selected variant."""
+        variant = (self.orb_variant or "").lower()
+        return bool(variant) and variant in self.orb_variants
 
     def _destination(self, source: Path, index: int) -> Path:
         base = self.output_dir / _folder_name(source, index, self.folder_syntax)

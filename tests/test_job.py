@@ -772,6 +772,64 @@ def test_prepare_honours_a_library_variant_default(
     assert (job / "H_gga_10au_100Ry_3s3p2d.orb").is_file()
 
 
+def test_prepare_warns_about_an_unavailable_explicit_variant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, _ = _source_and_library(tmp_path)
+    monkeypatch.setitem(
+        CONFIG,
+        "resources",
+        {
+            "default": "apns",
+            "orb_variant": "DZP",
+            "libraries": {"apns": _mapped_variant_library(tmp_path)},
+        },
+    )
+
+    with pytest.warns(UserWarning, match="has no SZ variant"):
+        job = InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="lcao",
+            library="apns",
+            orb_variant="SZ",
+            kpt=[1, 1, 1],
+        ).run()[0].path
+
+    assert (job / "H_gga_7au_100Ry_2s2p1d.orb").is_file()
+
+
+def test_prepare_keeps_quiet_for_the_configured_variant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, _ = _source_and_library(tmp_path)
+    monkeypatch.setitem(
+        CONFIG,
+        "resources",
+        {
+            "default": "apns",
+            "orb_variant": "DZP",
+            "libraries": {"apns": _mapped_variant_library(tmp_path)},
+        },
+    )
+
+    # The SG15-style default is inherited from the configuration, so falling
+    # back to the APNS orbital set must stay silent.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        job = InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="lcao",
+            library="apns",
+            kpt=[1, 1, 1],
+        ).run()[0].path
+
+    assert (job / "H_gga_7au_100Ry_2s2p1d.orb").is_file()
+
+
 def test_validate_reports_unknown_keyword_and_missing_resource(tmp_path: Path) -> None:
     job = tmp_path / "job"
     job.mkdir()
