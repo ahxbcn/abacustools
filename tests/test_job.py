@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import pytest
@@ -9,13 +10,38 @@ import pytest
 from abacustools.core.config import CONFIG
 from abacustools.core.input_prep import InputPreparationError, InputPreparer
 from abacustools.core.job import status_job, validate_job
-from abacustools.io.abacus import ReadInput
+from abacustools.io.abacus import IsEnabled, ReadInput
 from abacustools.main import main
 
 
 STRU = """\
 ATOMIC_SPECIES
 H 1.0
+
+LATTICE_CONSTANT
+1.0
+
+LATTICE_VECTORS
+3 0 0
+0 3 0
+0 0 3
+
+ATOMIC_POSITIONS
+Cartesian
+
+H
+0.0
+1
+0 0 0
+"""
+
+
+STRU_WITH_ORBITAL = """\
+ATOMIC_SPECIES
+H 1.0 H.upf
+
+NUMERICAL_ORBITAL
+H.orb
 
 LATTICE_CONSTANT
 1.0
@@ -91,6 +117,133 @@ def test_prepare_preserves_template_basis_parameters(tmp_path: Path) -> None:
     ).run()[0].path
 
     assert ReadInput(job / "INPUT")["ks_solver"] == "custom_solver"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (True, True),
+        (False, False),
+        (1, True),
+        (0, False),
+        ("true", True),
+        ("T.", False),
+        ("yes", True),
+        ("no", False),
+        ("0", False),
+        ("2", True),
+        ("", False),
+        (None, False),
+        ([0.0, 0.0, 0.1], True),
+        ([0, 0], False),
+    ],
+)
+def test_is_enabled(value, expected: bool) -> None:
+    assert IsEnabled(value) is expected
+
+
+def test_prepare_pw_job_drops_orbitals(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+    source.write_text(STRU_WITH_ORBITAL, encoding="utf-8")
+
+    job = InputPreparer(
+        source,
+        output_dir=tmp_path / "jobs",
+        filetype="stru",
+        basis="pw",
+        pp_path=library,
+        orb_path=library,
+        kpt=[1, 1, 1],
+    ).run()[0].path
+
+    assert (job / "H.upf").is_file()
+    assert not (job / "H.orb").exists()
+    assert "NUMERICAL_ORBITAL" not in (job / "STRU").read_text(encoding="utf-8")
+
+
+def test_prepare_lcao_job_keeps_orbitals(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+    source.write_text(STRU_WITH_ORBITAL, encoding="utf-8")
+
+    job = InputPreparer(
+        source,
+        output_dir=tmp_path / "jobs",
+        filetype="stru",
+        basis="lcao",
+        pp_path=library,
+        orb_path=library,
+        kpt=[1, 1, 1],
+    ).run()[0].path
+
+    assert (job / "H.orb").is_file()
+    assert "NUMERICAL_ORBITAL" in (job / "STRU").read_text(encoding="utf-8")
+
+
+def test_prepare_warns_about_the_default_kpt_mesh(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+
+    with pytest.warns(UserWarning, match="no KPT file found"):
+        job = InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="pw",
+            pp_path=library,
+        ).run()[0].path
+
+    assert (job / "KPT").read_text(encoding="utf-8") == "K_POINTS\n0\nGamma\n1 1 1 0 0 0\n"
+
+
+def test_prepare_uses_kspacing_instead_of_a_kpt_file(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        job = InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="pw",
+            pp_path=library,
+            set_params={"kspacing": 0.1},
+        ).run()[0].path
+
+    assert not (job / "KPT").exists()
+
+
+def test_prepare_writes_the_cell_relax_keyword(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+
+    job = InputPreparer(
+        source,
+        output_dir=tmp_path / "jobs",
+        filetype="stru",
+        basis="pw",
+        pp_path=library,
+        job_type="cell-relax",
+        kpt=[1, 1, 1],
+    ).run()[0].path
+
+    assert ReadInput(job / "INPUT")["calculation"] == "cell-relax"
+
+
+def test_prepare_rejects_a_broken_element_index(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+    (library / "H.upf").unlink()
+    (library / "element.json").write_text('{"H": "H.upf"}', encoding="utf-8")
+
+    with pytest.raises(InputPreparationError, match="element.json"):
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="pw",
+            pp_path=library,
+            kpt=[1, 1, 1],
+        ).run()
+
+    # The output directory itself is created first, but no job is written.
+    assert not (tmp_path / "jobs" / "000000").exists()
 
 
 def test_validate_reports_unknown_keyword_and_missing_resource(tmp_path: Path) -> None:

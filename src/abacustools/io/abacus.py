@@ -191,6 +191,32 @@ def IsTrue(param):
     else:
         return None
 
+
+def IsEnabled(param) -> bool:
+    """Return whether an ABACUS flag-like value is enabled.
+
+    Booleans and numbers are compared with zero, the strings true/t/yes/y/1 are
+    enabled, and every other string or value is disabled.  A list or tuple is
+    enabled when any of its entries is enabled.
+    """
+    if isinstance(param, (list, tuple)):
+        return any(IsEnabled(item) for item in param)
+    if isinstance(param, str):
+        text = param.strip().lower()
+        if text in {"true", "t", "yes", "y", "1"}:
+            return True
+        if text in {"false", "f", "no", "n", "0", ""}:
+            return False
+        try:
+            return float(text) > 0
+        except ValueError:
+            return False
+    try:
+        return float(param) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def ReadKpt(kptpath):
     '''
     kptpath should be a file name of KPT file or a path of ABACUS inputs.

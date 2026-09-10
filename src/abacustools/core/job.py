@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from abacustools.io.abacus import ReadInput
+from abacustools.io.abacus import IsEnabled, ReadInput
 
 
 @dataclass(frozen=True)
@@ -53,13 +53,6 @@ def _as_positive(value: Any) -> bool:
         return float(value) > 0
     except (TypeError, ValueError):
         return False
-
-
-def _is_enabled(value: Any) -> bool:
-    """Return whether an ABACUS boolean-like setting is enabled."""
-    if isinstance(value, str):
-        return value.strip().lower() in {"true", "t", "yes", "y", "1"}
-    return _as_positive(value)
 
 
 def _has_positive_value(value: Any) -> bool:
@@ -206,7 +199,7 @@ def _input_summary(
     for name in ("ecutwfc", "scf_thr", "smearing_method", "smearing_sigma"):
         if name in inputs:
             summary[name] = inputs[name]
-    if _is_enabled(inputs.get("gamma_only")):
+    if IsEnabled(inputs.get("gamma_only")):
         summary["kpoints"] = {"mode": "gamma_only"}
     elif _has_positive_value(inputs.get("kspacing")):
         summary["kpoints"] = {"mode": "kspacing", "value": inputs["kspacing"]}
@@ -352,7 +345,7 @@ def check_input(job_dir: Path, *, strict: bool = False) -> InputCheck:
 
     resources = {name: sorted(set(values)) for name, values in resources.items() if values}
     kpoints = None
-    if not _is_enabled(inputs.get("gamma_only")) and not _has_positive_value(inputs.get("kspacing")):
+    if not IsEnabled(inputs.get("gamma_only")) and not _has_positive_value(inputs.get("kspacing")):
         kpoint_path = _resolve_job_path(job, inputs.get("kpoint_file", "KPT"))
         if not kpoint_path.is_file():
             issues.append(ValidationIssue("error", "missing-kpt", f"missing KPT: {kpoint_path}"))

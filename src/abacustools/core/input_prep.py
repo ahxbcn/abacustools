@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import warnings
 from copy import deepcopy
 from dataclasses import dataclass
 from glob import glob
@@ -15,6 +16,7 @@ from typing import Any, Iterable, Mapping, Optional, Sequence, Union
 from abacustools.core.config import CONFIG
 from abacustools.io.abacus import (
     FormatKpt,
+    IsEnabled,
     NormalizeKptModel,
     ReadInput,
     WriteInput,
@@ -64,8 +66,6 @@ def parse_input_value(value: str) -> Any:
     values = value.split()
     if len(values) > 1:
         parsed = [parse_input_value(item) for item in values]
-        if all(isinstance(item, int) for item in parsed):
-            return parsed
         if all(isinstance(item, (int, float)) for item in parsed):
             return parsed
         return value
@@ -76,15 +76,6 @@ def parse_input_value(value: str) -> Any:
             return float(value)
         except ValueError:
             return value
-
-
-def _is_enabled(value: Any) -> bool:
-    if isinstance(value, (list, tuple)):
-        return any(_is_enabled(item) for item in value)
-    try:
-        return float(value) > 0
-    except (TypeError, ValueError):
-        return str(value).strip().lower() in {"true", "t", "yes", "y"}
 
 
 def _normalize_kpt(kpt: Sequence[Any], model: str) -> list:
@@ -138,8 +129,11 @@ def _collect_library(path: Optional[PathLike], resource_type: Optional[str] = No
             raise InputPreparationError(f"invalid element.json: {element_file}") from error
         for element, filename in configured.items():
             resource = root / str(filename)
-            if resource.is_file():
-                mapping[str(element).capitalize()] = resource.resolve()
+            if not resource.is_file():
+                raise InputPreparationError(
+                    f"element.json maps {element} to a missing file: {resource}"
+                )
+            mapping[str(element).capitalize()] = resource.resolve()
         return mapping
 
     preferred_suffixes = {
@@ -148,7 +142,7 @@ def _collect_library(path: Optional[PathLike], resource_type: Optional[str] = No
         "paw": {".paw"},
     }.get(resource_type)
     candidates = []
-    for resource in sorted(item for item in root.rglob("*") if item.is_file()):
+    for resource in root.rglob("*"):
         if not resource.is_file():
             continue
         element = _element_from_filename(resource.name)
@@ -265,7 +259,8 @@ def _folder_name(source: Path, index: int, syntax: Optional[str]) -> str:
     if syntax is None:
         return f"{index:06d}"
     try:
-        # Keep the old x[:-4] naming idiom while avoiding access to builtins.
+        # Evaluate the configured f-string against the source name and index
+        # only, so a folder-syntax value cannot reach any other name.
         value = eval("f" + repr(syntax), {"__builtins__": {}}, {"x": source.name, "i": index})
     except Exception as error:
         raise InputPreparationError(f"invalid folder syntax: {syntax}") from error
@@ -420,11 +415,9 @@ class InputPreparer:
         for key, value in CONFIG.get("basis_settings", {}).get(basis, {}).items():
             inputs.setdefault(key, deepcopy(value))
         inputs["basis_type"] = basis
-        inputs["calculation"] = self.job_type
-        if self.job_type == "cell-relax":
-            inputs["calculation"] = "cell-relax"
 
         inputs.update(self.set_params)
+        # The job type always wins over a template or --set calculation value.
         inputs["calculation"] = self.job_type
         basis = str(inputs.get("basis_type", basis)).lower()
         if self.nspin == 2:
@@ -513,15 +506,20 @@ class InputPreparer:
             configured_path=self.pp_path,
             library_name=self.library,
         )
-        orb_resources = _resource_assignments(
-            structure,
-            source_dir,
-            _collect_library(self.orb_path, "orb"),
-            "orb",
-            required=basis.startswith("lcao"),
-            configured_path=self.orb_path,
-            library_name=self.library,
-        )
+        if basis.startswith("lcao"):
+            orb_resources = _resource_assignments(
+                structure,
+                source_dir,
+                _collect_library(self.orb_path, "orb"),
+                "orb",
+                required=True,
+                configured_path=self.orb_path,
+                library_name=self.library,
+            )
+        else:
+            # A plane-wave job neither ships nor references numerical orbitals.
+            structure.set_orb({element: None for element in _unique(structure.elements)})
+            orb_resources = {}
         paw_resources = _resource_assignments(
             structure, source_dir, _collect_library(self.paw_path, "paw"), "paw", required=False
         )
@@ -552,7 +550,7 @@ class InputPreparer:
         if self.kpt is not None:
             WriteKpt(self.kpt, destination / filename, model=self.kpt_model)
             return
-        if _is_enabled(inputs.get("gamma_only")) or _is_enabled(inputs.get("kspacing")):
+        if IsEnabled(inputs.get("gamma_only")) or IsEnabled(inputs.get("kspacing")):
             return
         source_kpt = source.parent / filename
         if source_kpt.is_file():
@@ -561,6 +559,11 @@ class InputPreparer:
             else:
                 (destination / filename).symlink_to(source_kpt.resolve())
             return
+        warnings.warn(
+            f"no KPT file found for {source.name}; writing a 1x1x1 Gamma mesh. "
+            "Pass --kpt, or set kspacing/gamma_only in INPUT, to choose the mesh.",
+            stacklevel=2,
+        )
         WriteKpt([1, 1, 1, 0, 0, 0], destination / filename, model="gamma")
 
     def run(self) -> list[PreparedJob]:

@@ -108,6 +108,46 @@ abacustools job prepare -f STRUCTURE \
   --kpt 0 0 0 10 G --kpt 0.5 0.5 0 1 X --kpt-model line
 ```
 
+Generated jobs are self-contained: the referenced pseudopotentials, orbitals
+and PAW files are symlinked into the job directory (copied with
+`--copy-resources`), and the written `STRU` refers to them by file name. A
+plane-wave job (`--basis pw`) never ships or references numerical orbitals,
+even when the source `STRU` contains a `NUMERICAL_ORBITAL` block; LCAO jobs
+require an orbital for every element. When neither `--kpt` nor a KPT file,
+`kspacing` or `gamma_only` is available, a 1x1x1 Gamma mesh is written and a
+warning is issued.
+
+Pseudopotential and orbital paths are configured through libraries rather than
+through command-line paths: `--library NAME` selects one entry of
+`resources.libraries`, and `~/.abacustools/config.yaml` can hold any number of
+them, so adding an entry is how a different set of files is used. `--paw`
+additionally overrides the PAW file or directory. The environment variables
+`ABACUS_PP_PATH`, `ABACUS_ORB_PATH` and `ABACUS_PAW_PATH` are still honoured as
+fallbacks when neither an explicit path nor the selected library defines one.
+
+A library directory is searched for files whose names start with the element
+symbol, preferring the `.upf`/`.orb`/`.paw` suffix matching the resource type;
+subdirectories are searched too. Two optional index files make the mapping
+explicit:
+
+```yaml
+# element.json: element -> file name, resolved below the library directory
+{"Si": "Si_ONCV_PBE-1.0.upf", "O": "O_ONCV_PBE-1.0.upf"}
+```
+
+Every entry of `element.json` must point to an existing file; a broken entry
+stops the preparation with an explicit error instead of silently falling back
+to the file-name search.
+
+```yaml
+# ecutwfc.json: element -> recommended plane-wave cutoff in Ry
+{"Si": 60, "O": 80}
+```
+
+`ecutwfc.json` is only used for plane-wave jobs that do not set `ecutwfc`
+themselves; the largest recommended cutoff of the structure's elements is
+applied.
+
 Both the top-level parser and each subcommand provide their own help text:
 
 ```text

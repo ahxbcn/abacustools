@@ -71,7 +71,7 @@ input_templates:
     cal_force: 1
     force_thr_ev: 0.02
   cell-relax:
-    calculation: "cell_relax"
+    calculation: "cell-relax"
     symmetry: 0
     scf_thr: 1e-7
     scf_nmax: 100
