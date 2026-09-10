@@ -158,7 +158,6 @@ def _spin_orbit_support(path: Path) -> Optional[bool]:
 _RESOURCE_DIRECTORY_PREFIXES = {
     "pp": ("pseudopotential",),
     "orb": ("orbital",),
-    "paw": ("paw",),
 }
 
 
@@ -327,7 +326,7 @@ def _collect_library(
 
     Args:
         path: Library file or directory.
-        resource_type: One of ``pp``, ``orb`` or ``paw``.
+        resource_type: Either ``pp`` or ``orb``.
         variant: Orbital variant such as ``DZP``, see :func:`_select_resource`.
         elements: Elements to resolve; all of them when omitted.  Restricting
             the mapping keeps an unrelated element that lacks the requested
@@ -363,7 +362,6 @@ def _collect_library(
     preferred_suffixes = {
         "pp": {".upf"},
         "orb": {".orb"},
-        "paw": {".paw"},
     }.get(resource_type)
     candidates = []
     for resource in root.rglob("*"):
@@ -458,7 +456,6 @@ def _resource_assignments(
         resource_name = {
             "pp": "pseudopotential",
             "orb": "orbital",
-            "paw": "PAW",
         }[attribute]
         message = f"missing {resource_name} for element(s): {', '.join(missing)}"
         if configured_path is None:
@@ -471,7 +468,7 @@ def _resource_assignments(
             message += f"; no matching file in {configured_path}"
         raise InputPreparationError(message)
 
-    setter = {"pp": structure.set_pp, "orb": structure.set_orb, "paw": structure.set_paw}[attribute]
+    setter = {"pp": structure.set_pp, "orb": structure.set_orb}[attribute]
     if assignments and (required or len(assignments) == len(_unique(structure.elements))):
         setter({element: filename for element, (filename, _) in assignments.items()})
     return {resource: filename for filename, resource in assignments.values()}
@@ -535,7 +532,6 @@ class InputPreparer:
         pp_path: Optional[PathLike] = None,
         orb_path: Optional[PathLike] = None,
         orb_variant: Optional[str] = None,
-        paw_path: Optional[PathLike] = None,
         input_template: Optional[PathLike] = None,
         kpt: Optional[Sequence[int]] = None,
         kpt_model: str = "gamma",
@@ -585,7 +581,6 @@ class InputPreparer:
             if isinstance(configured_variants, Mapping)
             else {}
         )
-        self.paw_path = paw_path if paw_path is not None else os.environ.get("ABACUS_PAW_PATH")
         self.input_template = input_template
         self.kpt = list(kpt) if kpt is not None else None
         self.kpt_model = kpt_model
@@ -781,6 +776,13 @@ class InputPreparer:
     def _prepare_structure(self, source: Path, structure: AbacusSTRU, basis: str) -> dict[Path, str]:
         source_dir = source.parent
         elements = _unique(structure.elements)
+        paw_files = sorted({paw for paw in structure.paws if paw})
+        if paw_files:
+            raise InputPreparationError(
+                "PAW files are not supported when preparing input directories; "
+                f"{source.name} references {', '.join(paw_files)}. Remove the "
+                "PAW_FILES block or prepare the job manually."
+            )
         pp_resources = _resource_assignments(
             structure,
             source_dir,
@@ -812,17 +814,9 @@ class InputPreparer:
             # A plane-wave job neither ships nor references numerical orbitals.
             structure.set_orb({element: None for element in elements})
             orb_resources = {}
-        paw_resources = _resource_assignments(
-            structure,
-            source_dir,
-            _collect_library(self.paw_path, "paw", elements=elements),
-            "paw",
-            required=False,
-        )
         resources = {}
         resources.update(pp_resources)
         resources.update(orb_resources)
-        resources.update(paw_resources)
         return resources
 
     def _orbital_library(self) -> Optional[PathLike]:

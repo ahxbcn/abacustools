@@ -108,9 +108,11 @@ abacustools job prepare -f STRUCTURE \
   --kpt 0 0 0 10 G --kpt 0.5 0.5 0 1 X --kpt-model line
 ```
 
-Generated jobs are self-contained: the referenced pseudopotentials, orbitals
-and PAW files are symlinked into the job directory (copied with
-`--copy-resources`), and the written `STRU` refers to them by file name. A
+Generated jobs are self-contained: the referenced pseudopotentials and orbitals
+are symlinked into the job directory (copied with `--copy-resources`), and the
+written `STRU` refers to them by file name. PAW files are not supported when
+preparing directories and a source `STRU` containing a `PAW_FILES` block is
+rejected instead of producing a job with missing files. A
 plane-wave job (`--basis pw`) never ships or references numerical orbitals,
 even when the source `STRU` contains a `NUMERICAL_ORBITAL` block; LCAO jobs
 require an orbital for every element. When neither `--kpt` nor a KPT file,
@@ -126,10 +128,10 @@ rejected instead of producing a mixed INPUT.
 Pseudopotential and orbital paths are configured through libraries rather than
 through command-line paths: `--library NAME` selects one entry of
 `resources.libraries`, and `~/.abacustools/config.yaml` can hold any number of
-them, so adding an entry is how a different set of files is used. `--paw`
-additionally overrides the PAW file or directory. The environment variables
-`ABACUS_PP_PATH`, `ABACUS_ORB_PATH` and `ABACUS_PAW_PATH` are still honoured as
-fallbacks when neither an explicit path nor the selected library defines one.
+them, so adding an entry is how a different set of files is used.
+The environment variables `ABACUS_PP_PATH` and `ABACUS_ORB_PATH` are still
+honoured as fallbacks when neither an explicit path nor the selected library
+defines one.
 
 Alongside the upstream libraries the configuration ships a `custom` entry for
 pseudopotentials and orbitals from any other source:
@@ -149,7 +151,7 @@ it at `~/.abacustools/pseudopotentials` and `~/.abacustools/orbitals`, and the
 packaged default leaves both empty.
 
 A library directory is searched for files whose names start with the element
-symbol, preferring the `.upf`/`.orb`/`.paw` suffix matching the resource type;
+symbol, preferring the `.upf`/`.orb` suffix matching the resource type;
 subdirectories are searched too. Two optional index files make the mapping
 explicit:
 

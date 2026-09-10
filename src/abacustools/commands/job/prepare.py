@@ -37,7 +37,6 @@ def register_parser(subparsers) -> None:
         "--library", choices=available_resource_libraries(), default=None,
         help="Configured pseudopotential/orbital library; uses the configured default by default.",
     )
-    parser.add_argument("--paw", default=None, type=Path, help="PAW file or library directory.")
     parser.add_argument(
         "--variant", default=None,
         help="Orbital variant such as SZ, DZP or TZDP; defaults to resources.orb_variant.",
@@ -101,7 +100,6 @@ def run(args: argparse.Namespace) -> int:
         job_type=args.job_type,
         library=args.library,
         orb_variant=args.variant,
-        paw_path=args.paw,
         input_template=args.input,
         kpt=args.kpt,
         kpt_model=args.kpt_model,

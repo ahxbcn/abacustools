@@ -63,6 +63,31 @@ H
 """
 
 
+STRU_WITH_PAW = """\
+ATOMIC_SPECIES
+H 1.0 H.upf
+
+PAW_FILES
+H.paw
+
+LATTICE_CONSTANT
+1.0
+
+LATTICE_VECTORS
+3 0 0
+0 3 0
+0 0 3
+
+ATOMIC_POSITIONS
+Cartesian
+
+H
+0.0
+1
+0 0 0
+"""
+
+
 def _source_and_library(tmp_path: Path) -> tuple[Path, Path]:
     source = tmp_path / "water.stru"
     source.write_text(STRU, encoding="utf-8")
@@ -916,6 +941,23 @@ def test_prepare_checks_spin_orbit_support_only_for_nspin4(tmp_path: Path) -> No
         ).run()
 
 
+def test_prepare_rejects_paw_files(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+    source.write_text(STRU_WITH_PAW, encoding="utf-8")
+
+    with pytest.raises(InputPreparationError, match="PAW files are not supported"):
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="pw",
+            pp_path=library,
+            kpt=[1, 1, 1],
+        ).run()
+
+    assert not (tmp_path / "jobs" / "000000").exists()
+
+
 def test_validate_reports_unknown_keyword_and_missing_resource(tmp_path: Path) -> None:
     job = tmp_path / "job"
     job.mkdir()
@@ -1072,3 +1114,4 @@ def test_job_prepare_help_does_not_expose_resource_paths(capsys) -> None:
     assert "--library" in output
     assert "--pp" not in output
     assert "--orb" not in output
+    assert "--paw" not in output
