@@ -59,6 +59,74 @@ class TestStructureInfo(unittest.TestCase):
         self.assertEqual(result["inequivalent_positions"][0]["multiplicity"], 2)
         self.assertEqual(result["resources"]["pseudopotentials"]["Si"], ["Si.upf"])
         self.assertEqual(result["resources"]["orbitals"]["Si"], ["Si.orb"])
+        self.assertNotIn("paw", result["resources"])
+        for atom in result["atoms"]:
+            self.assertNotIn("pseudopotential", atom)
+            self.assertNotIn("orbital", atom)
+            self.assertNotIn("paw", atom)
+
+    def test_atom_table_lists_resources_separately(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "STRU"
+            path.write_text(STRU, encoding="utf-8")
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(
+                    run(Namespace(
+                        filename=path,
+                        input_format=None,
+                        cell=None,
+                        symprec=1e-5,
+                        angle_tolerance=5.0,
+                        json=False,
+                    )),
+                    0,
+                )
+            report = output.getvalue()
+
+        self.assertIn("resources:", report)
+        self.assertIn("label pseudopotential orbital", report)
+        self.assertIn("Si.upf", report)
+        self.assertIn("Si.orb", report)
+        self.assertNotIn("paw", report.lower())
+        header = next(line for line in report.splitlines() if "index label element" in line)
+        self.assertNotIn("pseudopotential", header)
+        self.assertNotIn("orbital", header)
+        self.assertNotIn("magmom", header)
+        self.assertNotIn("move", header)
+
+    def test_atom_table_shows_moments_constraints_and_velocities(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "STRU"
+            path.write_text(
+                STRU.replace(
+                    "0.0 0.0 0.0\n",
+                    "0.0 0.0 0.0 0 0 0 mag 2.0 angle1 90.0 angle2 45.0\n",
+                ).replace(
+                    "0.25 0.25 0.25\n",
+                    "0.25 0.25 0.25 1 1 1 v 0.1 0.2 0.3 mag 0.5\n",
+                ),
+                encoding="utf-8",
+            )
+            output = StringIO()
+            with redirect_stdout(output):
+                run(Namespace(
+                    filename=path,
+                    input_format=None,
+                    cell=None,
+                    symprec=1e-5,
+                    angle_tolerance=5.0,
+                    json=False,
+                ))
+            report = output.getvalue()
+
+        header = next(line for line in report.splitlines() if "index label element" in line)
+        self.assertIn("magmom", header)
+        self.assertIn("move", header)
+        self.assertIn("velocity", header)
+        self.assertIn("2.0 (90.0, 45.0)", report)
+        self.assertIn("0 0 0", report)
+        self.assertIn("0.1 0.2 0.3", report)
 
     def test_json_cli_output_and_xyz_without_cell(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

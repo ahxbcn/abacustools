@@ -82,6 +82,23 @@ def _resource_by_label(structure, attribute: str) -> dict[str, list[str]]:
     return values
 
 
+def _atom_moment(atom) -> Any:
+    """Return the magnetic moment of an atom, falling back to its type moment."""
+    if atom.mag is not None:
+        return _round_values(atom.mag) if isinstance(atom.mag, (list, tuple)) else float(atom.mag)
+    if atom.type_mag:
+        return float(atom.type_mag)
+    return None
+
+
+def _atom_moment_angles(atom) -> Optional[list[Any]]:
+    """Return the polar angles of a magnetic moment, when they are set."""
+    if atom.angle1 is None and atom.angle2 is None:
+        return None
+    return [None if atom.angle1 is None else float(atom.angle1),
+            None if atom.angle2 is None else float(atom.angle2)]
+
+
 def _symmetry_info(structure, symprec: float, angle_tolerance: float) -> dict[str, Any]:
     cell = np.asarray(structure.cell, dtype=float)
     if cell.shape != (3, 3) or not np.all(np.isfinite(cell)) or abs(np.linalg.det(cell)) <= 1e-12:
@@ -170,10 +187,10 @@ def structure_information(
                 "fractional": None if fractional_coordinates is None else _round_values(fractional_coordinates[index]),
                 "wyckoff": wyckoffs[index] if index < len(wyckoffs) else None,
                 "mass": None if atom.mass is None else float(atom.mass),
-                "pseudopotential": atom.pp,
-                "orbital": atom.orb,
-                "paw": atom.paw,
+                "magmom": _atom_moment(atom),
+                "magmom_angles": _atom_moment_angles(atom),
                 "move": list(atom.move) if atom.move is not None else None,
+                "velocity": None if atom.velocity is None else _round_values(atom.velocity),
             }
         )
 
@@ -216,7 +233,6 @@ def structure_information(
         "resources": {
             "pseudopotentials": _resource_by_label(structure, "pp"),
             "orbitals": _resource_by_label(structure, "orb"),
-            "paw": _resource_by_label(structure, "paw"),
         },
         "symmetry": symmetry,
         "atoms": atoms,
@@ -230,6 +246,72 @@ def _display_value(value: Any) -> str:
     if isinstance(value, list):
         return " ".join(_display_value(item) for item in value)
     return str(value)
+
+
+def _moment_text(atom: dict[str, Any]) -> str:
+    """Format one atom's magnetic moment and its angles, if any."""
+    text = _display_value(atom["magmom"])
+    angles = atom.get("magmom_angles")
+    if angles:
+        text += " (" + ", ".join(_display_value(angle) for angle in angles) + ")"
+    return text
+
+
+def _move_text(atom: dict[str, Any]) -> str:
+    """Format one atom's movement flags the way a STRU file writes them."""
+    move = atom.get("move")
+    if move is None:
+        return "-"
+    return " ".join("1" if flag else "0" for flag in move)
+
+
+def _print_atom_table(atoms: list[dict[str, Any]]) -> None:
+    """Print the per-atom table with the columns the structure actually has."""
+    columns = [
+        "index", "label", "element", "fractional", "cartesian", "wyckoff",
+    ]
+    optional = [
+        name
+        for name, present in (
+            ("magmom", any(atom["magmom"] is not None for atom in atoms)),
+            (
+                "move",
+                any(
+                    atom["move"] is not None and tuple(atom["move"]) != (True, True, True)
+                    for atom in atoms
+                ),
+            ),
+            ("velocity", any(atom["velocity"] is not None for atom in atoms)),
+        )
+        if present
+    ]
+    columns += optional
+
+    rows = []
+    for atom in atoms:
+        values = [
+            str(atom["index"]),
+            str(atom["label"]),
+            str(atom["element"]),
+            _display_value(atom["fractional"]),
+            _display_value(atom["cartesian"]),
+            _display_value(atom["wyckoff"]),
+        ]
+        if "magmom" in optional:
+            values.append(_moment_text(atom))
+        if "move" in optional:
+            values.append(_move_text(atom))
+        if "velocity" in optional:
+            values.append(_display_value(atom["velocity"]))
+        rows.append(values)
+
+    widths = [
+        max(len(header), *(len(row[index]) for row in rows))
+        for index, header in enumerate(columns)
+    ]
+    print("  " + " ".join(header.rjust(width) for header, width in zip(columns, widths)))
+    for row in rows:
+        print("  " + " ".join(value.rjust(width) for value, width in zip(row, widths)))
 
 
 def _print_report(result: dict[str, Any]) -> None:
@@ -263,18 +345,16 @@ def _print_report(result: dict[str, Any]) -> None:
             f"{position['element']:>7} {position['wyckoff'] or '-':>7} "
             f"{_display_value(position['fractional']):>28}"
         )
-    print("atoms:")
-    print("  index label element fractional cartesian wyckoff pseudopotential orbital paw")
-    for atom in result["atoms"]:
+    print("resources:")
+    print("  label pseudopotential orbital")
+    for label in result["label_counts"]:
         print(
-            f"  {atom['index']:5d} {atom['label']:>5} {atom['element']:>7} "
-            f"{_display_value(atom['fractional']):>28} "
-            f"{_display_value(atom['cartesian']):>28} "
-            f"{_display_value(atom['wyckoff']):>8} "
-            f"{_display_value(atom['pseudopotential']):>18} "
-            f"{_display_value(atom['orbital']):>18} "
-            f"{_display_value(atom['paw']):>18}"
+            f"  {label:>5} "
+            f"{_display_value(result['resources']['pseudopotentials'].get(label)):>18} "
+            f"{_display_value(result['resources']['orbitals'].get(label)):>18}"
         )
+    print("atoms:")
+    _print_atom_table(result["atoms"])
 
 
 def run(args: argparse.Namespace) -> int:

@@ -59,9 +59,14 @@ abacustools file info structure.xyz --cell 10 0 0 0 10 0 0 0 10
 The report includes cell parameters, volume, element and label counts, space
 group, point group, crystal system, symmetry operation count, per-atom
 Wyckoff positions, a separate list of symmetry-inequivalent atomic positions,
-and ABACUS pseudopotential, orbital, and PAW filenames. The inequivalent list
-contains one representative atom per symmetry-equivalent group together with
-the equivalent atom indices and multiplicity.
+and the ABACUS pseudopotential and orbital file of every label. The
+inequivalent list contains one representative atom per symmetry-equivalent
+group together with the equivalent atom indices and multiplicity.
+The per-atom table holds the index, label, element, fractional and Cartesian
+coordinates and the Wyckoff letter, followed by the magnetic moments (with their
+polar angles when the structure sets them), the movement constraints and the
+velocities; those last columns appear only when the structure actually defines
+them, so an unconstrained structure keeps a compact table.
 Use `--symprec` and `--angle-tolerance` when the input coordinates require
 different symmetry tolerances. Structures without a three-dimensional cell
 are still summarized, but symmetry and Wyckoff positions are reported as
