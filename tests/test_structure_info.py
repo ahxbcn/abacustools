@@ -155,6 +155,38 @@ class TestStructureInfo(unittest.TestCase):
         )
         self.assertEqual(row.split()[-2:], ["1", "2"])
 
+    def test_resources_table_aligns_long_file_names(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "STRU"
+            path.write_text(
+                STRU.replace("Si.upf", "Si_ONCV_PBE-1.0.upf").replace(
+                    "Si.orb", "Si_gga_7au_100Ry_2s2p1d.orb"
+                ),
+                encoding="utf-8",
+            )
+            output = StringIO()
+            with redirect_stdout(output):
+                run(Namespace(
+                    filename=path,
+                    input_format=None,
+                    cell=None,
+                    symprec=1e-5,
+                    angle_tolerance=5.0,
+                    json=False,
+                ))
+            report = output.getvalue()
+
+        lines = report.splitlines()
+        index = lines.index("resources:")
+        header, row = lines[index + 1], lines[index + 2]
+        for column, value in (
+            ("pseudopotential", "Si_ONCV_PBE-1.0.upf"),
+            ("orbital", "Si_gga_7au_100Ry_2s2p1d.orb"),
+        ):
+            end = header.index(column) + len(column)
+            self.assertEqual(row[end - len(value) : end].strip(), value)
+        self.assertEqual(len(header), len(row))
+
     def test_json_cli_output_and_xyz_without_cell(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "molecule.xyz"

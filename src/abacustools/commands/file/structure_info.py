@@ -358,13 +358,17 @@ def _print_report(result: dict[str, Any]) -> None:
     print("symmetry-inequivalent positions:")
     _print_table(*_inequivalent_table(result["inequivalent_positions"]))
     print("resources:")
-    print("  label pseudopotential orbital")
-    for label in result["label_counts"]:
-        print(
-            f"  {label:>5} "
-            f"{_display_value(result['resources']['pseudopotentials'].get(label)):>18} "
-            f"{_display_value(result['resources']['orbitals'].get(label)):>18}"
-        )
+    _print_table(
+        ["label", "pseudopotential", "orbital"],
+        [
+            [
+                str(label),
+                _display_value(result["resources"]["pseudopotentials"].get(label)),
+                _display_value(result["resources"]["orbitals"].get(label)),
+            ]
+            for label in result["label_counts"]
+        ],
+    )
     print("atoms:")
     _print_table(*_atom_table(result["atoms"]))
 
