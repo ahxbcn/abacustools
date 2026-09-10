@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 
+from abacustools.data.dimensionality import largest_vacuum, vacuum_gaps
 from abacustools.data.versions import default_version
 
 from .common import (
@@ -116,34 +117,16 @@ def _validate_positive(value: float, name: str) -> None:
 
 def _vacuum_for_direction(structure, axis: int) -> tuple[float, float, float]:
     """Find the periodic gap and boundaries along one lattice direction."""
-    direct = np.asarray(structure.coords_direct, dtype=float)
-    cell = np.asarray(structure.cell, dtype=float)
-    if direct.ndim != 2 or direct.shape[1] != 3 or len(direct) == 0:
-        raise ValueError("structure must contain atoms with three-dimensional coordinates")
-    values = np.sort(np.mod(direct[:, axis], 1.0))
-    gaps = np.diff(values)
-    gaps = np.append(gaps, values[0] + 1.0 - values[-1])
-    gap_index = int(np.argmax(gaps))
-    if gap_index == len(values) - 1:
-        top, bottom = values[0], values[-1]
-    else:
-        top, bottom = values[gap_index + 1], values[gap_index]
-    length = float(np.linalg.norm(cell[axis]))
-    return float(gaps[gap_index] * length), top * length, bottom * length
+    gap = vacuum_gaps(structure)[axis]
+    return gap["thickness"], gap["top"], gap["bottom"]
 
 
 def _largest_vacuum_direction(structure) -> tuple[str, float, float, float]:
     """Find the largest periodic gap and its two boundaries."""
-    candidates = [
-        (*_vacuum_for_direction(structure, axis), direction)
-        for axis, direction in enumerate(_DIRECTIONS)
-    ]
-    vacuum_size, vacuum_top, vacuum_bottom, direction = max(
-        candidates, key=lambda item: item[0]
-    )
-    if vacuum_size < 4.0:
-        print(f"  warning: largest vacuum is only {vacuum_size:.6f} Angstrom")
-    return direction, vacuum_size, vacuum_top, vacuum_bottom
+    gap = largest_vacuum(structure)
+    if gap["thickness"] < 4.0:
+        print(f"  warning: largest vacuum is only {gap['thickness']:.6f} Angstrom")
+    return gap["direction"], gap["thickness"], gap["top"], gap["bottom"]
 
 
 def _choose_vacuum_direction(requested: str, detected: str, input_direction: str | None = None) -> str:
