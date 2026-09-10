@@ -45,6 +45,15 @@ ENV/
 *.swo
 *~
 
+# AI coding-agent artifacts
+.opencode/
+.sisyphus/
+.agents/
+.codex/
+.claude/
+.cursor/
+.aider*
+
 # OS
 .DS_Store
 Thumbs.db
