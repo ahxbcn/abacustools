@@ -190,6 +190,12 @@ to the file-name search.
 themselves; the largest recommended cutoff of the structure's elements is
 applied.
 
+LCAO jobs take `ecutwfc` from the selected numerical orbitals instead: the
+largest cutoff encoded in their file names (such as the `150Ry` of
+`Cu_gga_9au_150Ry_4s2p2d1f.orb`) is applied, so a structure mixing a 150 Ry
+orbital with a 100 Ry one gets 150 Ry. An explicitly requested `ecutwfc` is
+kept, but a value below the orbital cutoff is reported as a warning.
+
 Both the top-level parser and each subcommand provide their own help text:
 
 ```text

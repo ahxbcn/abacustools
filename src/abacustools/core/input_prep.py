@@ -39,6 +39,7 @@ _MAGNETIC_F_ELEMENTS = {
     "Es", "Fm", "Md", "No", "Lr",
 }
 _ORBITAL_INDEX = {"p": 1, "d": 2, "f": 3}
+_ORBITAL_CUTOFF = re.compile(r"(?<![0-9.])(\d+(?:\.\d+)?)\s*Ry", re.IGNORECASE)
 
 
 class InputPreparationError(RuntimeError):
@@ -105,6 +106,26 @@ def _element_from_filename(filename: str) -> Optional[str]:
         return None
     element = match.group(1)
     return element if element in MASS_DICT else None
+
+
+def _orbital_cutoff(filename: str) -> Optional[float]:
+    """Return the plane-wave cutoff a numerical orbital was generated with.
+
+    Orbital file names encode it, such as ``Si_gga_8au_100Ry_2s2p1d.orb``.
+
+    Args:
+        filename: Orbital file name or path.
+
+    Returns:
+        The cutoff energy in Ry, or ``None`` when the name does not carry one.
+    """
+    match = _ORBITAL_CUTOFF.search(Path(filename).name)
+    if match is None:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
 
 
 _RESOURCE_DIRECTORY_PREFIXES = {
@@ -779,6 +800,39 @@ class InputPreparer:
         )
         WriteKpt([1, 1, 1, 0, 0, 0], destination / filename, model="gamma")
 
+    def _apply_orbital_cutoff(
+        self, inputs: dict[str, Any], resources: Mapping[Path, str]
+    ) -> None:
+        """Set the LCAO cutoff energy from the selected numerical orbitals.
+
+        ABACUS needs ``ecutwfc`` to cover the cutoff the orbitals were generated
+        with, which their file names encode.  An explicitly requested value is
+        kept, but a value below the orbital cutoff is reported.
+        """
+        cutoffs = [
+            cutoff
+            for path in resources
+            if path.suffix.lower() == ".orb"
+            if (cutoff := _orbital_cutoff(path.name)) is not None
+        ]
+        if not cutoffs:
+            return
+        required = max(cutoffs)
+        current = inputs.get("ecutwfc")
+        if current is None:
+            inputs["ecutwfc"] = required
+            return
+        try:
+            current_value = float(current)
+        except (TypeError, ValueError):
+            return
+        if current_value < required:
+            warnings.warn(
+                f"ecutwfc {current_value:g} Ry is below the {required:g} Ry cutoff of the "
+                "selected numerical orbitals; ABACUS needs at least the orbital cutoff",
+                stacklevel=3,
+            )
+
     def run(self) -> list[PreparedJob]:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         inputs_template = self._base_inputs()
@@ -793,7 +847,9 @@ class InputPreparer:
             resources = self._prepare_structure(source, structure, basis)
             self._set_initial_magnets(structure)
             self._dftu_inputs(inputs, structure)
-            if basis.startswith("pw") and "ecutwfc" not in inputs:
+            if basis.startswith("lcao"):
+                self._apply_orbital_cutoff(inputs, resources)
+            elif "ecutwfc" not in inputs:
                 recommendations = [pp_cutoffs[element] for element in _unique(structure.elements) if element in pp_cutoffs]
                 if recommendations:
                     inputs["ecutwfc"] = max(recommendations)

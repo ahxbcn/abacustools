@@ -99,6 +99,48 @@ def _v2_library(root: Path, rcuts: dict[str, dict[str, float]]) -> Path:
     return orbitals
 
 
+STRU_TWO_ELEMENTS = """\
+ATOMIC_SPECIES
+H 1.0
+O 15.999
+
+LATTICE_CONSTANT
+1.0
+
+LATTICE_VECTORS
+5 0 0
+0 5 0
+0 0 5
+
+ATOMIC_POSITIONS
+Cartesian
+
+H
+0.0
+1
+0 0 0
+
+O
+0.0
+1
+1 1 1
+"""
+
+
+def _two_element_library(tmp_path: Path) -> tuple[Path, Path]:
+    """Write a library whose two orbitals were generated with different cutoffs."""
+    source = tmp_path / "water.stru"
+    source.write_text(STRU_TWO_ELEMENTS, encoding="utf-8")
+    library = tmp_path / "library"
+    library.mkdir()
+    (library / "H.upf").write_text("pseudo", encoding="utf-8")
+    (library / "O.upf").write_text("pseudo", encoding="utf-8")
+    (library / "H_gga_8au_100Ry_2s2p1d.orb").write_text("H", encoding="utf-8")
+    (library / "O_gga_7au_150Ry_2s2p1d.orb").write_text("O", encoding="utf-8")
+    (library / "ecutwfc.json").write_text('{"H": 60, "O": 60}', encoding="utf-8")
+    return source, library
+
+
 def test_prepare_writes_complete_lcao_job(tmp_path: Path) -> None:
     source, library = _source_and_library(tmp_path)
     jobs = InputPreparer(
@@ -513,6 +555,76 @@ def test_prepare_ignores_an_unused_element_without_the_variant(tmp_path: Path) -
 
     assert (job / "H_gga_8au_100Ry_2s2p1d.orb").is_file()
     assert not (job / "La_gga_8au_100Ry_3s3p2d.orb").exists()
+
+
+def test_prepare_lcao_uses_the_largest_orbital_cutoff(tmp_path: Path) -> None:
+    source, library = _two_element_library(tmp_path)
+
+    job = InputPreparer(
+        source,
+        output_dir=tmp_path / "jobs",
+        filetype="stru",
+        basis="lcao",
+        pp_path=library,
+        orb_path=library,
+        kpt=[1, 1, 1],
+    ).run()[0].path
+
+    # The O orbital was generated with 150 Ry, the H orbital with 100 Ry.
+    assert ReadInput(job / "INPUT")["ecutwfc"] == pytest.approx(150.0)
+
+
+def test_prepare_keeps_a_sufficient_explicit_cutoff(tmp_path: Path) -> None:
+    source, library = _two_element_library(tmp_path)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        job = InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="lcao",
+            pp_path=library,
+            orb_path=library,
+            kpt=[1, 1, 1],
+            set_params={"ecutwfc": 200},
+        ).run()[0].path
+
+    assert ReadInput(job / "INPUT")["ecutwfc"] == pytest.approx(200.0)
+
+
+def test_prepare_warns_about_a_too_small_cutoff(tmp_path: Path) -> None:
+    source, library = _two_element_library(tmp_path)
+
+    with pytest.warns(UserWarning, match="below the 150 Ry cutoff"):
+        job = InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="lcao",
+            pp_path=library,
+            orb_path=library,
+            kpt=[1, 1, 1],
+            set_params={"ecutwfc": 100},
+        ).run()[0].path
+
+    assert ReadInput(job / "INPUT")["ecutwfc"] == pytest.approx(100.0)
+
+
+def test_prepare_pw_ignores_the_orbital_cutoff(tmp_path: Path) -> None:
+    source, library = _two_element_library(tmp_path)
+
+    job = InputPreparer(
+        source,
+        output_dir=tmp_path / "jobs",
+        filetype="stru",
+        basis="pw",
+        pp_path=library,
+        kpt=[1, 1, 1],
+    ).run()[0].path
+
+    # A plane-wave job takes the cutoff recommended by the pseudopotentials.
+    assert ReadInput(job / "INPUT")["ecutwfc"] == pytest.approx(60.0)
 
 
 def test_validate_reports_unknown_keyword_and_missing_resource(tmp_path: Path) -> None:
