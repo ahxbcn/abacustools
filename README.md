@@ -163,7 +163,7 @@ abacustools workflow kspacing postprocess -j JOB
 
 The postprocessing stage reports total energy per atom, convergence deltas,
 incomplete tasks, a recommended first value within the tolerance, a JSON
-report, and a convergence plot. `cutoff` is an alias for `ecutwfc`.
+report, and a convergence plot.
 
 The equation of state can be fitted from volume-scaled calculations:
 

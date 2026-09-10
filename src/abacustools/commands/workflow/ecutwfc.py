@@ -31,4 +31,4 @@ def postprocess(args):
 
 def register_parser(subparsers) -> None:
     """Register the cutoff-energy convergence workflow."""
-    register_workflow(subparsers, SPEC, aliases=["cutoff"])
+    register_workflow(subparsers, SPEC)

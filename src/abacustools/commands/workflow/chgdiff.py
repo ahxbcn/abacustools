@@ -184,5 +184,4 @@ def register_parser(subparsers) -> None:
         postprocess,
         _register_prepare_arguments,
         _register_postprocess_arguments,
-        aliases=["charge-density-difference", "charge_density_difference"],
     )

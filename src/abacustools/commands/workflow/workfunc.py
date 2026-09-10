@@ -474,5 +474,4 @@ def register_parser(subparsers) -> None:
         postprocess,
         _register_prepare_arguments,
         _register_postprocess_arguments,
-        aliases=["work-function", "work_function"],
     )

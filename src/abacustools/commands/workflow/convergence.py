@@ -338,8 +338,6 @@ def postprocess(args: argparse.Namespace, spec: ConvergenceSpec) -> int:
 def register_workflow(
     subparsers,
     spec: ConvergenceSpec,
-    *,
-    aliases: Optional[list[str]] = None,
 ) -> None:
     """Register one parameter-specific convergence workflow."""
     register_stages(
@@ -350,5 +348,4 @@ def register_workflow(
         lambda args: postprocess(args, spec),
         lambda parser: _register_prepare_arguments(parser, spec),
         lambda parser: _register_postprocess_arguments(parser, spec),
-        aliases=aliases,
     )
