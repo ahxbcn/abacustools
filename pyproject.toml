@@ -36,3 +36,14 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 abacustools = ["io/input-params.json", "core/default_config.yaml"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+# Rule set documented in AGENTS.md. `l` is the angular-momentum quantum number
+# used throughout the NAO, band and DOS code, including the public
+# NAOOrbital.l field, so E741 is ignored instead of renaming it.
+select = ["E4", "E7", "E9", "F"]
+ignore = ["E741"]

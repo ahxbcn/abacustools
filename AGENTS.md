@@ -33,7 +33,7 @@ abacustools --help                        # CLI help (also: <family> --help)
 abacustools menu                          # interactive multi-level menu
 python -m pytest tests                    # full test suite
 python -m pytest tests/test_bader.py -q   # one module
-ruff check src tests                      # lint (ruff defaults; no config file)
+ruff check src tests                      # lint (rule set pinned in pyproject.toml)
 ruff format src tests                     # format
 ```
 
