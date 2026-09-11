@@ -533,6 +533,9 @@ abacustools postprocess cohp -j JOB \
 Orbital indices are zero-based global NAO indices. Use `--method COOP` for
 overlap-weighted curves, `--spin up|down` for a spin channel, and `--invert`
 to invert only the plotted curve. The data file keeps the computed sign.
+Develop-version output is read as well: `hk*_nao.txt` and `sk*_nao.txt` replace
+the `data-*-H`/`data-*-S` pair, `wf*_nao.txt` replaces `WFC_NAO_K*.txt`, and
+the k-point weights come from the `dm*_nao.txt` density-matrix headers.
 `ICOHP`/`ICOOP` printed by the command is the integral up to the Fermi level.
 This is an ABACUS-NAO COHP/COOP implementation and is not a standard LOBSTER
 pCOHP projection.
@@ -566,7 +569,11 @@ abacustools postprocess mayer -j JOB --pairs 1-2,1-3 --json -o mayer.json
 The analyzer reads numerical orbitals, overlap matrices, density matrices or
 NAO wavefunctions, validates their dimensions, and reports atom indices,
 elements, periodic distances, and Mayer bond orders. It supports gamma-only
-and multi-k calculations with `nspin=1` or `nspin=2`.
+and multi-k calculations with `nspin=1` or `nspin=2`, for both the LTS output
+layout (`data-*-S` with `SPIN1_DM`/`SPIN2_DM` or `WFC_NAO_K*.txt`) and the
+develop layout (`sk*_nao.txt` with `dm*_nao.txt`), including the gamma-only
+names that omit the k-point index. The develop density matrices are used
+directly, so no wavefunction reconstruction is needed there.
 
 Complex calculation workflows are organized by task and stage. The BSSE
 workflow currently provides the preparation and postprocessing framework:

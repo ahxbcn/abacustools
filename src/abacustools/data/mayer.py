@@ -164,6 +164,18 @@ def _parse_matrix_token(token: str) -> complex:
         raise ValueError(f"invalid matrix value {token!r}") from exc
 
 
+def _maybe_matrix_value(token: str) -> Optional[complex]:
+    """Return a matrix value, or ``None`` when the token is not a number.
+
+    The develop version writes complex pairs ``(real,imag)`` for multi-k runs
+    but plain real numbers for gamma-only runs, so both spellings are accepted.
+    """
+    try:
+        return _parse_matrix_token(token)
+    except ValueError:
+        return None
+
+
 def read_overlap_matrix(ovlp_mat_file: str | Path) -> np.ndarray:
     """Read ABACUS ``data-*-S`` upper-triangular matrix output."""
 
@@ -195,6 +207,77 @@ def read_overlap_matrix(ovlp_mat_file: str | Path) -> np.ndarray:
             j = i + offset
             matrix[i, j] = value
             matrix[j, i] = value.conjugate()
+    if not np.all(np.isfinite(matrix)):
+        raise ValueError(f"{path}: overlap matrix contains non-finite values")
+    return matrix
+
+
+def read_overlap_matrix_develop(ovlp_mat_file: str | Path) -> np.ndarray:
+    """Read ABACUS develop version ``sk*_nao.txt`` upper-triangular matrix output.
+
+    Format:
+    #------------------------------------------------------------------------
+    # ionic step 1
+    # filename OUT.ABACUS/sk1_nao.txt
+    # gamma only 0
+    # rows 104
+    # columns 104
+    #------------------------------------------------------------------------
+    Row 1
+     (1.08393052e+00,0.00000000e+00) (-3.05029322e-01,0.00000000e+00) ...
+    Row 2
+     (8.80655982e-01,0.00000000e+00) (0.00000000e+00,0.00000000e+00) ...
+
+    Only the upper triangle is stored: row ``i`` (one-based) holds the
+    ``nrows - i + 1`` elements from the diagonal to the last column, wrapped
+    over several physical lines.  The lower triangle is rebuilt by conjugation.
+    """
+    path = Path(ovlp_mat_file)
+    _required_file(path, "overlap matrix (develop format)")
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+
+    # A run with out_app_flag writes every ionic step into the same file;
+    # only the last block describes the final state.
+    blocks = [i for i, line in enumerate(lines) if line.strip().startswith("# rows")]
+    if not blocks:
+        raise ValueError(f"{path}: cannot find matrix dimensions in header")
+    start = blocks[-1]
+    nrows = int(lines[start].split()[-1])
+    ncols = None
+    for line in lines[start:]:
+        stripped = line.strip()
+        if stripped.startswith("# columns"):
+            ncols = int(stripped.split()[-1])
+            break
+    if nrows is None or ncols is None:
+        raise ValueError(f"{path}: cannot find matrix dimensions in header")
+    if nrows != ncols:
+        raise ValueError(f"{path}: matrix must be square, got {nrows}x{ncols}")
+
+    matrix = np.zeros((nrows, ncols), dtype=np.complex128)
+    current_row: int | None = None
+    column = 0
+    for line in lines[start:]:
+        stripped = line.strip()
+        if stripped.startswith("Row "):
+            current_row = int(stripped.split()[1]) - 1
+            if current_row >= nrows:
+                raise ValueError(f"{path}: row index {current_row + 1} out of range")
+            # The first stored element of a row sits on the diagonal.
+            column = current_row
+            continue
+        if current_row is None or not stripped or stripped.startswith("#"):
+            continue
+        for token in stripped.split():
+            value = _maybe_matrix_value(token)
+            if value is None:
+                continue
+            if column >= ncols:
+                raise ValueError(f"{path}: row {current_row + 1} contains too many values")
+            matrix[current_row, column] = value
+            matrix[column, current_row] = value.conjugate()
+            column += 1
+
     if not np.all(np.isfinite(matrix)):
         raise ValueError(f"{path}: overlap matrix contains non-finite values")
     return matrix
@@ -338,6 +421,92 @@ def read_kpoint_weights(kpoints_file: str | Path) -> np.ndarray:
     return np.asarray(weights, dtype=float)
 
 
+
+
+def detect_matrix_format(output_dir: Path, out_dmk: int) -> str:
+    """Return ``"develop"`` or ``"lts"`` for an LCAO output directory.
+
+    The develop layout is written by ``out_dmk=1`` and stores the k-resolved
+    density matrices as ``dm*_nao.txt``; the LTS layout stores ``data-*-S``
+    overlap matrices (or ``SPIN1_DM`` for gamma-only runs).  Some directories
+    contain files of both layouts, so the requested inputs decide, with the
+    available data as a fallback.
+
+    Args:
+        output_dir: ABACUS ``OUT.*`` directory.
+        out_dmk: Value of the ``out_dmk`` input parameter.
+
+    Returns:
+        str: ``"develop"`` when the k-resolved density matrices are used.
+    """
+    has_develop = bool(list(output_dir.glob("dm*_nao.txt")))
+    has_lts = bool(list(output_dir.glob("data-*-S"))) or (output_dir / "SPIN1_DM").is_file()
+    if out_dmk == 1 and has_develop:
+        return "develop"
+    if not has_lts and has_develop:
+        return "develop"
+    return "lts"
+
+
+def read_density_matrix_develop(dmk_file: str | Path) -> np.ndarray:
+    """Read ABACUS develop version ``dmk*_nao.txt`` density matrix.
+
+    Format:
+     --- Ionic Step 1 ---
+     1 # number of spin directions
+     1 # spin index
+     64 # total k points
+     64 # total k points after symmetrized (if open)
+     1 # k-point index
+     0 0 0 # k point coordinate (Cartesian)
+     0 0 0 # k point coordinate (direct)
+     0.03125 # weight of this k point
+     1.19007 # Fermi energy in Ry
+     104 # number of localized basis
+     104 104 # size of this matrix
+
+     [structure info]
+
+     (real,imag) (real,imag) ...
+     (real,imag) (real,imag) ...
+
+    Unlike ``sk*_nao.txt`` this file stores the complete square matrix, four
+    values per line and without ``Row`` markers.
+    """
+    path = Path(dmk_file)
+    _required_file(path, "density matrix (develop format)")
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+
+    # Appended ionic steps share one file, so keep the last size header.
+    sizes = [i for i, line in enumerate(lines) if "# size of this matrix" in line]
+    if not sizes:
+        raise ValueError(f"{path}: cannot find matrix dimensions in header")
+    block = sizes[-1]
+    nrows, ncols = (int(part) for part in lines[block].split()[:2])
+
+    # The cell and atomic positions of the structure block precede the matrix,
+    # so the matrix is taken as the last nrows * ncols numeric values.
+    values: list[complex] = []
+    for line in lines[block + 1 :]:
+        stripped = line.strip()
+        if stripped.startswith("---") or "Ionic Step" in stripped:
+            break
+        for token in stripped.split():
+            value = _maybe_matrix_value(token)
+            if value is not None:
+                values.append(value)
+    expected = nrows * ncols
+    if len(values) < expected:
+        raise ValueError(
+            f"{path}: found {len(values)} matrix values; expected {expected}"
+        )
+    values = values[-expected:]
+    matrix = np.asarray(values, dtype=np.complex128).reshape(nrows, ncols)
+    if not np.all(np.isfinite(matrix)):
+        raise ValueError(f"{path}: density matrix contains non-finite values")
+    return matrix
+
+
 def _minimum_distance(frac1: Iterable[float], frac2: Iterable[float], cell: np.ndarray) -> float:
     difference = np.asarray(frac2, dtype=float) - np.asarray(frac1, dtype=float)
     difference -= np.round(difference)
@@ -453,8 +622,52 @@ def _resolve_orbital(job: Path, orbital_dir: Any, filename: str) -> Path:
     return (base if base.is_absolute() else job / base) / filename
 
 
+_DEVELOP_DM_NAME = re.compile(
+    r"^dm(?:k(?P<ik>\d+))?(?:s(?P<is>\d+))?(?:g(?P<step>\d+))?_nao\.txt$"
+)
+
+
+def _develop_density_files(output: Path) -> list[tuple[int, int, Path]]:
+    """Return ``(ik, ispin, path)`` for every develop k-resolved density matrix.
+
+    The develop version names the files ``dmg1_nao.txt`` (gamma-only,
+    ``nspin=1``), ``dms{is}g1_nao.txt`` (gamma-only, ``nspin=2``),
+    ``dmk{ik}g1_nao.txt`` (multi-k, ``nspin=1``) and
+    ``dmk{ik}s{is}g1_nao.txt`` (multi-k, ``nspin=2``).  The k- and spin-index
+    are therefore read from the file name instead of assumed.  The ``g``
+    ionic-step marker only appears when ``out_app_flag`` is disabled, so it is
+    optional.
+    """
+    entries: list[tuple[int, int, Path]] = []
+    for path in sorted(output.glob("dm*_nao.txt")):
+        match = _DEVELOP_DM_NAME.match(path.name)
+        if match is None:
+            continue
+        ik = int(match.group("ik")) if match.group("ik") else 1
+        ispin = int(match.group("is")) if match.group("is") else 1
+        entries.append((ik, ispin, path))
+    entries.sort(key=lambda item: (item[0], item[1]))
+    return entries
+
+
+def _develop_overlap_file(output: Path, ik: int) -> Path:
+    """Return the overlap matrix that belongs to one k-point.
+
+    A gamma-only run writes a single ``sk_nao.txt``; a multi-k run writes one
+    ``sk{ik}_nao.txt`` per k-point.
+    """
+    gamma = output / "sk_nao.txt"
+    if gamma.is_file():
+        return gamma
+    return output / f"sk{ik}_nao.txt"
+
+
 def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None, pairs: Optional[str] = None, pairs_file: Optional[str | Path] = None) -> MayerAnalysis:
-    """Analyze Mayer bond orders from an ABACUS LCAO job directory."""
+    """Analyze Mayer bond orders from an ABACUS LCAO job directory.
+    
+    Supports both LTS 3.10.1 format (data-*-S, WFC_NAO_K*.txt) and 
+    develop version format (sk*_nao.txt, wfk*_nao.txt).
+    """
 
     job_path = Path(job).resolve()
     inputs = ReadInput(str(_required_file(job_path / "INPUT", "INPUT file")))
@@ -467,8 +680,6 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
     if int(_scalar(inputs.get("out_mat_hs", 1))) != 1:
         raise ValueError("Mayer analysis requires out_mat_hs=1")
     gamma_only = bool(int(_scalar(inputs.get("gamma_only", 0)) or 0))
-    if gamma_only and int(_scalar(inputs.get("out_dm", 1))) != 1:
-        raise ValueError("gamma-only Mayer analysis requires out_dm=1")
     suffix = str(_scalar(inputs.get("suffix", "ABACUS")))
     output = _required_directory(job_path / f"OUT.{suffix}", "ABACUS output directory")
     structure_path = job_path / str(_scalar(inputs.get("stru_file", "STRU")))
@@ -476,6 +687,11 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
     if structure is None:
         raise ValueError(f"cannot read structure: {structure_path}")
 
+    # Choose the layout that matches the requested outputs and the files present
+    version = detect_matrix_format(
+        output, int(_scalar(inputs.get("out_dmk", 0)) or 0)
+    )
+    
     nao_by_file: dict[str, NAOData] = {}
     for index, atom in enumerate(structure.atoms, 1):
         if not atom.orb:
@@ -487,55 +703,104 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
     orders = {pair: 0.0 for pair in selected_pairs}
     data_files: list[str] = []
 
-    if gamma_only:
-        overlap_path = _required_file(output / "data-0-S", "gamma overlap matrix")
-        dm_up_path = _required_file(output / "SPIN1_DM", "spin-up density matrix")
-        overlap = read_overlap_matrix(overlap_path)
-        dm_up = read_density_matrix(dm_up_path)
-        data_files.extend([str(overlap_path), str(dm_up_path)])
-        if overlap.shape != (basis_functions, basis_functions) or dm_up.shape != overlap.shape:
-            raise ValueError(f"matrix dimensions do not match NAO basis size {basis_functions}")
-        dm_down = None
-        if nspin == 2:
-            dm_down_path = _required_file(output / "SPIN2_DM", "spin-down density matrix")
-            dm_down = read_density_matrix(dm_down_path)
-            data_files.append(str(dm_down_path))
-            if dm_down.shape != overlap.shape:
-                raise ValueError("spin-down density matrix dimension does not match overlap matrix")
-        for pair in selected_pairs:
-            value = _mayer_order(dm_up, overlap, atom_ranges[pair[0]], atom_ranges[pair[1]])
-            if dm_down is not None:
-                value = 2.0 * (value + _mayer_order(dm_down, overlap, atom_ranges[pair[0]], atom_ranges[pair[1]]))
-            orders[pair] = value
-    else:
-        wfc_paths = sorted(output.glob("WFC_NAO_K*.txt"), key=lambda path: int(re.search(r"K(\d+)", path.name).group(1)))
-        if not wfc_paths:
-            raise FileNotFoundError(f"No WFC_NAO_K*.txt files found in {output}")
-        weights = read_kpoint_weights(_required_file(output / "kpoints", "k-point table"))
-        if len(wfc_paths) not in (len(weights), 2 * len(weights)) or (nspin == 1 and len(wfc_paths) != len(weights)):
-            raise ValueError(f"number of k-point weights ({len(weights)}) does not match WFC files ({len(wfc_paths)})")
-        spin_paired = nspin == 2 and len(wfc_paths) == 2 * len(weights)
-        for ik, weight in enumerate(weights):
-            overlap_path = _required_file(output / f"data-{ik}-S", f"overlap matrix for k-point {ik + 1}")
-            overlap = read_overlap_matrix(overlap_path)
-            up_wfc, up_occ = read_wfc_nao_k(wfc_paths[ik])
-            up_dm = calculate_density_matrix_k(up_wfc, up_occ)
-            if overlap.shape != (basis_functions, basis_functions) or up_dm.shape != overlap.shape:
-                raise ValueError(f"k-point {ik + 1}: matrix dimensions do not match NAO basis size {basis_functions}")
-            down_dm = None
-            if spin_paired:
-                down_wfc, down_occ = read_wfc_nao_k(wfc_paths[ik + len(weights)])
-                down_dm = calculate_density_matrix_k(down_wfc, down_occ)
-                if down_dm.shape != overlap.shape:
-                    raise ValueError(f"k-point {ik + 1}: spin-down matrix dimension mismatch")
+    if version == "develop":
+        # Develop version: the k-resolved density matrices carry the k index,
+        # the spin index and the k-point weight in their file name and header,
+        # so they are read directly instead of being rebuilt from wavefunctions.
+        density_files = _develop_density_files(output)
+        if not density_files:
+            raise FileNotFoundError(f"No dm*_nao.txt files found in {output}")
+
+        kpoints = sorted({ik for ik, _ispin, _path in density_files})
+        weight = 1.0 / len(kpoints)
+        overlaps: dict[int, np.ndarray] = {}
+        for ik in kpoints:
+            overlap_path = _required_file(
+                _develop_overlap_file(output, ik),
+                f"overlap matrix for k-point {ik} (develop)",
+            )
+            matrix = overlaps.setdefault(ik, read_overlap_matrix_develop(overlap_path))
+            data_files.append(str(overlap_path))
+            if matrix.shape != (basis_functions, basis_functions):
+                raise ValueError(
+                    f"k-point {ik}: overlap dimension does not match NAO basis size "
+                    f"{basis_functions}"
+                )
+            spin_orders = {pair: 0.0 for pair in selected_pairs}
+            channels = 0
+            for entry_ik, _ispin, path in density_files:
+                if entry_ik != ik:
+                    continue
+                density = read_density_matrix_develop(path)
+                if density.shape != matrix.shape:
+                    raise ValueError(
+                        f"k-point {ik}: density matrix dimension does not match overlap matrix"
+                    )
+                data_files.append(str(path))
+                channels += 1
+                for pair in selected_pairs:
+                    spin_orders[pair] += _mayer_order(
+                        density, matrix, atom_ranges[pair[0]], atom_ranges[pair[1]]
+                    )
+            # The two spin channels share one occupation weight, as in the
+            # LTS density matrices, so they are summed and weighted like a
+            # single doubly-occupied manifold.
+            factor = 2.0 if (nspin == 2 and channels == 2) else 1.0
             for pair in selected_pairs:
-                value = _mayer_order(up_dm, overlap, atom_ranges[pair[0]], atom_ranges[pair[1]])
-                if down_dm is not None:
-                    value = 2.0 * (value + _mayer_order(down_dm, overlap, atom_ranges[pair[0]], atom_ranges[pair[1]]))
-                orders[pair] += value / weight
-            data_files.extend([str(overlap_path), str(wfc_paths[ik])])
-            if spin_paired:
-                data_files.append(str(wfc_paths[ik + len(weights)]))
+                orders[pair] += factor * spin_orders[pair] / weight
+    else:
+        # LTS version format (original code)
+        if gamma_only:
+            if int(_scalar(inputs.get("out_dm", 1))) != 1:
+                raise ValueError("gamma-only Mayer analysis requires out_dm=1")
+            overlap_path = _required_file(output / "data-0-S", "gamma overlap matrix")
+            dm_up_path = _required_file(output / "SPIN1_DM", "spin-up density matrix")
+            overlap = read_overlap_matrix(overlap_path)
+            dm_up = read_density_matrix(dm_up_path)
+            data_files.extend([str(overlap_path), str(dm_up_path)])
+            if overlap.shape != (basis_functions, basis_functions) or dm_up.shape != overlap.shape:
+                raise ValueError(f"matrix dimensions do not match NAO basis size {basis_functions}")
+            dm_down = None
+            if nspin == 2:
+                dm_down_path = _required_file(output / "SPIN2_DM", "spin-down density matrix")
+                dm_down = read_density_matrix(dm_down_path)
+                data_files.append(str(dm_down_path))
+                if dm_down.shape != overlap.shape:
+                    raise ValueError("spin-down density matrix dimension does not match overlap matrix")
+            for pair in selected_pairs:
+                value = _mayer_order(dm_up, overlap, atom_ranges[pair[0]], atom_ranges[pair[1]])
+                if dm_down is not None:
+                    value = 2.0 * (value + _mayer_order(dm_down, overlap, atom_ranges[pair[0]], atom_ranges[pair[1]]))
+                orders[pair] = value
+        else:
+            wfc_paths = sorted(output.glob("WFC_NAO_K*.txt"), key=lambda path: int(re.search(r"K(\d+)", path.name).group(1)))
+            if not wfc_paths:
+                raise FileNotFoundError(f"No WFC_NAO_K*.txt files found in {output}")
+            weights = read_kpoint_weights(_required_file(output / "kpoints", "k-point table"))
+            if len(wfc_paths) not in (len(weights), 2 * len(weights)) or (nspin == 1 and len(wfc_paths) != len(weights)):
+                raise ValueError(f"number of k-point weights ({len(weights)}) does not match WFC files ({len(wfc_paths)})")
+            spin_paired = nspin == 2 and len(wfc_paths) == 2 * len(weights)
+            for ik, weight in enumerate(weights):
+                overlap_path = _required_file(output / f"data-{ik}-S", f"overlap matrix for k-point {ik + 1}")
+                overlap = read_overlap_matrix(overlap_path)
+                up_wfc, up_occ = read_wfc_nao_k(wfc_paths[ik])
+                up_dm = calculate_density_matrix_k(up_wfc, up_occ)
+                if overlap.shape != (basis_functions, basis_functions) or up_dm.shape != overlap.shape:
+                    raise ValueError(f"k-point {ik + 1}: matrix dimensions do not match NAO basis size {basis_functions}")
+                down_dm = None
+                if spin_paired:
+                    down_wfc, down_occ = read_wfc_nao_k(wfc_paths[ik + len(weights)])
+                    down_dm = calculate_density_matrix_k(down_wfc, down_occ)
+                    if down_dm.shape != overlap.shape:
+                        raise ValueError(f"k-point {ik + 1}: spin-down matrix dimension mismatch")
+                for pair in selected_pairs:
+                    value = _mayer_order(up_dm, overlap, atom_ranges[pair[0]], atom_ranges[pair[1]])
+                    if down_dm is not None:
+                        value = 2.0 * (value + _mayer_order(down_dm, overlap, atom_ranges[pair[0]], atom_ranges[pair[1]]))
+                    orders[pair] += value / weight
+                data_files.extend([str(overlap_path), str(wfc_paths[ik])])
+                if spin_paired:
+                    data_files.append(str(wfc_paths[ik + len(weights)]))
 
     fractions = structure.coords_direct
     cell = np.asarray(structure.cell, dtype=float)

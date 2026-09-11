@@ -18,6 +18,7 @@ from abacustools.core.constant import RY_TO_EV
 from abacustools.data.mayer import (
     read_kpoint_weights,
     read_overlap_matrix,
+    read_overlap_matrix_develop,
     read_wfc_nao_k_data,
 )
 from abacustools.io.abacus import ReadInput
@@ -26,6 +27,16 @@ from abacustools.io.abacus import ReadInput
 _FLOAT = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[EeDd][+-]?\d+)?"
 _DATA_FILE = re.compile(r"^data-(\d+)-(H|S)$", re.IGNORECASE)
 _WFC_FILE = re.compile(r"(?:WFC_NAO_K|LOWF_K_|WFC_NAO_GAMMA)(\d+)", re.IGNORECASE)
+# Develop-version names: hk1_nao.txt, hk1s2g1_nao.txt, sk1_nao.txt, wfk1_nao.txt,
+# wfk1s2g1_nao.txt, and the gamma-only hk_nao.txt/sk_nao.txt/wf_nao.txt/wfs1_nao.txt.
+_DEVELOP_H_FILE = re.compile(r"^hk(?P<ik>\d+)?(?:s(?P<is>\d+))?(?:g\d+)?_nao\.txt$", re.IGNORECASE)
+_DEVELOP_S_FILE = re.compile(r"^sk(?P<ik>\d+)?(?:g\d+)?_nao\.txt$", re.IGNORECASE)
+_DEVELOP_WFC_FILE = re.compile(
+    r"^wf(?:k(?P<ik>\d+))?(?:s(?P<is>\d+))?(?:g\d+)?_nao\.txt$", re.IGNORECASE
+)
+_DEVELOP_WEIGHT = re.compile(
+    r"^dm(?:k(?P<ik>\d+))?(?:s\d+)?(?:g\d+)?_nao\.txt$", re.IGNORECASE
+)
 
 
 @dataclass(frozen=True)
@@ -277,6 +288,104 @@ def _load_channel_files(output: Path) -> tuple[list[Path], list[Path], list[Path
     return [h_files[index] for index in indices], [s_files[index] for index in indices], wfc_files
 
 
+def _develop_kpoint_weights(output: Path) -> Optional[np.ndarray]:
+    """Return the k-point weights of a develop run, normalized to sum to one.
+
+    The develop version records the weight of every k-point in the header of
+    its ``dm*_nao.txt`` density matrices.  Gamma-only runs write a single file
+    without a k index.
+    """
+    entries: dict[int, float] = {}
+    for path in output.iterdir():
+        match = _DEVELOP_WEIGHT.match(path.name)
+        if match is None:
+            continue
+        ik = int(match.group("ik")) if match.group("ik") else 1
+        if ik in entries:
+            continue
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if "# weight of this k point" in line:
+                entries[ik] = float(line.split()[0])
+                break
+    if not entries:
+        return None
+    total = float(sum(entries.values()))
+    if total <= 0:
+        return None
+    return np.asarray([entries[ik] for ik in sorted(entries)], dtype=float) / total
+
+
+def _load_develop_channel_files(
+    output: Path, nspin: int
+) -> tuple[list[Path], list[Path], list[Path], Optional[np.ndarray]]:
+    """Collect the develop-version H, S and WFC files in channel order.
+
+    Channels are ordered like the LTS files: every k-point of spin up first,
+    then every k-point of spin down, so the spin selection logic above works
+    unchanged.
+    """
+    h_files: dict[tuple[int, int], Path] = {}
+    s_files: dict[int, Path] = {}
+    wfc_files: dict[tuple[int, int], Path] = {}
+    for path in output.iterdir():
+        name = path.name
+        match = _DEVELOP_H_FILE.match(name)
+        if match is not None:
+            ik = int(match.group("ik")) if match.group("ik") else 1
+            ispin = int(match.group("is")) if match.group("is") else 1
+            h_files[(ik, ispin)] = path
+            continue
+        match = _DEVELOP_S_FILE.match(name)
+        if match is not None:
+            ik = int(match.group("ik")) if match.group("ik") else 1
+            s_files[ik] = path
+            continue
+        match = _DEVELOP_WFC_FILE.match(name)
+        if match is not None:
+            ik = int(match.group("ik")) if match.group("ik") else 1
+            ispin = int(match.group("is")) if match.group("is") else 1
+            wfc_files[(ik, ispin)] = path
+    if not h_files:
+        raise FileNotFoundError(f"No hk*_nao.txt files found in {output}")
+
+    kpoints = sorted({ik for ik, _ispin in h_files})
+    spins = sorted({ispin for _ik, ispin in h_files})
+    if nspin == 2 and len(spins) > 1:
+        channels = [(ik, ispin) for ispin in spins for ik in kpoints]
+    else:
+        channels = [(ik, 1) for ik in kpoints]
+
+    ordered_h: list[Path] = []
+    ordered_s: list[Path] = []
+    ordered_wfc: list[Path] = []
+    for ik, ispin in channels:
+        if (ik, ispin) not in h_files:
+            raise FileNotFoundError(f"missing hk matrix for k-point {ik}, spin {ispin}")
+        if ik not in s_files:
+            raise FileNotFoundError(f"missing sk_nao.txt overlap matrix for k-point {ik}")
+        if (ik, ispin) not in wfc_files:
+            raise FileNotFoundError(f"missing wf*_nao.txt wavefunction for k-point {ik}, spin {ispin}")
+        ordered_h.append(h_files[(ik, ispin)])
+        ordered_s.append(s_files[ik])
+        ordered_wfc.append(wfc_files[(ik, ispin)])
+
+    weights = _develop_kpoint_weights(output)
+    if weights is not None and len(weights) != len(kpoints):
+        weights = None
+    return ordered_h, ordered_s, ordered_wfc, weights
+
+
+def _load_channels(
+    output: Path, nspin: int
+) -> tuple[list[Path], list[Path], list[Path], Optional[np.ndarray], callable]:
+    """Dispatch between the LTS ``data-*`` and the develop ``hk*_nao.txt`` layouts."""
+    if any(_DATA_FILE.match(path.name) for path in output.iterdir()):
+        h_files, s_files, wfc_files = _load_channel_files(output)
+        return h_files, s_files, wfc_files, None, read_overlap_matrix
+    h_files, s_files, wfc_files, weights = _load_develop_channel_files(output, nspin)
+    return h_files, s_files, wfc_files, weights, read_overlap_matrix_develop
+
+
 def analyze_cohp(
     job: str | Path,
     atom_i_orbs: Iterable[int],
@@ -308,9 +417,13 @@ def analyze_cohp(
     if str(_scalar(inputs.get("basis_type", "lcao"))).lower() != "lcao":
         raise ValueError("COHP/COOP requires basis_type=lcao")
     output = _output_directory(job_path, inputs)
-    h_files, s_files, wfc_files = _load_channel_files(output)
+    h_files, s_files, wfc_files, develop_weights, matrix_reader = _load_channels(
+        output, configured_nspin
+    )
     weights_path = output / "kpoints"
-    if weights_path.is_file():
+    if develop_weights is not None:
+        base_weights = develop_weights
+    elif weights_path.is_file():
         base_weights = read_kpoint_weights(weights_path)
     else:
         if configured_nspin == 2:
@@ -342,8 +455,8 @@ def analyze_cohp(
     values: list[float] = []
     dimension: Optional[int] = None
     for channel in channels:
-        h_matrix = read_overlap_matrix(h_files[channel])
-        s_matrix = read_overlap_matrix(s_files[channel])
+        h_matrix = matrix_reader(h_files[channel])
+        s_matrix = matrix_reader(s_files[channel])
         coefficients, band_energies, _occupations = read_wfc_nao_k_data(wfc_files[channel])
         if h_matrix.shape != s_matrix.shape or h_matrix.shape != (coefficients.shape[0], coefficients.shape[0]):
             raise ValueError(f"channel {channel + 1}: H, S, and WFC dimensions do not match")
