@@ -728,6 +728,27 @@ calculation. The tensor and per-task diagnostics are written under `JOB`:
 abacustools workflow piezoelectric postprocess -j JOB
 ```
 
+Hubbard `U` parameters can be derived from first principles with the linear
+response method, which screens the occupation of the correlated orbitals
+against a small applied `U`. The prepare stage writes one SCF calculation per
+scanned `U` value, treating the atoms named by `--index` or `--elements` as the
+correlated ones and giving them their own species label so that only that atom
+carries the perturbation:
+
+```text
+abacustools workflow dftu prepare -j JOB --index 1 --u-min 0 --u-max 0.5 --u-step 0.1
+abacustools workflow dftu postprocess -j JOB
+```
+
+`--u-values` lists the scanned values directly, `--orbital 2|3` selects d or f
+orbitals instead of inferring the angular momentum from the element, and
+`--dftu-type` picks the DFT+U flavour, defaulting to the recommended method 1.
+The postprocess stage reads the local occupation matrices from every
+`running_scf.log`, fits the bare and screened responses, and writes the
+resulting `U` per atom to `dftu_results.json` together with a `dftu_response.png`
+plot. Submit scripts are generated on request with `--submit-script` and
+`--submission-type`.
+
 Generated calculation directories are protected by default. Use `--override`
 when intentionally replacing them. The BEC workflow's `run_bec.sh` is only a
 local four-step runner for one generated task; cluster submission scripts are
