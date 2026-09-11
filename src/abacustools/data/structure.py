@@ -29,6 +29,192 @@ _COORDINATE_MODES = {
     "cart": "cartesian",
 }
 
+def _spglib_cell(structure: AbacusSTRU):
+    """Return the ``(lattice, positions, numbers)`` triple spglib expects."""
+    from ase.data import atomic_numbers
+
+    numbers = []
+    for atom in structure.atoms:
+        element = atom.element or atom.label
+        key = str(element).strip().capitalize()
+        if key not in atomic_numbers:
+            raise StructureEditError(f"unknown element: {element}")
+        numbers.append(int(atomic_numbers[key]))
+    return (
+        np.asarray(structure.cell, dtype=float),
+        np.asarray(structure.coords_direct, dtype=float),
+        numbers,
+    )
+
+
+def _spglib_to_stru(
+    structure: AbacusSTRU,
+    cell: np.ndarray,
+    positions: np.ndarray,
+    numbers: list[int],
+) -> AbacusSTRU:
+    """Convert spglib output back to an AbacusSTRU, preserving attributes."""
+    from ase.data import chemical_symbols, atomic_numbers
+
+    # Build a mapping from atomic number to template atoms
+    templates: dict[int, list] = {}
+    for atom in structure.atoms:
+        element = atom.element or atom.label
+        key = str(element).strip().capitalize()
+        num = atomic_numbers.get(key, 0)
+        templates.setdefault(num, []).append(atom)
+
+    # Track which template atoms have been used for each element
+    template_indices: dict[int, int] = {num: 0 for num in templates}
+
+    atoms = []
+    for num in numbers:
+        symbol = chemical_symbols[num]
+        template_list = templates.get(num, [])
+        if not template_list:
+            raise StructureEditError(
+                f"spglib returned element {symbol} not found in original structure"
+            )
+        idx = template_indices[num] % len(template_list)
+        template = template_list[idx]
+        template_indices[num] += 1
+
+        atom = copy.deepcopy(template)
+        atom.element = symbol
+        atoms.append(atom)
+
+    # Set fractional coordinates from spglib output
+    positions_list = positions.tolist()
+    for atom, pos in zip(atoms, positions_list):
+        atom.coord = tuple(pos)
+
+    metadata = copy.deepcopy(structure.metadata)
+    metadata["atom_type"] = "direct"
+
+    return AbacusSTRU(cell=cell.tolist(), atoms=atoms, metadata=metadata)
+
+
+def find_primitive(
+    structure: AbacusSTRU,
+    *,
+    symprec: float = 1e-5,
+    angle_tolerance: float = 5.0,
+) -> AbacusSTRU:
+    """Return the primitive cell of the structure.
+
+    Uses spglib to find the smallest cell that preserves the crystallographic
+    symmetry. The primitive cell has the minimum number of atoms.
+
+    Args:
+        structure: Structure to reduce.
+        symprec: Symmetry tolerance in Angstrom.
+        angle_tolerance: Angle tolerance in degrees.
+
+    Returns:
+        AbacusSTRU: The primitive cell.
+
+    Raises:
+        StructureEditError: If spglib fails or the structure has no symmetry.
+    """
+    try:
+        import spglib
+    except ImportError as error:
+        raise StructureEditError("spglib is not installed") from error
+
+    cell = _spglib_cell(structure)
+    primitive = spglib.find_primitive(cell, symprec=symprec, angle_tolerance=angle_tolerance)
+    if primitive is None:
+        raise StructureEditError("spglib could not find a primitive cell")
+
+    lattice, positions, numbers = primitive
+    return _spglib_to_stru(structure, np.array(lattice), np.array(positions), list(numbers))
+
+
+def standardize_cell(
+    structure: AbacusSTRU,
+    *,
+    to_primitive: bool = False,
+    no_idealize: bool = False,
+    symprec: float = 1e-5,
+    angle_tolerance: float = 5.0,
+) -> AbacusSTRU:
+    """Return a standardized version of the structure.
+
+    Uses spglib to standardize the cell according to the International Tables
+    for Crystallography. The standardized cell has a unique orientation and
+    origin.
+
+    Args:
+        structure: Structure to standardize.
+        to_primitive: If True, also reduce to primitive cell.
+        no_idealize: If True, do not idealize the cell (keep small distortions).
+        symprec: Symmetry tolerance in Angstrom.
+        angle_tolerance: Angle tolerance in degrees.
+
+    Returns:
+        AbacusSTRU: The standardized cell.
+
+    Raises:
+        StructureEditError: If spglib fails.
+    """
+    try:
+        import spglib
+    except ImportError as error:
+        raise StructureEditError("spglib is not installed") from error
+
+    cell = _spglib_cell(structure)
+    standardized = spglib.standardize_cell(
+        cell,
+        to_primitive=to_primitive,
+        no_idealize=no_idealize,
+        symprec=symprec,
+        angle_tolerance=angle_tolerance,
+    )
+    if standardized is None:
+        raise StructureEditError("spglib could not standardize the cell")
+
+    lattice, positions, numbers = standardized
+    return _spglib_to_stru(structure, np.array(lattice), np.array(positions), list(numbers))
+
+
+def find_conventional(
+    structure: AbacusSTRU,
+    *,
+    symprec: float = 1e-5,
+    angle_tolerance: float = 5.0,
+) -> AbacusSTRU:
+    """Return the conventional cell of the structure.
+
+    Uses spglib to find the conventional (standard) cell, which follows the
+    crystallographic conventions for the space group. The conventional cell
+    may have more atoms than the primitive cell but has higher symmetry.
+
+    Args:
+        structure: Structure to convert.
+        symprec: Symmetry tolerance in Angstrom.
+        angle_tolerance: Angle tolerance in degrees.
+
+    Returns:
+        AbacusSTRU: The conventional cell.
+
+    Raises:
+        StructureEditError: If spglib fails.
+    """
+    try:
+        import spglib
+    except ImportError as error:
+        raise StructureEditError("spglib is not installed") from error
+
+    cell = _spglib_cell(structure)
+    conventional = spglib.refine_cell(cell, symprec=symprec, angle_tolerance=angle_tolerance)
+    if conventional is None:
+        raise StructureEditError("spglib could not find a conventional cell")
+
+    lattice, positions, numbers = conventional
+    return _spglib_to_stru(structure, np.array(lattice), np.array(positions), list(numbers))
+
+
+
 
 def _direction_index(direction: Union[str, int]) -> int:
     """Map ``a``/``b``/``c`` or ``x``/``y``/``z`` to a lattice direction."""
@@ -466,6 +652,130 @@ def build_slab(
     return edited
 
 
+
+
+def generate_all_slabs(
+    structure: AbacusSTRU,
+    miller_indices: Sequence[int],
+    *,
+    min_slab_size: float = 3.0,
+    min_vacuum_size: float = 10.0,
+    center_slab: bool = True,
+    in_unit_planes: bool = False,
+    primitive: bool = False,
+    max_normal_search: Optional[int] = None,
+    symmetrize: bool = False,
+    repair: bool = False,
+    tol: float = 0.1,
+    ftol: float = 0.1,
+    max_broken_bonds: int = 0,
+    filter_out_sym_slabs: bool = True,
+) -> list[AbacusSTRU]:
+    """Generate all possible surface terminations for given Miller indices.
+
+    Uses pymatgen's SlabGenerator to find all symmetrically distinct surface
+    terminations. This is particularly useful for polar surfaces or surfaces
+    with multiple possible terminations (e.g., TiO2(110) can have Ti or O
+    terminations).
+
+    Args:
+        structure: Bulk structure to cut surfaces from.
+        miller_indices: Three Miller indices of the surface, such as ``(1, 1, 0)``.
+        min_slab_size: Minimum slab thickness in number of atomic layers or
+            Angstroms (depending on in_unit_planes). Default: 3.0.
+        min_vacuum_size: Minimum vacuum thickness in Angstrom. Default: 10.0.
+        center_slab: Whether to center the slab in the cell. Default: True.
+        in_unit_planes: If True, min_slab_size is in number of unit cells;
+            if False, it's in Angstroms. Default: False.
+        primitive: Whether to reduce the slab to primitive cell. Default: False.
+        max_normal_search: Maximum index to search for the surface normal.
+            Default: None.
+        symmetrize: Whether to symmetrize the slab. Default: False.
+        repair: Whether to repair the slab structure. Default: False.
+        tol: Tolerance for comparing sites. Default: 0.1.
+        ftol: Fractional tolerance for comparing sites. Default: 0.1.
+        max_broken_bonds: Maximum number of broken bonds allowed. Default: 0.
+        filter_out_sym_slabs: Whether to filter out symmetric slabs. Default: True.
+
+    Returns:
+        list[AbacusSTRU]: List of all possible slab terminations, each as an
+        AbacusSTRU with pseudopotential and orbital data preserved.
+
+    Raises:
+        StructureEditError: If pymatgen fails or the structure is invalid.
+
+    Example:
+        >>> # Generate all (110) terminations of TiO2
+        >>> slabs = generate_all_slabs(structure, [1, 1, 0], min_slab_size=5)
+        >>> for i, slab in enumerate(slabs):
+        ...     slab.write(f"slab_{i}.STRU")
+    """
+    if len(miller_indices) != 3:
+        raise StructureEditError("miller_indices needs three integers")
+    miller = tuple(int(value) for value in miller_indices)
+    if all(value == 0 for value in miller):
+        raise StructureEditError("miller_indices must not all be zero")
+
+    try:
+        from pymatgen.core.surface import SlabGenerator
+    except ImportError as error:
+        raise StructureEditError("pymatgen is not installed") from error
+
+    # Convert to pymatgen Structure
+    try:
+        pmg_structure = structure.to("pymatgen")
+    except Exception as error:
+        raise StructureEditError(
+            f"failed to convert structure to pymatgen format: {error}"
+        ) from error
+
+    # Generate all possible slabs
+    try:
+        slabgen = SlabGenerator(
+            initial_structure=pmg_structure,
+            miller_index=miller,
+            min_slab_size=min_slab_size,
+            min_vacuum_size=min_vacuum_size,
+            center_slab=center_slab,
+            in_unit_planes=in_unit_planes,
+            primitive=primitive,
+            max_normal_search=max_normal_search,
+        )
+        
+        # Get all symmetrically distinct slabs
+        all_slabs = slabgen.get_slabs(
+            symmetrize=symmetrize,
+            repair=repair,
+            tol=tol,
+            ftol=ftol,
+            max_broken_bonds=max_broken_bonds,
+            filter_out_sym_slabs=filter_out_sym_slabs,
+        )
+    except Exception as error:
+        raise StructureEditError(
+            f"pymatgen failed to generate slabs: {error}"
+        ) from error
+
+    if not all_slabs:
+        raise StructureEditError(
+            f"no slabs found for Miller indices {miller}"
+        )
+
+    # Convert each slab back to AbacusSTRU
+    result = []
+    for slab in all_slabs:
+        metadata = dict(structure.metadata)
+        metadata["atom_type"] = "cartesian"
+        metadata.setdefault("lattice_constant", ANG_TO_BOHR)
+        
+        edited = AbacusSTRU.from_ase(slab.to_ase_atoms(), metadata=metadata)
+        _restore_element_attributes(edited, structure)
+        edited.sort()
+        result.append(edited)
+
+    return result
+
+
 def fix_slab_bottom(
     structure: AbacusSTRU,
     *,
@@ -513,9 +823,13 @@ def fix_slab_bottom(
 __all__ = [
     "StructureEditError",
     "build_slab",
+    "find_conventional",
+    "find_primitive",
     "fix_atoms",
     "fix_slab_bottom",
+    "generate_all_slabs",
     "make_supercell",
+    "standardize_cell",
     "set_coordinate_mode",
     "select_atoms",
     "select_indices",

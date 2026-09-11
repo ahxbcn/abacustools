@@ -461,3 +461,161 @@ def test_editstru_coordinate_actions_are_idempotent(tmp_path: Path) -> None:
         np.asarray(original.coords, dtype=float),
         atol=1e-8,
     )
+
+
+# Tests for primitive/standardize/conventional cell functions
+
+def test_find_primitive_reduces_atoms(tmp_path):
+    """Primitive cell should have fewer atoms than the input."""
+    from abacustools.data.structure import find_primitive
+    from abacustools.io.stru import AbacusSTRU
+
+    # Create an FCC structure (4 atoms in conventional cell)
+    structure = AbacusSTRU.read("tests/fixtures/FCC_STRU")
+    if structure is None:
+        pytest.skip("FCC_STRU fixture not available")
+
+    primitive = find_primitive(structure)
+    assert primitive.natoms < structure.natoms
+
+
+def test_find_primitive_preserves_attributes(tmp_path):
+    """Primitive cell should preserve pseudopotential and orbital files."""
+    from abacustools.data.structure import find_primitive
+    from abacustools.io.stru import AbacusSTRU
+
+    # Use NiO structure
+    structure = AbacusSTRU.read("/mnt/e/profsoftfiles/abacusfiles/sp/NiO-DFTU/DFTU/STRU")
+    if structure is None:
+        pytest.skip("NiO STRU not available")
+
+    primitive = find_primitive(structure)
+
+    # Check that pseudopotential files are preserved
+    pp_files = {atom.pp for atom in primitive.atoms if atom.pp}
+    original_pp = {atom.pp for atom in structure.atoms if atom.pp}
+    assert pp_files == original_pp
+
+    # Check that orbital files are preserved
+    orb_files = {atom.orb for atom in primitive.atoms if atom.orb}
+    original_orb = {atom.orb for atom in structure.atoms if atom.orb}
+    assert orb_files == original_orb
+
+
+def test_find_conventional_increases_atoms(tmp_path):
+    """Conventional cell may have more atoms than primitive."""
+    from abacustools.data.structure import find_conventional
+    from abacustools.io.stru import AbacusSTRU
+
+    # Use NiO structure (rhombohedral setting)
+    structure = AbacusSTRU.read("/mnt/e/profsoftfiles/abacusfiles/sp/NiO-DFTU/DFTU/STRU")
+    if structure is None:
+        pytest.skip("NiO STRU not available")
+
+    conventional = find_conventional(structure)
+    # Conventional cell should have at least as many atoms
+    assert conventional.natoms >= structure.natoms
+
+
+def test_standardize_cell_default(tmp_path):
+    """Standardize should return a standardized conventional cell."""
+    from abacustools.data.structure import standardize_cell
+    from abacustools.io.stru import AbacusSTRU
+
+    structure = AbacusSTRU.read("/mnt/e/profsoftfiles/abacusfiles/sp/NiO-DFTU/DFTU/STRU")
+    if structure is None:
+        pytest.skip("NiO STRU not available")
+
+    standardized = standardize_cell(structure)
+    # Should have valid structure
+    assert standardized.natoms > 0
+    assert len(standardized.cell) == 3
+
+
+def test_standardize_cell_to_primitive(tmp_path):
+    """Standardize with to_primitive should reduce to primitive cell."""
+    from abacustools.data.structure import standardize_cell
+    from abacustools.io.stru import AbacusSTRU
+
+    structure = AbacusSTRU.read("/mnt/e/profsoftfiles/abacusfiles/sp/NiO-DFTU/DFTU/STRU")
+    if structure is None:
+        pytest.skip("NiO STRU not available")
+
+    standardized = standardize_cell(structure, to_primitive=True)
+    # Should have fewer atoms than original
+    assert standardized.natoms <= structure.natoms
+
+
+def test_editstru_primitive_cli(tmp_path):
+    """Test the primitive CLI command."""
+    from abacustools.io.stru import AbacusSTRU
+
+    structure = AbacusSTRU.read("/mnt/e/profsoftfiles/abacusfiles/sp/NiO-DFTU/DFTU/STRU")
+    if structure is None:
+        pytest.skip("NiO STRU not available")
+
+    input_file = tmp_path / "STRU"
+    output_file = tmp_path / "STRU_primitive"
+    structure.write(str(input_file))
+
+    from abacustools.main import main
+    import sys
+
+    sys.argv = [
+        "abacustools", "file", "editstru", "primitive",
+        str(input_file), "-o", str(output_file)
+    ]
+    result = main()
+    assert result == 0
+    assert output_file.exists()
+
+    primitive = AbacusSTRU.read(str(output_file))
+    assert primitive.natoms < structure.natoms
+
+
+def test_editstru_conventional_cli(tmp_path):
+    """Test the conventional CLI command."""
+    from abacustools.io.stru import AbacusSTRU
+
+    structure = AbacusSTRU.read("/mnt/e/profsoftfiles/abacusfiles/sp/NiO-DFTU/DFTU/STRU")
+    if structure is None:
+        pytest.skip("NiO STRU not available")
+
+    input_file = tmp_path / "STRU"
+    output_file = tmp_path / "STRU_conventional"
+    structure.write(str(input_file))
+
+    from abacustools.main import main
+    import sys
+
+    sys.argv = [
+        "abacustools", "file", "editstru", "conventional",
+        str(input_file), "-o", str(output_file)
+    ]
+    result = main()
+    assert result == 0
+    assert output_file.exists()
+
+
+def test_editstru_standardize_cli(tmp_path):
+    """Test the standardize CLI command."""
+    from abacustools.io.stru import AbacusSTRU
+
+    structure = AbacusSTRU.read("/mnt/e/profsoftfiles/abacusfiles/sp/NiO-DFTU/DFTU/STRU")
+    if structure is None:
+        pytest.skip("NiO STRU not available")
+
+    input_file = tmp_path / "STRU"
+    output_file = tmp_path / "STRU_standardized"
+    structure.write(str(input_file))
+
+    from abacustools.main import main
+    import sys
+
+    sys.argv = [
+        "abacustools", "file", "editstru", "standardize",
+        str(input_file), "-o", str(output_file)
+    ]
+    result = main()
+    assert result == 0
+    assert output_file.exists()

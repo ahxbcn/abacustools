@@ -122,6 +122,10 @@ abacustools file editstru fix       STRU -o FIXED --coords 0 0.2 --direction c -
 abacustools file editstru fix       STRU -o FIXED --elements O --move x y --free-others
 abacustools file editstru direct    STRU -o DIRECT
 abacustools file editstru cartesian STRU -o CART
+abacustools file editstru primitive   STRU -o PRIM
+abacustools file editstru conventional STRU -o CONV
+abacustools file editstru standardize STRU -o STD --to-primitive
+abacustools file editstru all-slabs   STRU --miller 1 1 0 --output-prefix SLAB
 ```
 
 `supercell` replicates along the lattice vectors. `vacuum` extends one lattice
@@ -160,6 +164,23 @@ window follows the vacuum direction and, unlike the plain `fix` action, is
 measured from the slab itself, so the default `--fix` fixes the bottom half
 regardless of where the slab sits inside the cell. Pass a value such as
 `--fix 0.25` to fix only the lowest quarter.
+
+`primitive`, `conventional` and `standardize` use spglib to change the cell
+without touching the atoms. `primitive` reduces the structure to its smallest
+symmetric cell, `conventional` returns the cell that follows the space-group
+conventions, and `standardize` rewrites the structure in the standard setting,
+optionally reducing it with `--to-primitive`. `--no-idealize` keeps small
+deviations of the standardize action instead of rounding them away, and
+`--symprec`/`--angle-tolerance` set the tolerances of the symmetry search.
+Pseudopotential, orbital and magnetic data travel with the atoms.
+
+`all-slabs` asks pymatgen for every symmetrically distinct termination of one
+set of Miller indices, which matters for polar or mixed-terminated surfaces
+where only one cut is not enough. `--min-slab-size` and `--min-vacuum-size`
+size the slabs, `--in-unit-planes` switches the slab thickness from Angstrom to
+repeating units, and `--symmetrize`/`--repair` clean up the cut. Every
+termination is written to its own file named after `--output-prefix`, such as
+`SLAB_0.STRU` and `SLAB_1.STRU`.
 
 Conversions issue a `StructureConversionWarning` when ABACUS-specific data
 such as pseudopotential/orbital filenames, spin settings, velocities,

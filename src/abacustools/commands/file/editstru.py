@@ -11,10 +11,14 @@ import numpy as np
 
 from abacustools.data.structure import (
     build_slab,
+    find_conventional,
+    find_primitive,
     fix_atoms,
+    generate_all_slabs,
     make_supercell,
     select_atoms,
     set_coordinate_mode,
+    standardize_cell,
     with_vacuum,
 )
 from abacustools.io.stru import AbacusSTRU
@@ -298,6 +302,184 @@ def _register_coordinate_actions(subparsers) -> None:
         _add_common_arguments(parser, name)
 
 
+def _register_primitive(subparsers) -> None:
+    """Register ``file editstru primitive``."""
+    parser = subparsers.add_parser(
+        "primitive",
+        help="Reduce the structure to its primitive cell.",
+    )
+    _add_common_arguments(parser, "primitive")
+    parser.add_argument(
+        "--symprec",
+        type=_non_negative_float,
+        default=1e-5,
+        metavar="ANGSTROM",
+        help="Symmetry tolerance in Angstrom, default: 1e-5.",
+    )
+    parser.add_argument(
+        "--angle-tolerance",
+        type=_non_negative_float,
+        default=5.0,
+        metavar="DEGREES",
+        help="Angle tolerance in degrees, default: 5.",
+    )
+
+
+def _register_standardize(subparsers) -> None:
+    """Register ``file editstru standardize``."""
+    parser = subparsers.add_parser(
+        "standardize",
+        help="Standardize the cell according to crystallographic conventions.",
+    )
+    _add_common_arguments(parser, "standardize")
+    parser.add_argument(
+        "--to-primitive",
+        action="store_true",
+        help="Also reduce to primitive cell.",
+    )
+    parser.add_argument(
+        "--no-idealize",
+        action="store_true",
+        help="Do not idealize the cell (keep small distortions).",
+    )
+    parser.add_argument(
+        "--symprec",
+        type=_non_negative_float,
+        default=1e-5,
+        metavar="ANGSTROM",
+        help="Symmetry tolerance in Angstrom, default: 1e-5.",
+    )
+    parser.add_argument(
+        "--angle-tolerance",
+        type=_non_negative_float,
+        default=5.0,
+        metavar="DEGREES",
+        help="Angle tolerance in degrees, default: 5.",
+    )
+
+
+def _register_conventional(subparsers) -> None:
+    """Register ``file editstru conventional``."""
+    parser = subparsers.add_parser(
+        "conventional",
+        help="Find the conventional (standard) cell of the structure.",
+    )
+    _add_common_arguments(parser, "conventional")
+    parser.add_argument(
+        "--symprec",
+        type=_non_negative_float,
+        default=1e-5,
+        metavar="ANGSTROM",
+        help="Symmetry tolerance in Angstrom, default: 1e-5.",
+    )
+    parser.add_argument(
+        "--angle-tolerance",
+        type=_non_negative_float,
+        default=5.0,
+        metavar="DEGREES",
+        help="Angle tolerance in degrees, default: 5.",
+    )
+
+
+
+
+def _register_all_slabs(subparsers) -> None:
+    """Register ``file editstru all-slabs``."""
+    parser = subparsers.add_parser(
+        "all-slabs",
+        help="Generate all possible surface terminations for given Miller indices.",
+    )
+    # Add arguments manually without -o (output is generated automatically)
+    parser.add_argument("filename", type=_structure_file, metavar="STRUCTURE")
+    parser.add_argument(
+        "--input-format",
+        default=None,
+        help="Input format (STRU, POSCAR, CIF, XYZ, EXTXYZ, or XSF); inferred by default.",
+    )
+    parser.add_argument(
+        "--output-format",
+        default=None,
+        help="Output format; inferred from output file when omitted.",
+    )
+    parser.add_argument(
+        "--override",
+        action="store_true",
+        help="Replace output files when they already exist.",
+    )
+    parser.add_argument("--json", action="store_true", help="Print the summary as JSON.")
+    parser.set_defaults(handler=_run_action, action="all-slabs")
+    parser.add_argument(
+        "--miller",
+        type=int,
+        nargs=3,
+        required=True,
+        metavar=("H", "K", "L"),
+        help="Miller indices of the surface, e.g. 1 1 0.",
+    )
+    parser.add_argument(
+        "--min-slab-size",
+        type=_positive_float,
+        default=3.0,
+        metavar="SIZE",
+        help="Minimum slab thickness (in layers or Angstrom), default: 3.0.",
+    )
+    parser.add_argument(
+        "--min-vacuum-size",
+        type=_positive_float,
+        default=10.0,
+        metavar="ANGSTROM",
+        help="Minimum vacuum thickness in Angstrom, default: 10.0.",
+    )
+    parser.add_argument(
+        "--in-unit-planes",
+        action="store_true",
+        help="Interpret min-slab-size as number of unit planes instead of Angstrom.",
+    )
+    parser.add_argument(
+        "--center-slab",
+        action="store_true",
+        default=True,
+        help="Center the slab in the cell (default: True).",
+    )
+    parser.add_argument(
+        "--no-center-slab",
+        action="store_false",
+        dest="center_slab",
+        help="Do not center the slab in the cell.",
+    )
+    parser.add_argument(
+        "--symmetrize",
+        action="store_true",
+        help="Symmetrize the slab structure.",
+    )
+    parser.add_argument(
+        "--repair",
+        action="store_true",
+        help="Repair the slab structure.",
+    )
+    parser.add_argument(
+        "--tol",
+        type=_positive_float,
+        default=0.1,
+        metavar="TOL",
+        help="Tolerance for comparing sites, default: 0.1.",
+    )
+    parser.add_argument(
+        "--max-broken-bonds",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Maximum number of broken bonds allowed, default: 0.",
+    )
+    parser.add_argument(
+        "--output-prefix",
+        type=str,
+        default="slab",
+        metavar="PREFIX",
+        help="Prefix for output files (suffix _0, _1, ... added), default: slab.",
+    )
+
+
 def register_parser(subparsers) -> None:
     """Register the ``file editstru`` parser and its actions."""
     parser = subparsers.add_parser(
@@ -316,6 +498,10 @@ def register_parser(subparsers) -> None:
     _register_select(actions)
     _register_fix(actions)
     _register_coordinate_actions(actions)
+    _register_primitive(actions)
+    _register_standardize(actions)
+    _register_conventional(actions)
+    _register_all_slabs(actions)
 
 
 def _formula(structure: AbacusSTRU) -> str:
@@ -360,6 +546,29 @@ def _edited_structure(
         )
     if args.action in {"direct", "cartesian"}:
         return set_coordinate_mode(structure, args.action)
+    if args.action == "primitive":
+        return find_primitive(
+            structure,
+            symprec=args.symprec,
+            angle_tolerance=args.angle_tolerance,
+        )
+    if args.action == "standardize":
+        return standardize_cell(
+            structure,
+            to_primitive=args.to_primitive,
+            no_idealize=args.no_idealize,
+            symprec=args.symprec,
+            angle_tolerance=args.angle_tolerance,
+        )
+    if args.action == "conventional":
+        return find_conventional(
+            structure,
+            symprec=args.symprec,
+            angle_tolerance=args.angle_tolerance,
+        )
+    if args.action == "all-slabs":
+        # This is handled specially in _run_action
+        raise RuntimeError("all-slabs is handled separately")
     raise RuntimeError(f"unknown editstru action: {args.action}")
 
 
@@ -368,6 +577,56 @@ def _run_action(args: argparse.Namespace) -> int:
     structure = AbacusSTRU.read(str(args.filename), fmt=args.input_format)
     if structure is None:
         raise RuntimeError(f"failed to read structure: {args.filename}")
+    
+    # Special handling for all-slabs
+    if args.action == "all-slabs":
+        slabs = generate_all_slabs(
+            structure,
+            args.miller,
+            min_slab_size=args.min_slab_size,
+            min_vacuum_size=args.min_vacuum_size,
+            in_unit_planes=args.in_unit_planes,
+            center_slab=args.center_slab,
+            symmetrize=args.symmetrize,
+            repair=args.repair,
+            tol=args.tol,
+            max_broken_bonds=args.max_broken_bonds,
+        )
+        
+        # Write all slabs
+        output_prefix = Path(args.output_prefix)
+        output_dir = output_prefix.parent if output_prefix.parent != Path(".") else Path(".")
+        output_base = output_prefix.name
+        
+        written_files = []
+        for i, slab in enumerate(slabs):
+            output = output_dir / f"{output_base}_{i}.STRU"
+            if output.exists() and not args.override:
+                raise RuntimeError(
+                    f"output already exists: {output}; use --override to replace it"
+                )
+            output.parent.mkdir(parents=True, exist_ok=True)
+            if not slab.write(str(output), fmt=args.output_format):
+                raise RuntimeError(f"failed to write structure: {output}")
+            written_files.append(str(output))
+        
+        if args.json:
+            payload = {
+                "action": "all-slabs",
+                "input": str(args.filename),
+                "miller_indices": args.miller,
+                "num_slabs": len(slabs),
+                "output_files": written_files,
+            }
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(f"  all-slabs: {args.filename}")
+            print(f"  Miller indices: {tuple(args.miller)}")
+            print(f"  Generated {len(slabs)} slab(s):")
+            for i, f in enumerate(written_files):
+                print(f"    [{i}] {f}")
+        return 0
+    
     edited = _edited_structure(args, structure)
 
     output = Path(args.output).expanduser()
