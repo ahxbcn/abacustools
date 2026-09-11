@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 
@@ -441,4 +440,3 @@ def _task_name_for_u(u_value: float) -> str:
 def task_names_for_u_values(u_values: list[float]) -> list[str]:
     """Generate task directory names for a list of U values."""
     return [_task_name_for_u(u) for u in u_values]
-

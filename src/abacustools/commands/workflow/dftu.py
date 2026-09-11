@@ -10,7 +10,12 @@ from typing import Any
 
 import numpy as np
 
-from abacustools.data.dftu import linear_response_U, task_names_for_u_values, _find_output_dir, parse_running_scf_dftu, compute_response_function, ResponseData
+from abacustools.data.dftu import (
+    ResponseData,
+    _find_output_dir,
+    compute_response_function,
+    parse_running_scf_dftu,
+)
 from abacustools.data.versions import default_version
 from abacustools.core.submission import generate_workflow_submission
 
@@ -18,7 +23,6 @@ from .common import (
     clear_generated_jobs,
     kpoint_filename,
     read_job_structure,
-    read_manifest,
     register_stages,
     write_abacus_job,
     write_manifest,
@@ -305,7 +309,6 @@ def prepare(args: argparse.Namespace) -> int:
     clear_generated_jobs(job, all_task_names, override=args.override)
     
     # Now create the jobs
-    from copy import deepcopy
     for atom_idx in atom_indices:
         atom_task_names = atom_task_map[atom_idx]
         
