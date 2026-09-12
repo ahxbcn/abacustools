@@ -488,7 +488,25 @@ borderless tables. If the result columns do not fit the terminal, they are
 split into multiple tables with repeated headers rather than being truncated
 or wrapped by the terminal. A result that does not apply to a job is shown as
 `-`. Large array results such as `force` and `stress` are omitted from this
-summary.
+summary. Use `--json` to print the collected results, including the array
+results, as JSON.
+
+Magnetic moments are collected with their own parameters, which are not part
+of the default selection:
+
+```text
+abacustools postprocess result -j JOB -p total_mag absolute_mag
+abacustools postprocess result -j JOB -p atom_mag_mulliken atom_orb_mag --json
+```
+
+`total_mag` and `absolute_mag` are the total and absolute magnetization of the
+cell in Bohr magneton, taken from the last electronic iteration of the running
+log; a noncollinear calculation reports the three Cartesian components of
+`total_mag` as a list. `atom_mag_mulliken` lists the magnetization of every
+atom of the last ionic step as written by the Mulliken analysis
+(`mulliken.txt`), and `atom_orb_mag` lists the orbital-projected magnetization
+of every atom from the last orbital charge analysis block of the log. Both are
+`None` when the run prints no such analysis.
 
 Band structures from ABACUS NSCF calculations can be processed and plotted
 from a job directory containing `BANDS_1.dat`:
@@ -821,7 +839,8 @@ abacus:
 The marker fields of a profile are `aliases`, `version_prefixes`,
 `energy_keywords`, `final_energy_keywords`, `density_error_keywords`,
 `scf_converged_keywords`, `fermi_keywords`, `normal_end_keywords`,
-`vdw_keywords`, `force_header_keywords`, `stress_header_keywords`,
+`vdw_keywords`, `total_mag_keywords`, `absolute_mag_keywords`,
+`orbital_mag_header_keywords`, `force_header_keywords`, `stress_header_keywords`,
 `relax_step_patterns`, `relax_energy_patterns`, `relax_force_patterns`,
 `relax_stress_patterns`, and `relax_converged_keywords`. Keywords are matched
 case-insensitively; the regular-expression fields must capture the value as

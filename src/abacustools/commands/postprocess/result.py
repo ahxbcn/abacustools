@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from rich.console import Console
@@ -165,6 +166,11 @@ def register_parser(subparsers) -> None:
         default=default_version(),
         help="Version of ABACUS used in the jobs.",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the collected results as JSON.",
+    )
     parser.set_defaults(handler=run)
 
 
@@ -173,6 +179,10 @@ def run(args: argparse.Namespace) -> int:
     results = {}
     for job in args.job:
         results[str(job)] = get_result_from_job(job, args.param, args.version)
+
+    if args.json:
+        print(json.dumps(results, indent=2, sort_keys=True))
+        return 0
 
     console = Console()
     for index, table in enumerate(_format_tables(results, console.width)):

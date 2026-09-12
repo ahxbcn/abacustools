@@ -64,6 +64,9 @@ _MARKER_FIELDS = (
     "fermi_keywords",
     "normal_end_keywords",
     "vdw_keywords",
+    "total_mag_keywords",
+    "absolute_mag_keywords",
+    "orbital_mag_header_keywords",
     "force_header_keywords",
     "stress_header_keywords",
     "relax_step_patterns",
@@ -94,6 +97,9 @@ class VersionProfile:
     fermi_keywords: tuple[str, ...] = ("efermi",)
     normal_end_keywords: tuple[str, ...] = ("Total  Time  :",)
     vdw_keywords: tuple[str, ...] = ("e_vdw",)
+    total_mag_keywords: tuple[str, ...] = ("total magnetism (Bohr mag/cell)",)
+    absolute_mag_keywords: tuple[str, ...] = ("absolute magnetism",)
+    orbital_mag_header_keywords: tuple[str, ...] = ("orbital charge analysis",)
     force_header_keywords: tuple[str, ...] = ("total-force",)
     stress_header_keywords: tuple[str, ...] = ("total-stress",)
     relax_step_patterns: tuple[str, ...] = (

@@ -30,6 +30,12 @@ grouped_params = {
     "vdw_results": [
         "vdw_energy",
     ],
+    "magnetic_results": [
+        "total_mag",
+        "absolute_mag",
+        "atom_mag_mulliken",
+        "atom_orb_mag",
+    ],
     "relax_results": [
         "largest_force",
         "largest_stress",
@@ -456,6 +462,163 @@ def collect_vdw_results(
     return {metric: available[metric] for metric in param_groups["vdw_results"]}
 
 
+def _mulliken_magnetization(line: str) -> Optional[Union[float, List[float]]]:
+    """Read the magnetization of one ``Total Magnetism on atom`` line.
+
+    Noncollinear runs print the three components inside parentheses and
+    collinear runs print a single number as the last field.
+    """
+    if "(" in line and ")" in line:
+        inside = line[line.index("(") + 1 : line.index(")")]
+        components = [_as_float(item) for item in inside.split(",") if item.strip()]
+        if len(components) == 3:
+            return components
+    fields = line.split()
+    if not fields:
+        return None
+    try:
+        return _as_float(fields[-1])
+    except ValueError:
+        numbers = _numbers(line)
+        return numbers[-1] if numbers else None
+
+
+def read_mulliken_magnetization(
+    mulliken_file: Union[str, Path],
+) -> List[List[Union[float, List[float]]]]:
+    """Read the per-atom magnetization of every Mulliken step.
+
+    The Mulliken analysis writes one ``STEP:`` block per ionic step and one
+    ``Total Magnetism on atom`` line per atom.  The result holds one entry per
+    ionic step, each listing the atoms in file order; a noncollinear run
+    stores the three Cartesian components of an atom as a list.
+
+    Args:
+        mulliken_file: ``mulliken.txt`` written below ``OUT.*``.
+
+    Returns:
+        One per-atom magnetization list per ionic step, empty when the file
+        holds no magnetization.
+    """
+    text = Path(mulliken_file).read_text(encoding="utf-8", errors="replace")
+    steps: List[List[Union[float, List[float]]]] = []
+    current: List[Union[float, List[float]]] = []
+    for line in text.splitlines():
+        if line.startswith("STEP:"):
+            if current:
+                steps.append(current)
+            current = []
+            continue
+        if "total magnetism on atom" not in line.lower():
+            continue
+        magnetization = _mulliken_magnetization(line)
+        if magnetization is not None:
+            current.append(magnetization)
+    if current:
+        steps.append(current)
+    return steps
+
+
+def read_orbital_magnetization(
+    lines: Sequence[str],
+    header_keywords: Sequence[str] = ("orbital charge analysis",),
+) -> Optional[List[List[float]]]:
+    """Read the per-atom magnetization of the last orbital charge analysis.
+
+    ABACUS prints the orbital-projected charge and magnetization as numbered
+    blocks that end with a ``Sum`` row per atom::
+
+        Orbital Charge Analysis      Charge         Mag(x)         Mag(y)         Mag(z)
+        Fe1
+                           s         1.0799        -0.0000         0.0000         0.0034
+                         Sum        13.6214        -0.0039         0.0013         3.0729
+
+    Args:
+        lines: Running-log lines.
+        header_keywords: Markers introducing one orbital charge analysis.
+
+    Returns:
+        The Cartesian magnetization of every atom in the last block, or
+        ``None`` when the log holds no such block.
+    """
+    blocks: List[List[List[float]]] = []
+    for index, line in enumerate(lines):
+        if not _contains_any(line.lower(), header_keywords):
+            continue
+        block: List[List[float]] = []
+        for row in lines[index + 1 :]:
+            if _is_separator(row):
+                if block:
+                    break
+                continue
+            fields = row.split()
+            if not fields:
+                continue
+            if fields[0].lower() != "sum":
+                continue
+            try:
+                values = [_as_float(value) for value in fields[2:]]
+            except ValueError:
+                continue
+            if len(values) >= 3:
+                block.append(values[-3:])
+        if block:
+            blocks.append(block)
+    return blocks[-1] if blocks else None
+
+
+def collect_magnetic_results(
+    job_dir: str,
+    metrics: List[str],
+    version: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Collect magnetic moments from the running log and Mulliken analysis."""
+    param_groups = split_param_by_group(metrics)
+    if "magnetic_results" not in param_groups:
+        return {}
+    requested = param_groups["magnetic_results"]
+
+    job_path = Path(job_dir)
+    available: Dict[str, Any] = _empty_results(requested)
+    try:
+        inputs = _job_input(job_path)
+        output_path = _output_directory(job_path, inputs)
+        calculation = _calculation(inputs, output_path)
+        log_path = _log_file(output_path, calculation)
+    except FileNotFoundError:
+        return available
+
+    profile = resolve_version(version, job_dir=job_path)
+    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+
+    total_mags: List[Union[float, List[float]]] = []
+    absolute_mags: List[float] = []
+    for line in lines:
+        lower_line = line.lower()
+        if _contains_any(lower_line, profile.total_mag_keywords):
+            values = _numbers(line)
+            if values:
+                # Noncollinear runs print the three Cartesian components.
+                total_mags.append(values[-3:] if len(values) >= 3 else values[-1])
+        elif _contains_any(lower_line, profile.absolute_mag_keywords):
+            values = _numbers(line)
+            if values:
+                absolute_mags.append(values[-1])
+
+    available["total_mag"] = total_mags[-1] if total_mags else None
+    available["absolute_mag"] = absolute_mags[-1] if absolute_mags else None
+    if "atom_orb_mag" in requested:
+        available["atom_orb_mag"] = read_orbital_magnetization(
+            lines, profile.orbital_mag_header_keywords
+        )
+    if "atom_mag_mulliken" in requested:
+        mulliken_file = output_path / "mulliken.txt"
+        if mulliken_file.is_file():
+            steps = read_mulliken_magnetization(mulliken_file)
+            available["atom_mag_mulliken"] = steps[-1] if steps else None
+    return {metric: available[metric] for metric in requested}
+
+
 def collect_relax_results(
     job_dir: str,
     metrics: List[str],
@@ -554,6 +717,10 @@ def get_result_from_job(
     if "vdw_results" in param_groups:
         results.update(
             collect_vdw_results(job_dir, param_groups["vdw_results"], version)
+        )
+    if "magnetic_results" in param_groups:
+        results.update(
+            collect_magnetic_results(job_dir, param_groups["magnetic_results"], version)
         )
     if "relax_results" in param_groups:
         results.update(
