@@ -348,6 +348,7 @@ def _plot_profile(
     direction: str,
     results: list[dict[str, float]],
     output: Path,
+    title: str | None = None,
 ) -> None:
     """Save the averaged electrostatic-potential profile."""
     import matplotlib
@@ -357,19 +358,49 @@ def _plot_profile(
 
     figure, axis = plt.subplots(figsize=(8, 4))
     axis.plot(coordinate, potential, label="Average electrostatic potential")
-    axis.axhline(fermi_energy, linestyle="--", color="gray", alpha=0.5, label="Fermi energy")
+    axis.axhline(
+        fermi_energy,
+        linestyle="--",
+        color="gray",
+        alpha=0.5,
+        label=f"Fermi Energy (={fermi_energy:.2f} eV)",
+    )
+    axis.set_xlim(float(np.min(coordinate)), float(np.max(coordinate)))
     axis.set_xlabel(f"Fractional coordinate along {direction}")
     axis.set_ylabel("Electrostatic potential (eV)")
+    if title:
+        axis.set_title(title)
+
+    minima = float(np.min(coordinate))
+    maxima = float(np.max(coordinate))
     for result in results:
-        midpoint = (result["plateau_start_fractional"] + result["plateau_end_fractional"]) / 2.0
-        midpoint %= 1.0
-        index = int(midpoint * (len(coordinate) - 1))
+        start_index = int(result["plateau_start_fractional"] * (len(coordinate) - 1))
+        end_index = int(result["plateau_end_fractional"] * (len(coordinate) - 1))
+        midpoint_index = (start_index + end_index) // 2
+        x_mid = coordinate[midpoint_index]
+        plateau_potential = potential[midpoint_index]
+
         axis.annotate(
+            "",
+            xy=(x_mid, fermi_energy),
+            xytext=(x_mid, plateau_potential),
+            arrowprops={"arrowstyle": "<->", "color": "black", "lw": 1.5},
+        )
+
+        offset = (maxima - minima) * 0.02
+        if x_mid + offset <= maxima:
+            text_x = x_mid + offset
+            horizontal_alignment = "left"
+        else:
+            text_x = x_mid - offset
+            horizontal_alignment = "right"
+        axis.text(
+            text_x,
+            (fermi_energy + plateau_potential) / 2.0,
             f"{result['work_function']:.2f} eV",
-            xy=(coordinate[index], potential[index]),
-            xytext=(coordinate[index], (potential[index] + fermi_energy) / 2.0),
-            arrowprops={"arrowstyle": "<->", "color": "black"},
-            ha="center",
+            fontsize=10,
+            ha=horizontal_alignment,
+            va="center",
         )
     axis.legend(loc="best")
     figure.tight_layout()
@@ -420,7 +451,15 @@ def postprocess(args: argparse.Namespace) -> int:
         for coordinate_value, potential_value in zip(coordinate, average):
             stream.write(f"{coordinate_value:.8f} {potential_value:.8f}\n")
     plot_path = workfunc_job / "workfunc_potential.png"
-    _plot_profile(coordinate, average, float(result["efermi"]), direction, work_functions, plot_path)
+    _plot_profile(
+        coordinate,
+        average,
+        float(result["efermi"]),
+        direction,
+        work_functions,
+        plot_path,
+        title=job.name,
+    )
 
     output = Path(args.output)
     if not output.is_absolute():
