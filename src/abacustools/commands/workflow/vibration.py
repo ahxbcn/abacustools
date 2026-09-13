@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 
-from abacustools.core.constant import BOLTZMANN_CONSTANT_EV_PER_K
+from abacustools.core.constant import BOLTZMANN_CONSTANT_EV_PER_K, INV_CM_TO_EV
 from abacustools.core.submission import generate_workflow_submission
 from abacustools.data.versions import default_version
 
@@ -30,6 +30,14 @@ _SCF_DIRECTORY = "vib/SCF"
 _EQUILIBRIUM_TASK = f"{_SCF_DIRECTORY}/eq"
 _DIRECTIONS = ("x", "y", "z")
 _SIGNS = (("+", 1), ("-", -1))
+
+#: Temperature of the harmonic amplitudes used for the mode animations.
+_ANIMATION_TEMPERATURE = 300.0
+
+#: Reference mode of the animation velocity scaling: a mode at this wavenumber
+#: moves its atoms with ``_ANIMATION_PEAK_VELOCITY`` at the turning point.
+_ANIMATION_REFERENCE_FREQUENCY = 2500.0
+_ANIMATION_PEAK_VELOCITY = 0.5
 
 
 def _register_prepare_arguments(parser: argparse.ArgumentParser) -> None:
@@ -353,6 +361,45 @@ def _frequency_values(frequencies: np.ndarray) -> list[float]:
     return values
 
 
+def _frequency_label(frequency: complex) -> str:
+    """Return a mode label in cm^-1, marking an imaginary mode with ``i``."""
+    frequency = complex(frequency)
+    if abs(frequency.imag) > 1e-8 and abs(frequency.real) <= 1e-8:
+        return f"{abs(frequency.imag):.2f}i"
+    return f"{abs(frequency.real):.2f}"
+
+
+def _animation_velocity_scale(kT: float) -> float:
+    """Return the factor that turns a phase velocity into a display velocity.
+
+    The velocities written for the mode animations are not the physical ones.
+    They are rescaled so that a reference mode of
+    ``_ANIMATION_REFERENCE_FREQUENCY`` wavenumbers reaches
+    ``_ANIMATION_PEAK_VELOCITY`` at its turning point, which keeps the
+    animation speed of light and heavy modes within a readable range.
+
+    Args:
+        kT: Thermal energy of the animation temperature, in eV.
+
+    Returns:
+        float: Multiplier applied to the phase velocity of every mode.
+    """
+    return _ANIMATION_PEAK_VELOCITY / np.sqrt(
+        _ANIMATION_REFERENCE_FREQUENCY * kT / INV_CM_TO_EV
+    )
+
+
+def _momenta_note() -> str:
+    """Return the note that explains the momenta column of extxyz files."""
+    return (
+        "Note: extxyz stores the atomic velocities in the 'momenta' property, "
+        "which ASE writes as mass-weighted velocities; read them back with "
+        "atoms.get_velocities(). In Ovito the 'momenta' column can be shown as "
+        "velocity arrows. The velocities are scaled for visualization, not "
+        "physical time propagation."
+    )
+
+
 def _write_modes(
     vibration_data,
     work_dir: Path,
@@ -373,6 +420,7 @@ def _write_modes(
     from ase.io.trajectory import Trajectory
 
     energies = vibration_data.get_energies()
+    frequencies = vibration_data.get_frequencies()
     modes = vibration_data.get_modes(all_atoms=True)
     equilibrium = vibration_data.get_atoms()
     trajectory_dir = work_dir / _VIBRATION_DIRECTORY / "mode_trajectories"
@@ -382,7 +430,10 @@ def _write_modes(
     if output_stru:
         structure_dir.mkdir(parents=True, exist_ok=True)
 
-    kT = BOLTZMANN_CONSTANT_EV_PER_K * 300.0
+    kT = BOLTZMANN_CONSTANT_EV_PER_K * _ANIMATION_TEMPERATURE
+    velocity_scale = _animation_velocity_scale(kT)
+
+    mode_infos = []
     mode_number = 0
     for mode_index, energy in enumerate(energies):
         if abs(energy) <= 1e-5:
@@ -390,13 +441,23 @@ def _write_modes(
         mode_number += 1
         mode = modes[mode_index]
         mode_displacement = mode * np.sqrt(kT / abs(energy))
-        frequency = abs(complex(vibration_data.get_frequencies()[mode_index]))
+        frequency = abs(complex(frequencies[mode_index]))
+        mode_infos.append(
+            (mode_number, mode_displacement, frequency, _frequency_label(frequencies[mode_index]))
+        )
+
+    if (output_traj and traj_format == "extxyz") or (output_stru and stru_format == "extxyz"):
+        print(f"  {_momenta_note()}")
+
+    for mode_number, mode_displacement, frequency, label in mode_infos:
         phases = np.linspace(0.0, 2.0 * np.pi, frames, endpoint=False)
         mode_frames = []
         for phase in phases:
             image = equilibrium.copy()
             image.positions += np.sin(phase) * mode_displacement
-            image.set_velocities(frequency * np.cos(phase) * mode_displacement)
+            image.set_velocities(
+                velocity_scale * frequency * np.cos(phase) * mode_displacement
+            )
             mode_frames.append(image)
 
         if output_traj:
@@ -408,16 +469,18 @@ def _write_modes(
             else:
                 path = trajectory_dir / f"mode_{mode_number}.extxyz"
                 write(path, mode_frames, format="extxyz")
-            print(f"  trajectory: {path}")
+            print(f"  trajectory for mode {mode_number} ({label} cm^-1): {path}")
 
         if output_stru:
+            image = equilibrium.copy()
+            image.set_velocities(velocity_scale * frequency * mode_displacement)
             if stru_format == "poscar":
                 path = structure_dir / f"mode_{mode_number}.poscar"
-                write(path, mode_frames[0], format="vasp")
+                write(path, image, format="vasp")
             else:
                 path = structure_dir / f"mode_{mode_number}.xyz"
-                write(path, mode_frames[0], format="extxyz")
-            print(f"  mode structure: {path}")
+                write(path, image, format="extxyz")
+            print(f"  structure for mode {mode_number} ({label} cm^-1): {path}")
 
 
 def postprocess(args: argparse.Namespace) -> int:
@@ -499,6 +562,12 @@ def postprocess(args: argparse.Namespace) -> int:
 
     print(f"  job: {job}")
     print("  frequencies (cm^-1): " + " ".join(f"{value:.6f}" for value in frequencies))
+    imaginary = [index for index, value in enumerate(frequencies) if value < 0]
+    if imaginary:
+        print(
+            "  imaginary modes: "
+            + ", ".join(f"{index + 1} ({frequencies[index]:.2f} cm^-1)" for index in imaginary)
+        )
     print(f"  zero-point energy: {result['zero_point_energy']:.8f} eV")
     print(f"  results: {output}")
     return 0

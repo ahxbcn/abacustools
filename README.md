@@ -678,6 +678,14 @@ abacustools workflow vibration postprocess -j JOB
 ```
 
 Use `--index 1 2 ...` to select atoms and `--traj` to write mode trajectories.
+Postprocessing reports the frequencies in `cm^-1`, the zero-point energy and
+the thermochemical corrections as JSON, marks imaginary modes with `i` in the
+mode output and writes the displacements of every mode below `vib/modes/`,
+with `--traj` also writing one full vibration period per mode as `extxyz` or
+ASE `traj` below `vib/mode_trajectories/`. The mode velocities are scaled for
+visualization, so a reference mode of 2500 `cm^-1` moves its atoms with a peak
+velocity of 0.5, which keeps every animation in a readable range instead of
+growing with the frequency.
 
 Workflow submission scripts can be generated from `~/.abacustools/config.yaml`.
 The packaged defaults support local execution and Slurm, PBS, and LSF

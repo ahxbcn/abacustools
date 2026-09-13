@@ -23,3 +23,10 @@ VACUUM_PERMITTIVITY = CONFIG['constants']['vacuum_permittivity']
 HBAR = PLANCK_CONSTANT / (2.0 * math.pi)
 BOLTZMANN_CONSTANT_EV_PER_K = BOLTZMANN_CONSTANT / ELEMENTARY_CHARGE
 THZ_TO_K = PLANCK_CONSTANT / BOLTZMANN_CONSTANT * 1.0e12
+
+#: Speed of light in vacuum, in metres per second.
+SPEED_OF_LIGHT = 299792458.0
+
+#: Energy of one reciprocal centimetre, in eV, which turns spectroscopic
+#: wavenumbers such as vibrational frequencies into photon energies.
+INV_CM_TO_EV = PLANCK_CONSTANT * SPEED_OF_LIGHT * 100.0 / ELEMENTARY_CHARGE

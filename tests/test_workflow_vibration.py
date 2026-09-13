@@ -12,13 +12,17 @@ from unittest.mock import patch
 import numpy as np
 
 from abacustools.commands.workflow.vibration import (
+    _animation_velocity_scale,
+    _frequency_label,
     _frequency_values,
     _hessian_from_forces,
+    _write_modes,
     postprocess,
     _selected_atoms,
     _temperatures,
     prepare,
 )
+from abacustools.core.constant import BOLTZMANN_CONSTANT_EV_PER_K, INV_CM_TO_EV
 from abacustools.core.submission import generate_workflow_submission, resolve_submission
 
 
@@ -275,6 +279,63 @@ H
             self.assertEqual(len(vibration_result["frequencies"]), 3)
             self.assertTrue(all(value > 2000 for value in vibration_result["frequencies"]))
             self.assertIn("298.15K", vibration_result["thermo_corr"])
+
+    def test_frequency_label_marks_imaginary_modes(self) -> None:
+        self.assertEqual(_frequency_label(3517.91 + 0j), "3517.91")
+        self.assertEqual(_frequency_label(-43.06 + 0j), "43.06")
+        self.assertEqual(_frequency_label(43.06j), "43.06i")
+
+    def test_animation_velocity_scale_uses_reference_mode(self) -> None:
+        kT = BOLTZMANN_CONSTANT_EV_PER_K * 300.0
+        scale = _animation_velocity_scale(kT)
+        reference_energy = 2500.0 * INV_CM_TO_EV
+        displacement = np.sqrt(kT / reference_energy)
+        self.assertAlmostEqual(scale * 2500.0 * displacement, 0.5, places=6)
+        stiff_energy = 3500.0 * INV_CM_TO_EV
+        self.assertLess(scale * 3500.0 * np.sqrt(kT / stiff_energy), 0.65)
+
+    def test_write_modes_scales_velocities_and_labels_modes(self) -> None:
+        from ase import Atoms
+        from ase.io import read
+        from ase.vibrations.data import VibrationsData
+
+        atoms = Atoms(
+            "H2",
+            positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 0.74]],
+            cell=[8.0, 8.0, 8.0],
+            pbc=True,
+        )
+        hessian = np.zeros((2, 3, 2, 3))
+        for axis in range(3):
+            hessian[0, axis, 0, axis] = 20.0
+            hessian[1, axis, 1, axis] = 20.0
+            hessian[0, axis, 1, axis] = -20.0
+            hessian[1, axis, 0, axis] = -20.0
+        vibration_data = VibrationsData(atoms, hessian)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            work_dir = Path(temporary)
+            _write_modes(
+                vibration_data,
+                work_dir,
+                output_traj=True,
+                traj_format="extxyz",
+                frames=5,
+                output_stru=True,
+                stru_format="extxyz",
+            )
+            structures = sorted((work_dir / "vib/modes").glob("mode_*.xyz"))
+            trajectories = sorted((work_dir / "vib/mode_trajectories").glob("mode_*.extxyz"))
+            self.assertTrue(structures)
+            self.assertEqual(len(structures), len(trajectories))
+            for path in structures:
+                velocities = read(path, format="extxyz").get_velocities()
+                self.assertLess(np.abs(velocities).max(), 2.0)
+            frames = read(trajectories[0], index=":", format="extxyz")
+            self.assertEqual(len(frames), 5)
+            self.assertLess(
+                np.abs(np.array([image.get_velocities() for image in frames])).max(), 2.0
+            )
 
 
 if __name__ == "__main__":
