@@ -1145,6 +1145,7 @@ class AbacusSTRU:
         try:
             if fmt in ["stru", "abacus/stru"]:
                 atom_list = copy.deepcopy(self._atoms)
+                atom_list, _ = AbacusATOM.sort(atom_list, keep_first_order=True)
                 unique_types = AbacusATOM.find_uniq_atomtypes(atom_list)
                 lc = self.metadata.get("lattice_constant", 1.0)
                 cell = np.array(self.cell) * A2BOHR / lc

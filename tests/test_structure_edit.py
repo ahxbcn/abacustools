@@ -334,7 +334,25 @@ def test_editstru_supercell_writes_a_new_file(tmp_path: Path) -> None:
     result = AbacusSTRU.read(str(output))
     assert result is not None
     assert result.natoms == 6
-    assert result.pps[:3] == ["Si.upf", "O.upf", "O.upf"]
+    assert result.pps[:3] == ["Si.upf", "Si.upf", "O.upf"]
+
+
+def test_editstru_supercell_groups_atoms_into_one_species_block(tmp_path: Path) -> None:
+    source = _write_structure(tmp_path)
+    output = tmp_path / "super.STRU"
+
+    assert main(["file", "editstru", "supercell", str(source), "-o", str(output), "-n", "2", "1", "1"]) == 0
+
+    text = output.read_text(encoding="utf-8")
+    species = [
+        line.split()[0]
+        for line in text.split("ATOMIC_SPECIES", 1)[1].split("NUMERICAL_ORBITAL", 1)[0].strip().splitlines()
+    ]
+    assert species == ["Si", "O"]
+
+    result = AbacusSTRU.read(str(output))
+    assert result is not None
+    assert result.labels == ["Si", "Si", "O", "O", "O", "O"]
 
 
 def test_editstru_refuses_to_overwrite(tmp_path: Path) -> None:
