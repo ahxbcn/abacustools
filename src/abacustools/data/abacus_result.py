@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 
 import numpy as np
 
-from abacustools.core.constant import RY_TO_EV
+from abacustools.core.constant import BOHR_TO_ANG, RY_TO_EV
 from abacustools.data.versions import resolve_version
 from abacustools.io.abacus import ReadInput
 
@@ -48,6 +48,10 @@ grouped_params = {
 _RELAX_CALCULATIONS = {"relax", "cell-relax", "md"}
 _FLOAT = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[EeDd][-+]?\d+)?"
 _RELAX_ENERGY_DIFF_RE = re.compile(rf"etot\s+diff\s*\(\s*eV\s*\)\s*:\s*({_FLOAT})", re.IGNORECASE)
+_COORDINATE_HEADER_RE = re.compile(
+    rf"^\s*cartesian\s+coordinates(?:\s*\(\s*unit\s*=\s*({_FLOAT})\s*bohr\s*\))?",
+    re.IGNORECASE,
+)
 _STRESS_COMPONENTS = (
     ("xx", "xy", "xz"),
     ("xy", "yy", "yz"),
@@ -133,7 +137,10 @@ def read_relaxation_history(
     stress.  Logs of older branches that mark the ionic step only through the
     ``ION=`` field of the electronic loop are read the same way.  The raw
     ``forces`` vectors and the ``stress`` tensor are kept as well, so a caller
-    can count the components beyond a convergence threshold.
+    can count the components beyond a convergence threshold.  When the log
+    prints Cartesian coordinates, ``rms_displacement`` and
+    ``max_displacement`` compare each structure with the preceding one in
+    Angstrom.
     """
     path = Path(log_file)
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -147,6 +154,18 @@ def read_relaxation_history(
         records, force_blocks, stress_blocks = _collect_ionic_steps(
             lines, profile, profile.ion_step_patterns
         )
+
+    initial_positions, positions = _collect_coordinate_steps(lines, profile)
+    previous_positions = initial_positions
+    for item in [records[step] for step in sorted(records)]:
+        current_positions = positions.get(item["step"])
+        if current_positions is None:
+            previous_positions = None
+            continue
+        displacement = _displacement_metrics(previous_positions, current_positions)
+        if displacement is not None:
+            item["rms_displacement"], item["max_displacement"] = displacement
+        previous_positions = current_positions
 
     for step, (labels, block) in force_blocks.items():
         extremes = _force_extremes(block)
@@ -208,6 +227,8 @@ def _collect_ionic_steps(
                 "max_stress": None,
                 "stress_component": None,
                 "stress": None,
+                "rms_displacement": None,
+                "max_displacement": None,
                 "converged": False,
             },
         )
@@ -254,6 +275,80 @@ def _collect_ionic_steps(
         records[step]["energy"] = energy
 
     return records, force_blocks, stress_blocks
+
+
+def _parse_coordinate_block(
+    lines: List[str], start: int, unit_to_angstrom: float
+) -> List[List[float]]:
+    """Read Cartesian coordinates following one log coordinate header."""
+    coordinates: List[List[float]] = []
+    started = False
+    for line in lines[start + 1 :]:
+        parts = line.split()
+        values: Optional[List[float]] = None
+        if len(parts) >= 4:
+            try:
+                values = [_as_float(value) for value in parts[1:4]]
+            except ValueError:
+                pass
+        if values is None and len(parts) >= 3:
+            try:
+                values = [_as_float(value) for value in parts[:3]]
+            except ValueError:
+                pass
+        if values is not None:
+            coordinates.append([value * unit_to_angstrom for value in values])
+            started = True
+            continue
+        if started:
+            break
+    return coordinates
+
+
+def _collect_coordinate_steps(
+    lines: List[str], profile: Any
+) -> tuple[Optional[List[List[float]]], Dict[int, List[List[float]]]]:
+    """Collect the initial and per-step Cartesian structures from a log."""
+    has_relax_marker = any(
+        _first_match(profile.relax_step_patterns, line) is not None for line in lines
+    )
+    step_patterns = (
+        profile.relax_step_patterns if has_relax_marker else profile.ion_step_patterns
+    )
+    current_step: Optional[int] = None
+    initial_positions: Optional[List[List[float]]] = None
+    positions: Dict[int, List[List[float]]] = {}
+
+    for index, line in enumerate(lines):
+        step = _first_match(step_patterns, line)
+        if step is not None:
+            current_step = int(step)
+            continue
+        header = _COORDINATE_HEADER_RE.search(line)
+        if header is None:
+            continue
+        unit = 1.0 if header.group(1) is None else _as_float(header.group(1))
+        coordinates = _parse_coordinate_block(
+            lines, index, unit * BOHR_TO_ANG
+        )
+        if not coordinates:
+            continue
+        if current_step is None:
+            initial_positions = coordinates
+        else:
+            positions[current_step] = coordinates
+    return initial_positions, positions
+
+
+def _displacement_metrics(
+    previous: Optional[List[List[float]]], current: List[List[float]]
+) -> Optional[tuple[float, float]]:
+    """Return the atomic RMS and maximum displacement between structures."""
+    if previous is None or len(previous) != len(current) or not current:
+        return None
+    displacement = np.asarray(current, dtype=float) - np.asarray(previous, dtype=float)
+    distances = np.linalg.norm(displacement, axis=1)
+    return float(np.sqrt(np.mean(distances**2))), float(np.max(distances))
 
 
 def _fill_energy_change(history: List[Dict[str, Any]]) -> None:

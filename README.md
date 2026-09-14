@@ -431,7 +431,9 @@ An SCF calculation shows the current electronic progress, and
 iteration. A `relax` calculation prints its convergence criteria first and
 then every ionic step with the step number, total energy, energy change, the
 largest force, and the atom it belongs to, written as its log label plus the
-Cartesian component such as `H1x` for the `x` component of atom `H1`. A
+Cartesian component such as `H1x` for the `x` component of atom `H1`. Each
+relaxation step also reports the atomic RMS displacement and maximum
+atomic displacement from the preceding structure, in Angstrom. A
 `cell-relax` calculation adds the largest stress with its Voigt component. An
 `md` calculation prints the total, potential and kinetic energy, the
 temperature and the pressure of every MD step, together with the settings of
@@ -468,7 +470,8 @@ kBar unit, and temperatures in K.
 
 Several jobs can be inspected together in the same single update.
 Geometry-optimization jobs include their current step and latest force/stress
-metrics, while SCF jobs show their current electronic progress:
+and structure-displacement metrics, while SCF jobs show their current
+electronic progress:
 
 ```text
 abacustools job monitor-many -j JOB1 JOB2 JOB3

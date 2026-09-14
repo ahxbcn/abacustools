@@ -23,6 +23,7 @@ from abacustools.io.stru import AbacusSTRU
 ENERGY_UNIT = "eV"
 FORCE_UNIT = "eV/Angstrom"
 STRESS_UNIT = "kBar"
+DISPLACEMENT_UNIT = "Angstrom"
 TEMPERATURE_UNIT = "K"
 PRESSURE_UNIT = "kBar"
 
@@ -64,11 +65,13 @@ _CSV_FIELDS = {
     "scf": ["step", "energy", "energy_change", "drho"],
     "relax": [
         "step", "energy", "energy_change",
-        "max_force", "force_atom", "force_component", "converged",
+        "max_force", "force_atom", "force_component", "rms_displacement",
+        "max_displacement", "converged",
     ],
     "cell-relax": [
         "step", "energy", "energy_change",
         "max_force", "force_atom", "force_component",
+        "rms_displacement", "max_displacement",
         "max_stress", "stress_component", "converged",
     ],
     "md": ["step", "energy", "potential", "kinetic", "temperature", "pressure"],
@@ -300,6 +303,7 @@ def _payload(
         "energy_unit": ENERGY_UNIT,
         "force_unit": FORCE_UNIT,
         "stress_unit": STRESS_UNIT,
+        "displacement_unit": DISPLACEMENT_UNIT,
         "temperature_unit": TEMPERATURE_UNIT,
         "pressure_unit": PRESSURE_UNIT,
         "steps": [
@@ -363,6 +367,7 @@ def _print_geometry_steps(task: str, history: list[dict[str, Any]]) -> None:
     header = [
         "step", "energy(eV)", "dE(eV)",
         "max_force(eV/A)", "force_atom/component",
+        "rms_displacement(A)", "max_displacement(A)",
     ]
     if task == "cell-relax":
         header += ["max_stress(kBar)", "stress_component"]
@@ -379,6 +384,8 @@ def _print_geometry_steps(task: str, history: list[dict[str, Any]]) -> None:
                 item["force_component"],
                 item.get("force_atom_label"),
             ),
+            _format_metric(item["rms_displacement"]),
+            _format_metric(item["max_displacement"]),
         ]
         if task == "cell-relax":
             row += [

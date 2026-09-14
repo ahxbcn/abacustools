@@ -18,7 +18,7 @@ from abacustools.commands.job.monitor import (
     _unconverged_counts,
     run,
 )
-from abacustools.core.constant import RY_TO_EV
+from abacustools.core.constant import BOHR_TO_ANG, RY_TO_EV
 from abacustools.core.job import JobStatus, JobValidation
 from abacustools.data.abacus_result import (
     find_job_log,
@@ -51,6 +51,28 @@ RELAX_LOG = """
  Threshold is 0.0257112 eV/A.
  Relaxation is converged!
  Total  Time  : 0 h 0 mins 9 secs
+"""
+
+
+COORDINATE_RELAX_LOG = """
+CARTESIAN COORDINATES ( UNIT = 1.0 Bohr ).
+    atom                   x                   y                   z
+H1                      0.0                 0.0                 0.0
+H2                      1.0                 0.0                 0.0
+
+ STEP OF RELAXATION : 1
+ final etot is -1.000000 eV
+CARTESIAN COORDINATES ( UNIT = 1.0 Bohr ).
+    atom                   x                   y                   z
+H1                      0.1                 0.0                 0.0
+H2                      1.0                 0.2                 0.0
+
+ STEP OF RELAXATION : 2
+ final etot is -1.100000 eV
+CARTESIAN COORDINATES ( UNIT = 1.0 Bohr ).
+    atom                   x                   y                   z
+H1                      0.15                0.0                 0.0
+H2                      1.3                 0.2                 0.0
 """
 
 
@@ -248,6 +270,22 @@ class TestStepHistories(unittest.TestCase):
         )
         self.assertIsNone(history[1]["forces"])
         self.assertIsNone(history[0]["stress_component"])
+
+    def test_calculates_displacement_from_consecutive_coordinate_blocks(self) -> None:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log") as stream:
+            stream.write(COORDINATE_RELAX_LOG)
+            stream.flush()
+            history = read_relaxation_history(stream.name)
+
+        self.assertAlmostEqual(
+            history[0]["rms_displacement"],
+            (0.025**0.5) * BOHR_TO_ANG,
+        )
+        self.assertAlmostEqual(history[0]["max_displacement"], 0.2 * BOHR_TO_ANG)
+        self.assertAlmostEqual(
+            history[1]["rms_displacement"],
+            (((0.05**2 + 0.3**2) / 2) ** 0.5) * BOHR_TO_ANG,
+        )
 
     def test_names_the_component_of_the_largest_stress(self) -> None:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".log") as stream:
@@ -518,6 +556,8 @@ class TestMonitorReports(unittest.TestCase):
             self.assertIn("relax_method: cg", output)
             self.assertIn("max_force(eV/A)", output)
             self.assertIn("force_atom/component", output)
+            self.assertIn("rms_displacement(A)", output)
+            self.assertIn("max_displacement(A)", output)
             self.assertIn("Ga1z", output)
 
     def test_relax_criteria_fall_back_to_the_log_threshold(self) -> None:
@@ -606,7 +646,8 @@ class TestMonitorExports(unittest.TestCase):
                 rows = list(csv.DictReader(stream))
             self.assertEqual(list(rows[0]), [
                 "step", "energy", "energy_change",
-                "max_force", "force_atom", "force_component", "converged",
+                "max_force", "force_atom", "force_component",
+                "rms_displacement", "max_displacement", "converged",
             ])
             self.assertEqual(rows[0]["force_atom"], "1")
             self.assertEqual(rows[0]["force_component"], "z")
@@ -673,6 +714,7 @@ class TestMonitorExports(unittest.TestCase):
 
             code, output = _monitor(job, "relax", json=True, plot=plot_path)
 
+            self.assertEqual(json.loads(output)["displacement_unit"], "Angstrom")
             self.assertEqual(code, 0)
             self.assertTrue(plot_path.is_file())
             steps = json.loads(output)["steps"]

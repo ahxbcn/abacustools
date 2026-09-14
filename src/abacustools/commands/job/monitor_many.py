@@ -75,6 +75,8 @@ def _summary(job: Path, jobs: list[Path]) -> dict[str, Any]:
         "energy_change": status.progress.get("denergy"),
         "max_force": status.progress.get("largest_force"),
         "max_stress": status.progress.get("largest_stress"),
+        "rms_displacement": None,
+        "max_displacement": None,
         "relaxation_steps": None,
         "log": None if status.log is None else str(status.log),
     }
@@ -89,6 +91,8 @@ def _summary(job: Path, jobs: list[Path]) -> dict[str, Any]:
                     "energy_change": latest["energy_change"],
                     "max_force": latest["max_force"],
                     "max_stress": latest["max_stress"],
+                    "rms_displacement": latest["rms_displacement"],
+                    "max_displacement": latest["max_displacement"],
                     "relaxation_steps": len(history),
                 }
             )
@@ -99,7 +103,8 @@ def _print_jobs(items: list[dict[str, Any]]) -> None:
     """Print one row per job."""
     header = [
         "job", "state", "calculation", "step",
-        "energy(eV)", "dE(eV)", "max_force(eV/A)", "max_stress(kBar)",
+        "energy(eV)", "dE(eV)", "max_force(eV/A)",
+        "rms_displacement(A)", "max_displacement(A)", "max_stress(kBar)",
     ]
     rows = [
         [
@@ -110,6 +115,8 @@ def _print_jobs(items: list[dict[str, Any]]) -> None:
             _format_energy(item["energy"]),
             _format_energy_change(item["energy_change"]),
             _format_metric(item["max_force"]),
+            _format_metric(item.get("rms_displacement")),
+            _format_metric(item.get("max_displacement")),
             _format_metric(item["max_stress"]),
         ]
         for item in items
