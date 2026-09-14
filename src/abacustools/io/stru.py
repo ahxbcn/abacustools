@@ -1316,7 +1316,7 @@ class AbacusSTRU:
             )
             atom_list.append(atom)
 
-        return AbacusSTRU(cell=cell, atom_list=atom_list, meta_data=meta_data)
+        return AbacusSTRU(cell=cell, atoms=atom_list, metadata=meta_data)
     
     @staticmethod
     def from_dpdata(dpdata_stru,
@@ -1346,7 +1346,7 @@ class AbacusSTRU:
                 mag = None if "spins" not in data else data["spins"][index][i]
             ))
         cell = data['cells'][index].tolist()
-        return AbacusSTRU(cell=cell, atom_list=atom_list, meta_data=meta_data)
+        return AbacusSTRU(cell=cell, atoms=atom_list, metadata=meta_data)
         
     @staticmethod
     def from_phonopy(phonopy_stru,
@@ -1361,18 +1361,23 @@ class AbacusSTRU:
         from phonopy.structure.atoms import PhonopyAtoms
         assert isinstance(phonopy_stru, PhonopyAtoms), "Input structure must be a Phonopy Atoms object."
         cell = phonopy_stru.cell.tolist()
+        symbols = list(phonopy_stru.symbols)
+        masses = phonopy_stru.masses
+        positions = phonopy_stru.positions
+        magnetic_moments = phonopy_stru.magnetic_moments
         atom_list = []
-        for i in range(len(phonopy_stru)):
+        for i, symbol in enumerate(symbols):
             atom = AbacusATOM(
-                label=phonopy_stru.get_chemical_symbols()[i],
-                coord=tuple(phonopy_stru.get_positions()[i].tolist()),
-                element=phonopy_stru.get_chemical_symbols()[i],
-                mass=phonopy_stru.get_masses()[i],
+                label=symbol,
+                coord=tuple(positions[i].tolist()),
+                element=symbol,
+                mass=None if masses is None else float(masses[i]),
                 type_mag=0.0,
                 move=(True, True, True),
+                mag=None if magnetic_moments is None else float(magnetic_moments[i]),
             )
             atom_list.append(atom)
-        return AbacusSTRU(cell=cell, atom_list=atom_list, meta_data=meta_data)
+        return AbacusSTRU(cell=cell, atoms=atom_list, metadata=meta_data)
         
 
     def to(self, fmt: Literal["ase", "pymatgen", "dpdata", "phonopy"],

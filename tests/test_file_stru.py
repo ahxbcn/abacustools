@@ -7,6 +7,8 @@ import unittest
 import warnings
 from pathlib import Path
 
+import pytest
+
 from abacustools.commands.file.stru import run
 from abacustools.io.stru import (
     AbacusATOM,
@@ -133,6 +135,79 @@ class TestStructureConversion(unittest.TestCase):
             })())
             self.assertEqual(status, 0)
             self.assertTrue(output.is_file())
+
+
+def test_from_pymatgen_conversion_writes_a_stru() -> None:
+    from pymatgen.core import Lattice, Structure
+
+    pymatgen_structure = Structure(
+        Lattice.cubic(5.43),
+        ["Si", "Si"],
+        [[0.0, 0.0, 0.0], [0.25, 0.25, 0.25]],
+    )
+
+    structure = AbacusSTRU.from_pymatgen(pymatgen_structure)
+
+    assert structure.natoms == 2
+    assert structure.labels == ["Si", "Si"]
+    with tempfile.TemporaryDirectory() as temporary:
+        destination = Path(temporary) / "STRU"
+        assert structure.write(str(destination))
+        assert "ATOMIC_SPECIES" in destination.read_text()
+
+
+def test_from_phonopy_conversion_keeps_symbols_masses_and_moments() -> None:
+    import numpy as np
+    from phonopy.structure.atoms import PhonopyAtoms
+
+    phonopy_structure = PhonopyAtoms(
+        symbols=["Na", "Cl"],
+        cell=np.eye(3) * 5.6,
+        positions=[[0.0, 0.0, 0.0], [0.5, 0.5, 0.5]],
+        magnetic_moments=[1.0, -1.0],
+    )
+
+    structure = AbacusSTRU.from_phonopy(phonopy_structure)
+
+    assert structure.labels == ["Na", "Cl"]
+    assert structure.elements == ["Na", "Cl"]
+    assert structure.masses == pytest.approx(list(phonopy_structure.masses))
+    assert structure.atom_mags == [1.0, -1.0]
+    assert structure.cell[0] == [5.6, 0.0, 0.0]
+    with tempfile.TemporaryDirectory() as temporary:
+        destination = Path(temporary) / "STRU"
+        assert structure.write(str(destination))
+        assert "ATOMIC_SPECIES" in destination.read_text()
+
+
+def test_from_phonopy_without_magnetic_moments_leaves_them_unset() -> None:
+    import numpy as np
+    from phonopy.structure.atoms import PhonopyAtoms
+
+    phonopy_structure = PhonopyAtoms(
+        symbols=["Si"], cell=np.eye(3) * 5.43, positions=[[0.0, 0.0, 0.0]]
+    )
+
+    structure = AbacusSTRU.from_phonopy(phonopy_structure)
+
+    assert structure.atom_mags == [0.0]
+
+
+def test_phonopy_roundtrip_keeps_the_lattice_and_species() -> None:
+    import numpy as np
+    from phonopy.structure.atoms import PhonopyAtoms
+
+    phonopy_structure = PhonopyAtoms(
+        symbols=["Na", "Cl"],
+        cell=np.eye(3) * 5.6,
+        positions=[[0.0, 0.0, 0.0], [0.5, 0.5, 0.5]],
+    )
+
+    structure = AbacusSTRU.from_phonopy(phonopy_structure)
+    roundtripped = AbacusSTRU.from_phonopy(structure.to("phonopy"))
+
+    assert roundtripped.labels == structure.labels
+    assert roundtripped.cell == structure.cell
 
 
 def test_str_summarises_composition_and_cell() -> None:
