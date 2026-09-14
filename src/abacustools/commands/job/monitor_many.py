@@ -4,21 +4,26 @@ from __future__ import annotations
 
 import argparse
 import json
-import time
 from pathlib import Path
 from typing import Any
 
 from abacustools.core.job import JobStatus, JobValidation, status_job, validate_job
 from abacustools.data.abacus_result import read_relaxation_history
 
-from .monitor import _format_metric, _job_directory
+from .monitor import (
+    _format_energy,
+    _format_energy_change,
+    _format_metric,
+    _job_directory,
+    _print_table,
+)
 
 
 def register_parser(subparsers) -> None:
     """Register batch monitoring for ABACUS jobs."""
     parser = subparsers.add_parser(
         "monitor-many",
-        help="Monitor multiple ABACUS jobs until they finish.",
+        help="Show one update of several ABACUS jobs.",
     )
     parser.add_argument(
         "-j", "--job",
@@ -32,10 +37,14 @@ def register_parser(subparsers) -> None:
     parser.add_argument(
         "--interval",
         type=float,
-        default=5.0,
-        help="Refresh interval in seconds, default: 5.",
+        default=None,
+        help="Deprecated: the monitor prints one update and exits without waiting.",
     )
-    parser.add_argument("--once", action="store_true", help="Show one update and exit.")
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Deprecated: the monitor always prints one update and exits.",
+    )
     parser.add_argument("--json", action="store_true", help="Print the batch status as JSON.")
     parser.set_defaults(handler=run)
 
@@ -86,40 +95,41 @@ def _summary(job: Path, jobs: list[Path]) -> dict[str, Any]:
     return item
 
 
-def _print_table(items: list[dict[str, Any]]) -> None:
-    print("job  state  calculation  step  energy(eV)  dE(eV)  max_force(eV/A)  max_stress(kBar)")
-    for item in items:
-        print(
-            f"{item['name']}  {item['state']}  {item['calculation']}  "
-            f"{item['step'] if item['step'] is not None else '-':>4}  "
-            f"{_format_metric(item['energy']):>11}  "
-            f"{_format_metric(item['energy_change']):>8}  "
-            f"{_format_metric(item['max_force']):>16}  "
-            f"{_format_metric(item['max_stress']):>16}"
-        )
+def _print_jobs(items: list[dict[str, Any]]) -> None:
+    """Print one row per job."""
+    header = [
+        "job", "state", "calculation", "step",
+        "energy(eV)", "dE(eV)", "max_force(eV/A)", "max_stress(kBar)",
+    ]
+    rows = [
+        [
+            item["name"],
+            item["state"],
+            item["calculation"],
+            "-" if item["step"] is None else str(item["step"]),
+            _format_energy(item["energy"]),
+            _format_energy_change(item["energy_change"]),
+            _format_metric(item["max_force"]),
+            _format_metric(item["max_stress"]),
+        ]
+        for item in items
+    ]
+    _print_table(header, rows)
 
 
 def _print_items(items: list[dict[str, Any]], as_json: bool) -> None:
     if as_json:
         print(json.dumps({"jobs": items}, indent=2, sort_keys=True))
     else:
-        _print_table(items)
+        _print_jobs(items)
 
 
 def run(args: argparse.Namespace) -> int:
-    """Monitor multiple ABACUS jobs."""
-    if args.interval <= 0:
-        raise ValueError("interval must be positive")
+    """Print one update for several ABACUS jobs."""
     jobs = [Path(job).absolute() for job in args.job]
     if not jobs:
         raise ValueError("at least one job is required")
-    if args.json:
-        args.once = True
 
-    while True:
-        items = [_summary(job, jobs) for job in jobs]
-        _print_items(items, args.json)
-        terminal = all(item["state"] in {"invalid", "failed", "converged"} for item in items)
-        if args.once or terminal:
-            return 1 if any(item["state"] in {"invalid", "failed"} for item in items) else 0
-        time.sleep(args.interval)
+    items = [_summary(job, jobs) for job in jobs]
+    _print_items(items, args.json)
+    return 1 if any(item["state"] in {"invalid", "failed"} for item in items) else 0

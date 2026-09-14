@@ -413,29 +413,70 @@ and composition, cell parameters, k-point mode, and resource files. It does
 not read `OUT.*` directories or calculation logs. Use `--json` for a
 machine-readable report.
 
-Running geometry optimizations can be monitored step by step. The monitor
-reads `running_relax.log` or `running_cell-relax.log` and reports the total
-energy, energy change, maximum force, and maximum stress for every ionic step:
+Running jobs can be inspected step by step. The monitor reads the
+`calculation` of `INPUT`, prints one update of what the running log holds for
+that task type and exits. It never waits for the job to finish, so a slow DFT
+run can be checked at any time without blocking the shell:
 
 ```text
-abacustools job monitor JOB --relax
-abacustools job monitor JOB --relax --once --json
-abacustools job monitor JOB --relax --once --csv relaxation.csv
-abacustools job monitor JOB --relax --once --plot relaxation.png
+abacustools job monitor JOB
+abacustools job monitor JOB --json
+abacustools job monitor JOB --csv steps.csv
+abacustools job monitor JOB --plot
+abacustools job monitor JOB --plot steps.png
 ```
 
-The history keeps the current incomplete step while the calculation is still
-running. Energies are in eV, forces in eV/Angstrom, and stresses in the
-native ABACUS kBar unit.
+An SCF calculation shows the current electronic progress, and
+`--scf-steps` adds the energy, energy change and density error of every SCF
+iteration. A `relax` calculation prints its convergence criteria first and
+then every ionic step with the step number, total energy, energy change, the
+largest force, and the atom it belongs to, written as its log label plus the
+Cartesian component such as `H1x` for the `x` component of atom `H1`. A
+`cell-relax` calculation adds the largest stress with its Voigt component. An
+`md` calculation prints the total, potential and kinetic energy, the
+temperature and the pressure of every MD step, together with the settings of
+its `md_type`: the target temperature of a thermostat (`nvt`, `npt`,
+`langevin`) and the target pressure of a barostat (`npt`, `msst`). The MD
+energies are converted to eV when a branch prints them in Rydberg, and the
+pressure is left empty when the branch does not print it.
 
-Several jobs can be monitored together. Geometry-optimization jobs include
-their current step and latest force/stress metrics, while SCF jobs show their
-current electronic progress:
+`--plot` draws the convergence history as stacked panels that share the step
+axis. A relaxation shows the total energy, the largest force on a logarithmic
+axis with its threshold, and, for a `cell-relax` job, the largest stress the
+same way. The force and stress panels carry the number of components beyond
+the threshold on a second axis, where atoms fixed by `STRU` are left out. An
+SCF calculation shows its total energy and the absolute energy change together
+with the density error on logarithmic axes, together with the `scf_thr` line
+that `scf_thr_type` assigns to the energy or to the density. An MD run keeps
+its energy, temperature and pressure panels.
+Without a file name the plot is named after the task type below JOB, that is
+`monitor_scf.png`, `monitor_relax.png`, `monitor_cell-relax.png` or
+`monitor_md.png`.
+`--csv` writes the same history as a table. `--csv` and `--plot` are additions
+to the text report: the screen output stays the same and the path of every
+written file is printed below it. With `--json` only the JSON is printed, so
+the report stays machine-readable. A step table prints the last 30 steps
+because an optimization or a long MD run accumulates far more than a terminal
+shows; `--tail N` changes that limit and `--tail 0` prints every step. The
+`--json`, `--csv` and `--plot` output always keeps the full history. The
+history keeps the current incomplete step while the calculation is still
+running, so an unfinished job still shows its latest step. Step tables align
+their columns on the widest cell, energies carry eight decimals and energy
+changes use scientific notation so that small steps stay readable. Energies
+are in eV, forces in eV/Angstrom, stresses and pressures in the native ABACUS
+kBar unit, and temperatures in K.
+
+Several jobs can be inspected together in the same single update.
+Geometry-optimization jobs include their current step and latest force/stress
+metrics, while SCF jobs show their current electronic progress:
 
 ```text
 abacustools job monitor-many -j JOB1 JOB2 JOB3
-abacustools job monitor-many -j JOB1 JOB2 --once --json
+abacustools job monitor-many -j JOB1 JOB2 --json
 ```
+
+`--once` and `--interval` are accepted for compatibility but have no effect:
+the monitor always prints one update and returns.
 
 Convergence tests can generate independent SCF calculations for cutoff energy:
 
@@ -823,7 +864,7 @@ branch writes into its running log. The profile of a job is detected from the
 ```text
 abacustools postprocess result -j JOB -p energy drho efermi converged
 abacustools postprocess result -j JOB -v develop -p energy efermi
-abacustools job monitor JOB --relax --once
+abacustools job monitor JOB
 ```
 
 `-v/--version` selects a dialect explicitly. When the log declares a different
@@ -849,10 +890,11 @@ The marker fields of a profile are `aliases`, `version_prefixes`,
 `scf_converged_keywords`, `fermi_keywords`, `normal_end_keywords`,
 `vdw_keywords`, `total_mag_keywords`, `absolute_mag_keywords`,
 `orbital_mag_header_keywords`, `force_header_keywords`, `stress_header_keywords`,
-`relax_step_patterns`, `relax_energy_patterns`, `relax_force_patterns`,
-`relax_stress_patterns`, and `relax_converged_keywords`. Keywords are matched
-case-insensitively; the regular-expression fields must capture the value as
-their first group.
+`scf_step_patterns`, `ion_step_patterns`, `md_step_patterns`, `relax_step_patterns`,
+`relax_energy_patterns`, `relax_force_patterns`, `relax_stress_patterns`,
+`relax_force_threshold_patterns`, `relax_stress_threshold_patterns`, and
+`relax_converged_keywords`. Keywords are matched case-insensitively; the
+regular-expression fields must capture the value as their first group.
 
 ## ABACUS ASE interface
 
