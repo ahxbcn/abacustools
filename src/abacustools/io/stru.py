@@ -1047,6 +1047,7 @@ class AbacusSTRU:
                     )
                 atom_list = []
                 label_tot = get_total_property(stru_data, "label")
+                mass_tot = get_total_property(stru_data, "mass")
                 pp_tot = get_total_property(stru_data, "pp")
                 orb_tot = get_total_property(stru_data, "orb")
                 paw_tot = get_total_property(stru_data, "paw")
@@ -1057,7 +1058,7 @@ class AbacusSTRU:
                         label=label_tot[i],
                         coord=tuple(coords[i]),
                         element=None,
-                        mass=None,
+                        mass=None if len(stru_data["mass"]) == 0 else mass_tot[i],
                         pp=None if len(stru_data['pp']) == 0 else pp_tot[i],
                         orb=None if len(stru_data['orb']) == 0 else orb_tot[i],
                         paw=None if len(stru_data['paw']) == 0 else paw_tot[i],
@@ -1656,6 +1657,8 @@ def read_stru_file(stru:str = "STRU"):
     Returns:
         dict: A dictionary containing structure information with keys:
             - label: list of labels for each atom type
+            - mass: list of relative atomic masses, as declared in
+              ATOMIC_SPECIES, for each atom type
             - atom_number: list of atom numbers for each atom type
             - cell: 3x3 list of cell vectors
             - coords: list of coordinates for each atom
@@ -1768,6 +1771,7 @@ def read_stru_file(stru:str = "STRU"):
         sys.exit(1)
     i = 1
     real_label = []
+    real_mass = []
     real_pp = []
     real_orb = []
     real_paw = []
@@ -1783,6 +1787,8 @@ def read_stru_file(stru:str = "STRU"):
         
         real_label.append(label)
         label_idx = labels.index(label)
+        if mass:
+            real_mass.append(mass[label_idx])
         if pp:
             real_pp.append(pp[label_idx])
         if orb:
@@ -1810,6 +1816,7 @@ def read_stru_file(stru:str = "STRU"):
 
     return {
         "label": real_label,   # list of labels for each atom type
+        "mass": real_mass,     # list of atomic masses for each atom type
         "atom_number": atom_number,  # list of atom numbers for each atom type
         "cell": cell,              # 3x3 list of cell vectors
         "coord": coords,       # list of coordinates for each atom

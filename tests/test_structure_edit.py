@@ -56,6 +56,50 @@ def _structure() -> AbacusSTRU:
     )
 
 
+def test_stru_reading_uses_the_declared_atomic_masses(tmp_path: Path) -> None:
+    """The masses of ATOMIC_SPECIES reach the atoms, whatever the block order."""
+    path = tmp_path / "STRU"
+    path.write_text(
+        """ATOMIC_SPECIES
+H 2.014 D.upf
+O 15.9994 O.upf
+
+LATTICE_CONSTANT
+1.0
+
+LATTICE_VECTORS
+10 0 0
+0 10 0
+0 0 10
+
+ATOMIC_POSITIONS
+Cartesian
+
+O
+0.0
+1
+0 0 0
+H
+0.0
+2
+0 0 1
+0 1 0
+""",
+        encoding="utf-8",
+    )
+    structure = AbacusSTRU.read(path)
+    assert structure is not None
+    assert structure.labels == ["O", "H", "H"]
+    assert structure.masses == [15.9994, 2.014, 2.014]
+
+    written = tmp_path / "roundtrip.STRU"
+    assert structure.write(written)
+    assert "H 2.014 D.upf" in written.read_text(encoding="utf-8")
+    reread = AbacusSTRU.read(written)
+    assert reread is not None
+    assert reread.masses == structure.masses
+
+
 def test_make_supercell_replicates_and_keeps_attributes() -> None:
     structure = _structure()
 
