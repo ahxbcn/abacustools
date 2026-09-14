@@ -69,6 +69,11 @@ _MARKER_FIELDS = (
     "orbital_mag_header_keywords",
     "force_header_keywords",
     "stress_header_keywords",
+    "scf_step_patterns",
+    "ion_step_patterns",
+    "md_step_patterns",
+    "relax_force_threshold_patterns",
+    "relax_stress_threshold_patterns",
     "relax_step_patterns",
     "relax_energy_patterns",
     "relax_force_patterns",
@@ -102,8 +107,27 @@ class VersionProfile:
     orbital_mag_header_keywords: tuple[str, ...] = ("orbital charge analysis",)
     force_header_keywords: tuple[str, ...] = ("total-force",)
     stress_header_keywords: tuple[str, ...] = ("total-stress",)
+    scf_step_patterns: tuple[str, ...] = (
+        r"ion=\s*\+?\d+\s+elec=\s*\+?(\d+)",
+        r"#elec\s+iter#\s*\+?(\d+)",
+    )
+    ion_step_patterns: tuple[str, ...] = (
+        r"ion=\s*\+?(\d+)\s+elec=",
+        r"#ion\s+move#\s*\+?(\d+)",
+    )
+    md_step_patterns: tuple[str, ...] = (
+        r"step\s+of\s+molecular\s+dynamics\s*:\s*(\d+)",
+        r"md\s+step\s*:\s*(\d+)",
+    )
+    relax_force_threshold_patterns: tuple[str, ...] = (
+        rf"threshold\s+is\s+({_FLOAT})\s*eV\s*/",
+    )
+    relax_stress_threshold_patterns: tuple[str, ...] = (
+        rf"threshold\s+is\s+({_FLOAT})\s*kbar",
+    )
     relax_step_patterns: tuple[str, ...] = (
         r"step\s+of\s+relaxation\s*:\s*(\d+)",
+        r"step\s+of\s+ion\s+relaxation\s*:\s*(\d+)",
     )
     relax_energy_patterns: tuple[str, ...] = (
         rf"(?:final\s+etot\s+is|!final_etot_is)\s+({_FLOAT})",
@@ -140,6 +164,7 @@ _DEVELOP = VersionProfile(
     fermi_keywords=("efermi", "e_fermi"),
     relax_step_patterns=(
         r"step\s+of\s+relaxation\s*:\s*(\d+)",
+        r"step\s+of\s+ion\s+relaxation\s*:\s*(\d+)",
         r"relax\s+step\s*:\s*(\d+)",
     ),
     relax_energy_patterns=(

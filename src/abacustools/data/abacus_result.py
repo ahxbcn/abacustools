@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 
 import numpy as np
 
+from abacustools.core.constant import RY_TO_EV
 from abacustools.data.versions import resolve_version
 from abacustools.io.abacus import ReadInput
 
@@ -47,6 +48,11 @@ grouped_params = {
 _RELAX_CALCULATIONS = {"relax", "cell-relax", "md"}
 _FLOAT = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[EeDd][-+]?\d+)?"
 _RELAX_ENERGY_DIFF_RE = re.compile(rf"etot\s+diff\s*\(\s*eV\s*\)\s*:\s*({_FLOAT})", re.IGNORECASE)
+_STRESS_COMPONENTS = (
+    ("xx", "xy", "xz"),
+    ("xy", "yy", "yz"),
+    ("xz", "yz", "zz"),
+)
 
 
 def _as_float(value: str) -> float:
@@ -77,15 +83,114 @@ def _first_match(patterns: tuple[str, ...], line: str) -> Optional[float]:
     return None
 
 
+def _force_extremes(
+    block: List[List[float]],
+) -> Optional[tuple[float, int, str]]:
+    """Return the magnitude, one-based atom index and component of the largest force."""
+    best: Optional[tuple[float, int, str]] = None
+    for index, values in enumerate(block, start=1):
+        vector = np.asarray(values, dtype=float)
+        magnitude = float(np.linalg.norm(vector))
+        if best is None or magnitude > best[0]:
+            axis = int(np.argmax(np.abs(vector)))
+            best = (magnitude, index, "xyz"[axis])
+    return best
+
+
+def _atom_label(labels: List[str], atom: int) -> Optional[str]:
+    """Return the log label of a one-based atom index, such as ``H1``."""
+    if 0 < atom <= len(labels):
+        label = labels[atom - 1].strip()
+        if label:
+            return label
+    return None
+
+
+def _stress_extremes(
+    tensor: List[List[float]],
+) -> Optional[tuple[float, str]]:
+    """Return the magnitude and Voigt label of the largest stress component."""
+    best: Optional[tuple[float, str]] = None
+    for row_index, row in enumerate(tensor[:3]):
+        for column_index, value in enumerate(row[:3]):
+            magnitude = abs(float(value))
+            if best is None or magnitude > best[0]:
+                best = (magnitude, _STRESS_COMPONENTS[row_index][column_index])
+    return best
+
+
 def read_relaxation_history(
     log_file: Union[str, Path],
     version: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Read per-ionic-step geometry-optimization metrics from an ABACUS log."""
+    """Read per-ionic-step geometry-optimization metrics from an ABACUS log.
+
+    Every record holds the step number, the total energy and its change, the
+    largest force and stress, and whether the step met the convergence
+    criteria.  When the log contains the force or stress table of a step, the
+    record also names the atom, its log label such as ``H1`` and the Cartesian
+    component of the largest force, plus the Voigt component of the largest
+    stress.  Logs of older branches that mark the ionic step only through the
+    ``ION=`` field of the electronic loop are read the same way.  The raw
+    ``forces`` vectors and the ``stress`` tensor are kept as well, so a caller
+    can count the components beyond a convergence threshold.
+    """
     path = Path(log_file)
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     profile = resolve_version(version, job_dir=path.parent, text="\n".join(lines[:128]))
+    records, force_blocks, stress_blocks = _collect_ionic_steps(
+        lines, profile, profile.relax_step_patterns
+    )
+    if not records:
+        # Some branches advance the ionic step without a relaxation marker and
+        # only number it in the ``ION=`` field of the electronic loop.
+        records, force_blocks, stress_blocks = _collect_ionic_steps(
+            lines, profile, profile.ion_step_patterns
+        )
+
+    for step, (labels, block) in force_blocks.items():
+        extremes = _force_extremes(block)
+        if extremes is None:
+            continue
+        magnitude, atom, component = extremes
+        item = records[step]
+        if item["max_force"] is None:
+            item["max_force"] = magnitude
+        item["force_atom"] = atom
+        item["force_component"] = component
+        item["force_atom_label"] = _atom_label(labels, atom)
+        item["forces"] = block
+
+    for step, tensor in stress_blocks.items():
+        extremes = _stress_extremes(tensor)
+        if extremes is None:
+            continue
+        magnitude, component = extremes
+        item = records[step]
+        if item["max_stress"] is None:
+            item["max_stress"] = magnitude
+        item["stress_component"] = component
+        item["stress"] = tensor
+
+    history = [records[step] for step in sorted(records)]
+    _fill_energy_change(history)
+    return history
+
+
+def _collect_ionic_steps(
+    lines: List[str],
+    profile: Any,
+    step_patterns: tuple[str, ...],
+) -> tuple[
+    Dict[int, Dict[str, Any]],
+    Dict[int, tuple[List[str], List[List[float]]]],
+    Dict[int, List[List[float]]],
+]:
+    """Group the lines of one relaxation log into ionic steps."""
     records: Dict[int, Dict[str, Any]] = {}
+    force_blocks: Dict[int, tuple[List[str], List[List[float]]]] = {}
+    stress_blocks: Dict[int, List[List[float]]] = {}
+    scf_energies: Dict[int, float] = {}
     current_step: Optional[int] = None
 
     def record(step: int) -> Dict[str, Any]:
@@ -96,13 +201,19 @@ def read_relaxation_history(
                 "energy": None,
                 "energy_change": None,
                 "max_force": None,
+                "force_atom": None,
+                "force_component": None,
+                "force_atom_label": None,
+                "forces": None,
                 "max_stress": None,
+                "stress_component": None,
+                "stress": None,
                 "converged": False,
             },
         )
 
-    for line in lines:
-        step = _first_match(profile.relax_step_patterns, line)
+    for index, line in enumerate(lines):
+        step = _first_match(step_patterns, line)
         if step is not None:
             current_step = int(step)
             record(current_step)
@@ -110,6 +221,10 @@ def read_relaxation_history(
         if current_step is None:
             continue
         item = record(current_step)
+        if _contains_any(line.lower(), profile.energy_keywords):
+            values = _numbers(line)
+            if values:
+                scf_energies[current_step] = values[-1]
         energy = _first_match(profile.relax_energy_patterns, line)
         if energy is not None:
             item["energy"] = energy
@@ -122,17 +237,210 @@ def read_relaxation_history(
         stress = _first_match(profile.relax_stress_patterns, line)
         if stress is not None:
             item["max_stress"] = stress
+        if _contains_any(line.lower(), profile.force_header_keywords):
+            labels, block = _parse_force_block(lines, index)
+            if block:
+                force_blocks[current_step] = (labels, block)
+        elif _contains_any(line.lower(), profile.stress_header_keywords):
+            tensor = _parse_stress_block(lines, index)
+            if tensor:
+                stress_blocks[current_step] = tensor
         if _contains_any(line.lower(), profile.relax_converged_keywords):
             item["converged"] = True
 
-    history = [records[step] for step in sorted(records)]
+    # The ``final etot is`` report line is rounded, while the Kohn-Sham energy
+    # of the last electronic iteration carries the full precision of the step.
+    for step, energy in scf_energies.items():
+        records[step]["energy"] = energy
+
+    return records, force_blocks, stress_blocks
+
+
+def _fill_energy_change(history: List[Dict[str, Any]]) -> None:
+    """Fill missing energy changes from consecutive total energies."""
     previous_energy = None
     for item in history:
-        if item["energy_change"] is None and item["energy"] is not None and previous_energy is not None:
+        if (
+            item["energy_change"] is None
+            and item["energy"] is not None
+            and previous_energy is not None
+        ):
             item["energy_change"] = item["energy"] - previous_energy
         if item["energy"] is not None:
             previous_energy = item["energy"]
+
+
+def read_scf_history(
+    log_file: Union[str, Path],
+    version: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Read the per-iteration metrics of an electronic (SCF) loop.
+
+    Args:
+        log_file: ABACUS running log.
+        version: ABACUS version hint, as in :func:`read_relaxation_history`.
+
+    Returns:
+        One record per electronic iteration with the iteration number, its
+        Kohn-Sham energy, the energy change to the previous iteration and the
+        density error.
+    """
+    path = Path(log_file)
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    profile = resolve_version(version, job_dir=path.parent, text="\n".join(lines[:128]))
+    records: Dict[int, Dict[str, Any]] = {}
+    current_step: Optional[int] = None
+
+    def record(step: int) -> Dict[str, Any]:
+        return records.setdefault(
+            step,
+            {"step": step, "energy": None, "energy_change": None, "drho": None},
+        )
+
+    for line in lines:
+        step = _first_match(profile.scf_step_patterns, line)
+        if step is not None:
+            current_step = int(step)
+            record(current_step)
+            continue
+        if current_step is None:
+            continue
+        item = record(current_step)
+        lower_line = line.lower()
+        if _contains_any(lower_line, profile.energy_keywords):
+            values = _numbers(line)
+            if values:
+                item["energy"] = values[-1]
+        elif _contains_any(lower_line, profile.density_error_keywords):
+            values = _numbers(line)
+            if values:
+                item["drho"] = values[-1]
+
+    history = [records[step] for step in sorted(records)]
+    _fill_energy_change(history)
     return history
+
+
+def read_md_history(
+    log_file: Union[str, Path],
+    version: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Read the per-step metrics of a molecular-dynamics run.
+
+    ABACUS prints the total, potential and kinetic energy, the temperature and
+    the pressure of every MD step in one table; the records hold one entry per
+    MD step, starting at step 0.  The table reports its energies in eV or in
+    Rydberg and may omit the pressure column, so the energies are converted to
+    eV and the pressure is left empty when it is not printed.
+
+    Args:
+        log_file: ABACUS running log of a ``calculation md`` job.
+        version: ABACUS version hint, as in :func:`read_relaxation_history`.
+
+    Returns:
+        One record per MD step with the step number, the energies in eV, the
+        temperature in K and the pressure in kBar.
+    """
+    path = Path(log_file)
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    profile = resolve_version(version, job_dir=path.parent, text="\n".join(lines[:128]))
+    records: Dict[int, Dict[str, Any]] = {}
+    current_step: Optional[int] = None
+
+    def record(step: int) -> Dict[str, Any]:
+        return records.setdefault(
+            step,
+            {
+                "step": step,
+                "energy": None,
+                "potential": None,
+                "kinetic": None,
+                "temperature": None,
+                "pressure": None,
+            },
+        )
+
+    for index, line in enumerate(lines):
+        step = _first_match(profile.md_step_patterns, line)
+        if step is not None:
+            current_step = int(step)
+            record(current_step)
+            continue
+        if current_step is None:
+            continue
+        if "total-pressure" in line.lower():
+            values = _numbers(line)
+            if values:
+                record(current_step)["pressure"] = values[-1]
+            continue
+        if not _is_md_table_header(line):
+            continue
+        lower_line = line.lower()
+        energy_factor = RY_TO_EV if "(ry)" in lower_line else 1.0
+        has_pressure = "pressure" in lower_line
+        for following in lines[index + 1 :]:
+            values = _numbers(following)
+            if not values:
+                continue
+            if len(values) >= (5 if has_pressure else 4):
+                item = record(current_step)
+                item["energy"] = values[0] * energy_factor
+                item["potential"] = values[1] * energy_factor
+                item["kinetic"] = values[2] * energy_factor
+                item["temperature"] = values[3]
+                if has_pressure:
+                    item["pressure"] = values[4]
+            break
+
+    return [records[step] for step in sorted(records)]
+
+
+def _is_md_table_header(line: str) -> bool:
+    """Return whether a log line is the header of the MD energy table."""
+    lower_line = line.lower()
+    return all(
+        column in lower_line
+        for column in ("energy", "potential", "kinetic", "temperature")
+    )
+
+
+def read_convergence_thresholds(
+    log_file: Union[str, Path],
+    version: Optional[str] = None,
+) -> Dict[str, float]:
+    """Read the force and stress thresholds printed by a relaxation log.
+
+    ABACUS prints the effective criteria along the largest force and stress,
+    which also covers the runs whose INPUT leaves them at their defaults.
+    """
+    path = Path(log_file)
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    profile = resolve_version(version, job_dir=path.parent, text="\n".join(lines[:128]))
+    thresholds: Dict[str, float] = {}
+    for line in lines:
+        if "force_thr_ev" not in thresholds:
+            value = _first_match(profile.relax_force_threshold_patterns, line)
+            if value is not None:
+                thresholds["force_thr_ev"] = value
+        if "stress_thr" not in thresholds:
+            value = _first_match(profile.relax_stress_threshold_patterns, line)
+            if value is not None:
+                thresholds["stress_thr"] = value
+    return thresholds
+
+
+def read_normal_end(
+    log_file: Union[str, Path],
+    version: Optional[str] = None,
+) -> bool:
+    """Return whether a running log reached the normal-ending footer."""
+    path = Path(log_file)
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    profile = resolve_version(version, job_dir=path.parent, text="\n".join(lines[:128]))
+    return any(
+        _contains_any(line.lower(), profile.normal_end_keywords)
+        for line in lines[-80:]
+    )
 
 
 def _is_separator(line: str) -> bool:
@@ -289,6 +597,33 @@ def _log_file(
     )
 
 
+def find_job_log(
+    job_dir: str,
+    *,
+    ionic: bool = False,
+) -> Optional[Path]:
+    """Return the running log that holds the results of one job.
+
+    The log is selected the same way the result collectors select it, so that
+    monitoring and ``postprocess result`` always read the same file.
+
+    Args:
+        job_dir: ABACUS job directory containing ``INPUT`` and ``OUT.*``.
+        ionic: Prefer the log of an ionic (relax/cell-relax/md) calculation.
+
+    Returns:
+        The running log, or ``None`` when the job has no readable output yet.
+    """
+    job_path = Path(job_dir)
+    try:
+        inputs = _job_input(job_path)
+        output_path = _output_directory(job_path, inputs)
+        calculation = _calculation(inputs, output_path)
+        return _log_file(output_path, calculation, relax=ionic)
+    except FileNotFoundError:
+        return None
+
+
 def split_param_by_group(param_names: Optional[Sequence[str]]) -> Dict[str, List[str]]:
     """Split result names into their parser groups and reject unknown names."""
     if param_names is None:
@@ -318,12 +653,14 @@ def _empty_results(metrics: Sequence[str]) -> Dict[str, Any]:
 
 def _parse_force_block(
     lines: List[str], start: int
-) -> List[List[float]]:
+) -> tuple[List[str], List[List[float]]]:
+    """Read the atom labels and force vectors of one ``TOTAL-FORCE`` block."""
+    labels: List[str] = []
     force: List[List[float]] = []
     for line in lines[start + 1 :]:
         if _is_separator(line):
             if force:
-                return force
+                return labels, force
             continue
         parts = line.split()
         if len(parts) >= 4:
@@ -331,8 +668,10 @@ def _parse_force_block(
                 force.append([_as_float(value) for value in parts[1:4]])
             except ValueError:
                 if force:
-                    return force
-    return force
+                    return labels, force
+            else:
+                labels.append(parts[0])
+    return labels, force
 
 
 def _parse_stress_block(lines: List[str], start: int) -> List[List[float]]:
@@ -407,7 +746,7 @@ def collect_scf_results(
         elif _contains_any(lower_line, profile.scf_converged_keywords):
             converged = True
         elif _contains_any(lower_line, profile.force_header_keywords):
-            force = _parse_force_block(lines, line_number)
+            _, force = _parse_force_block(lines, line_number)
             if force:
                 forces.append(force)
         elif _contains_any(lower_line, profile.stress_header_keywords):
