@@ -1,4 +1,4 @@
-"""Optional integrations with external calculation engines."""
+"""Optional integrations with external calculation engines and databases."""
 
 from .abacuslite import (
     AbacusLiteUnavailableError,
@@ -12,16 +12,50 @@ from .abacuslite import (
     structure_to_atoms,
     write_result,
 )
+from .materials_project import (
+    API_KEY_ENVIRONMENT_VARIABLES,
+    DEFAULT_SUMMARY_FIELDS,
+    STRUCTURE_FILENAMES,
+    MaterialStructure,
+    MaterialSummary,
+    MaterialsProjectApiKeyError,
+    MaterialsProjectUnavailableError,
+    api_key_from_environment,
+    download_material,
+    load_materials_project,
+    material_directory,
+    materials_project_available,
+    open_rester,
+    resolve_api_key,
+    search_materials,
+    write_material_structure,
+)
 
 __all__ = [
+    "API_KEY_ENVIRONMENT_VARIABLES",
     "AbacusLiteUnavailableError",
+    "DEFAULT_SUMMARY_FIELDS",
+    "MaterialStructure",
+    "MaterialSummary",
+    "MaterialsProjectApiKeyError",
+    "MaterialsProjectUnavailableError",
+    "STRUCTURE_FILENAMES",
     "abacuslite_available",
+    "api_key_from_environment",
     "attach_calculator",
     "calculator_from_job",
     "calculator_from_structure",
+    "download_material",
     "load_abacuslite",
+    "load_materials_project",
     "make_profile",
+    "material_directory",
+    "materials_project_available",
+    "open_rester",
+    "resolve_api_key",
     "result_to_dict",
+    "search_materials",
     "structure_to_atoms",
+    "write_material_structure",
     "write_result",
 ]

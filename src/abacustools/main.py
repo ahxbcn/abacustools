@@ -12,6 +12,7 @@ from abacustools.commands.postprocess import (
     register_parser as register_postprocess_parser,
 )
 from abacustools.commands.job import register_parser as register_job_parser
+from abacustools.commands.mp import register_parser as register_mp_parser
 from abacustools.commands.workflow import (
     register_parser as register_workflow_parser,
 )
@@ -76,6 +77,7 @@ def _create_parser(prog: str) -> argparse.ArgumentParser:
 
     register_file_parser(subparsers)
     register_job_parser(subparsers)
+    register_mp_parser(subparsers)
     register_postprocess_parser(subparsers)
     register_workflow_parser(subparsers)
 

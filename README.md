@@ -21,6 +21,10 @@ abacustools post bader -j JOB
 abacustools pp bader -j JOB
 ```
 
+The top-level families are `file`, `job`, `postprocess`, `workflow`, and `mp`.
+The `mp` family searches and downloads Materials Project entries as described
+at the end of this document.
+
 ## Interactive menu
 
 Running `abacustools` with no arguments in a terminal opens an interactive,
@@ -975,3 +979,73 @@ The same adapter can build a calculator from an existing ABACUS job with
 relaxation, cell-relaxation, NEB, MD, or `fixed_density()` band workflows.
 Use `result_to_dict()` or `write_result()` to place ASE results in the
 repository's JSON-compatible result format.
+
+## Materials Project database
+
+The `mp` command family searches the Materials Project and downloads structures
+as ABACUS or common structure files. It needs the optional `mp-api` client and
+an API key:
+
+```bash
+pip install 'abacustools[mp]'
+export MP_API_KEY="your_key_here"   # https://materialsproject.org/api
+```
+
+`mp search` accepts the usual Materials Project selectors; at least one of
+`--formula`, `--chemsys`, `--elements`, or `--material-id` is required:
+
+```text
+abacustools mp search --formula Fe2O3 --limit 10
+abacustools mp search --chemsys Li-Fe-O --stable --limit 5 --json
+abacustools mp search --elements Li Fe O --output li-fe-o.json
+abacustools mp search --material-id mp-149 --material-id mp-22862
+```
+
+The table reports the material id, formula, chemical system, number of sites,
+energy above the convex hull, band gap, stability, and whether the entry is
+theoretical. `--json` prints the same records as JSON and `--output` also
+writes them to a file. The command returns a non-zero exit status when nothing
+matches the query.
+
+`mp download` writes one directory per material, which can be used as an
+ABACUS job directory directly:
+
+```text
+abacustools mp download mp-149
+abacustools mp download mp-149 mp-22862 --output structures --format poscar
+abacustools mp download mp-149 --format cif --json
+```
+
+Every structure goes to `OUTPUT/<material_id>/`, named `STRU`, `POSCAR`,
+`structure.cif`, `structure.xyz`, `structure.extxyz`, or `structure.xsf`
+according to `--format`. Materials Project structures carry no pseudopotential
+or numerical-orbital information, so the `ATOMIC_SPECIES` files required by
+ABACUS still have to be filled in, for example with the library settings
+described above or `abacustools file stru`.
+
+The same operations are available from Python, and every call accepts a
+pre-constructed `client` so that no connection is made when one is supplied:
+
+```python
+from pathlib import Path
+from abacustools.integrations.materials_project import (
+    material_directory,
+    search_materials,
+    download_material,
+    write_material_structure,
+)
+
+for summary in search_materials(chemsys="Li-Fe-O", is_stable=True, limit=5):
+    print(summary.material_id, summary.formula, summary.energy_above_hull)
+
+material = download_material("mp-149")
+write_material_structure(
+    material,
+    material_directory(Path("structures"), material.material_id),
+)
+```
+
+`load_materials_project()` and `materials_project_available()` report whether
+the optional client can be imported. The API key is taken from the first of
+`MP_API_KEY`, `PMG_MAPI_KEY`, and `MAPI_KEY` that is set, or from an explicit
+`--api-key` / `api_key=` argument.

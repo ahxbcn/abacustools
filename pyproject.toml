@@ -38,6 +38,11 @@ dependencies = [
     "spglib",
 ]
 
+[project.optional-dependencies]
+# Materials Project search and download (`abacustools mp ...`). The client is
+# imported lazily so every other command works without it.
+mp = ["mp-api"]
+
 [project.scripts]
 abacustools = "abacustools.main:main"
 
