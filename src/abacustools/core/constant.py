@@ -14,6 +14,13 @@ ANG_TO_BOHR = 1.0 / BOHR_TO_ANG
 #: volume in Angstrom^3 into a density in g/cm^3.
 AMU_TO_GRAM = 1.66053906660e-24
 
+#: Kilograms per atomic mass unit. Together with :data:`ANGSTROM_TO_METRE` it
+#: converts a mass-weighted Hessian into frequencies.
+AMU_TO_KG = AMU_TO_GRAM * 1.0e-3
+
+#: Metres per Angstrom.
+ANGSTROM_TO_METRE = 1.0e-10
+
 PLANCK_CONSTANT = CONFIG['constants']['planck_constant']
 BOLTZMANN_CONSTANT = CONFIG['constants']['boltzmann_constant']
 ELEMENTARY_CHARGE = CONFIG['constants']['elementary_charge']

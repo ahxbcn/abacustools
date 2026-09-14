@@ -100,6 +100,30 @@ H
     assert reread.masses == structure.masses
 
 
+def test_structure_masses_can_be_overridden_by_element_or_label() -> None:
+    """Mass overrides replace elements, or single atoms through their label."""
+    structure = AbacusSTRU(
+        cell=[[3.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 3.0]],
+        atoms=[
+            AbacusATOM(label="H", element="H", coord=(0.0, 0.0, 0.0), mass=1.0079),
+            AbacusATOM(label="H1", element="H", coord=(0.0, 0.0, 1.0), mass=1.0079),
+            AbacusATOM(label="O", element="O", coord=(0.0, 0.0, 2.0), mass=15.9994),
+        ],
+        metadata={"atom_type": "cartesian"},
+    )
+    assert structure.masses_with_overrides() == [1.0079, 1.0079, 15.9994]
+    assert structure.masses_with_overrides({}) == [1.0079, 1.0079, 15.9994]
+    assert structure.masses_with_overrides({"H": 2.014}) == [2.014, 2.014, 15.9994]
+    assert structure.masses_with_overrides({"H": 2.014, "O": 18.0}) == [
+        2.014,
+        2.014,
+        18.0,
+    ]
+    assert structure.masses_with_overrides({"H1": 2.014}) == [1.0079, 2.014, 15.9994]
+    with pytest.raises(ValueError):
+        structure.masses_with_overrides({"C": 12.0})
+
+
 def test_make_supercell_replicates_and_keeps_attributes() -> None:
     structure = _structure()
 

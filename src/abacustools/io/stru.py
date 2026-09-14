@@ -977,6 +977,49 @@ class AbacusSTRU:
                     raise KeyError(f"Mass for {key_type}: {key} not found in provided dictionary.")
         else:
             raise TypeError("masses must be a list or a dictionary.")
+
+    def masses_with_overrides(
+        self,
+        overrides: Optional[Dict[str, float]] = None,
+    ) -> List[float]:
+        """Return the atomic masses with per-element or per-label overrides.
+
+        The overrides replace the masses that were read from the structure,
+        which is useful for isotope effects, for example a deuterated
+        structure.  An override key is matched against the element of every
+        atom first and against its label afterwards, so that custom ABACUS
+        labels such as ``H1`` can be addressed as well.
+
+        Args:
+            overrides (Dict[str, float], optional): Mapping of element symbol
+                or atom label to the relative atomic mass to use instead.
+
+        Returns:
+            List[float]: One mass in amu per atom.
+
+        Raises:
+            ValueError: If an override matches no atom of the structure.
+        """
+        if not overrides:
+            return [float(mass) for mass in self.masses]
+        masses = []
+        used = set()
+        for atom in self._atoms:
+            if atom.element is not None and atom.element in overrides:
+                masses.append(float(overrides[atom.element]))
+                used.add(atom.element)
+            elif atom.label in overrides:
+                masses.append(float(overrides[atom.label]))
+                used.add(atom.label)
+            else:
+                masses.append(float(atom.mass))
+        missing = sorted(set(overrides) - used)
+        if missing:
+            raise ValueError(
+                "no atom of the structure matches the mass override(s): "
+                + ", ".join(missing)
+            )
+        return masses
     
     def get_cell_param(self):
         # return the box parameter: a,b,c,alpha,beta,gamma, unit is Angstrom and degree
@@ -1988,6 +2031,7 @@ def write_poscar(
           poscar: str ="POSCAR", 
           direct:bool=True,
           move:Optional[List[Optional[Tuple[bool,bool,bool]]]] = None,
+          velocities:Optional[List[Tuple[float,float,float]]] = None,
           ):
     '''Write to VASP POSCAR file. 
     
@@ -1998,11 +2042,14 @@ def write_poscar(
         poscar (str): Path to the POSCAR file. Default is "POSCAR".
         direct (bool): If True, write atomic positions in direct coordinates. If False, write in cartesian coordinates. Default is True.
         move (Optional[List[Optional[Tuple[bool,bool,bool]]]]): List of move flags for each atom. Default is None.
+        velocities (Optional[List[Tuple[float,float,float]]]): Cartesian velocities in Angstrom/fs, written as the velocity block of an MD-style POSCAR. Default is None.
     '''
     # check parameters
     assert len(label) == len(coord), "label and coord length mismatch"
     if move:
         assert len(move) == len(coord), "move length mismatch with coord"
+    if velocities:
+        assert len(velocities) == len(coord), "velocities length mismatch with coord"
     
     # find unique labels and their counts
     unique_labels = [label[0]]
@@ -2040,6 +2087,10 @@ def write_poscar(
         if move and move[i] and len(move[i]) == 3:
             cc += " " + " ".join(["T" if mv else "F" for mv in move[i]])
         cc += "\n"
+    if velocities:
+        cc += "Cartesian\n"
+        for i in range(len(velocities)):
+            cc += "%17.11f %17.11f %17.11f\n" % tuple(velocities[i])
     out_dir = os.path.dirname(poscar)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)

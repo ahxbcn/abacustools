@@ -728,6 +728,43 @@ visualization, so a reference mode of 2500 `cm^-1` moves its atoms with a peak
 velocity of 0.5, which keeps every animation in a readable range instead of
 growing with the frequency.
 
+Postprocessing uses ASE by default (`--backend ase`): the Hessian is analyzed
+by `ase.vibrations.data.VibrationsData`, the thermochemistry by
+`ase.thermochemistry.HarmonicThermo`, and the mode structures are written by
+ASE. With `--backend builtin` the same workflow runs on the built-in analysis
+of `abacustools.data.vibration`, which is the extension point for features that
+ASE does not provide:
+
+```text
+abacustools workflow vibration postprocess -j JOB --backend builtin
+```
+
+Both backends mass-weight the Hessian with the relative atomic masses declared
+in `ATOMIC_SPECIES`, which `AbacusSTRU.masses` reports for every structure read
+from a STRU file, so the two backends agree to the precision of their
+constants. `--mass ELEMENT=MASS` (also `--element-mass`) replaces these masses
+for one or more elements, which accounts for isotope effects:
+
+```text
+abacustools workflow vibration postprocess -j JOB --mass H=2.014
+abacustools workflow vibration postprocess -j JOB --mass H=2.014 O=18.0
+```
+
+Keys are matched against the element of every atom first and against the ABACUS
+atom label afterwards, so structures with custom labels can be addressed as
+well. An assignment that matches no atom of the structure is an error. The
+masses that enter the analysis are reported as `masses` in the result JSON.
+The built-in backend reports unstable modes as negative frequencies, follows
+the harmonic oscillator partition function for the thermochemistry and writes
+mode structures with the built-in extended XYZ writer, which carries the cell,
+the magnetic moments and the pseudopotential/orbital metadata of the
+equilibrium structure. Its JSON adds one entry per mode with the reduced mass
+in `amu` and the force constant in `eV/Angstrom^2`, and, per temperature, the
+internal energy, the heat capacity and the number of imaginary modes next to
+the entropy and the free energy. In both backends the reported zero-point
+energy keeps the convention of adding the magnitude of an imaginary mode, while
+the thermochemistry of a temperature is evaluated from the stable modes only.
+
 Workflow submission scripts can be generated from `~/.abacustools/config.yaml`.
 The packaged defaults support local execution and Slurm, PBS, and LSF
 submission. Script generation is disabled by default; enable it globally with
