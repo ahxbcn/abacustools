@@ -50,7 +50,7 @@ def _register_arguments(parser: argparse.ArgumentParser) -> None:
         "-j", "--job",
         required=True,
         type=_job_directory,
-        help="ABACUS job directory with SPIN*_CHG.cube files.",
+        help="ABACUS job directory with charge-density cubes of either branch.",
     )
     parser.add_argument(
         "--spin",

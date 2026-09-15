@@ -23,6 +23,15 @@ from ase.data import atomic_numbers
 from abacustools.core.constant import ANG_TO_BOHR, BOHR_TO_ANG
 from abacustools.data.abacus_result import get_result_from_job
 from abacustools.data.grid import Charge, RestartCharge
+from abacustools.data.grid_files import (
+    LTS,
+    GridFile,
+    GridFileError,
+    grid_files,
+    output_directory,
+    scan_grid_files,
+    spin_channels,
+)
 from abacustools.io.abacus import ReadInput
 
 
@@ -44,15 +53,21 @@ class DensitySource:
     """Files that hold the spin-resolved density of one ABACUS job.
 
     Attributes:
-        kind: ``"cube"`` for ``SPIN*_CHG.cube`` files or ``"restart"`` for a
+        kind: ``"cube"`` for charge-density cube files or ``"restart"`` for a
             ``*-CHARGE-DENSITY.restart`` file.
         paths: One cube file per spin channel, or the single restart file.
         nspin: Number of spin channels that the INPUT of the job declares.
+        naming: ``"lts"`` or ``"develop"`` for cube files, which name the same
+            quantity differently.
+        step: Geometry step of a develop cube file, ``None`` when the file is
+            not tied to a geometry step.
     """
 
     kind: str
     paths: List[Path]
     nspin: int
+    naming: str = LTS
+    step: Optional[int] = None
 
     def describe(self, grid: Optional[Tuple[int, int, int]] = None) -> str:
         """Return a short description of the source for reports.
@@ -62,26 +77,32 @@ class DensitySource:
                 known.
 
         Returns:
-            ``"cube"`` for cube files, otherwise ``restart (file, grid=...)``.
+            ``"cube"`` for the LTS cube files, the naming convention and file
+            names for develop cubes, otherwise ``restart (file, grid=...)``.
         """
         if self.kind == "cube":
-            return "cube"
+            if self.naming == LTS:
+                return "cube"
+            details = [self.naming]
+            if self.step is not None:
+                details.append(f"step {self.step}")
+            names = ", ".join(path.name for path in self.paths)
+            return f"cube ({', '.join(details)}: {names})"
         shape = "" if grid is None else f", grid={tuple(grid)}"
         return f"restart ({self.paths[0].name}{shape})"
 
 
-def output_directory(job: Path, inputs: Mapping[str, Any]) -> Path:
-    """Return the ``OUT.<suffix>`` directory that INPUT points at."""
-    return Path(job) / f"OUT.{inputs.get('suffix', 'ABACUS')}"
-
-
-def cube_paths(
+def charge_cubes(
     job: Path,
     outdir: Path,
     nspin: int,
     cube: Optional[str] = None,
-) -> Optional[List[Path]]:
-    """Return the cube files of a job, or ``None`` when the job has none.
+) -> Optional[List[GridFile]]:
+    """Return the charge-density cubes of a job, or ``None`` when missing.
+
+    Both ABACUS naming conventions are recognised: the LTS branch writes
+    ``SPIN{index}_CHG.cube`` and the develop branch ``chg.cube`` or
+    ``chgs{index}.cube``, optionally with a geometry step of ``out_freq_ion``.
 
     Args:
         job: ABACUS job directory, used to resolve a relative ``cube``.
@@ -90,20 +111,42 @@ def cube_paths(
         cube: Explicit cube file or directory, which overrides ``outdir``.
 
     Returns:
-        The cube file of every spin channel, or ``None``.
+        The cube file of every spin channel, or ``None`` when the job has no
+        complete set of charge-density cubes.
     """
     if cube is not None:
         path = Path(cube)
         if not path.is_absolute():
             path = Path(job) / path
         if path.is_dir():
-            found = sorted(path.glob("SPIN*_CHG.cube"))
+            try:
+                found = scan_grid_files(path, quantity="charge")
+            except GridFileError:
+                return None
             return found or None
-        return [path]
-    expected = [Path(outdir) / f"SPIN{index + 1}_CHG.cube" for index in range(nspin)]
-    if all(path.is_file() for path in expected):
-        return expected
-    return None
+        return [GridFile(path, "charge", LTS, spin=1)]
+
+    try:
+        return grid_files(outdir, "charge", spins=spin_channels(nspin))
+    except GridFileError:
+        return None
+
+
+def cube_paths(
+    job: Path,
+    outdir: Path,
+    nspin: int,
+    cube: Optional[str] = None,
+) -> Optional[List[Path]]:
+    """Return the paths of the charge-density cubes of a job, or ``None``.
+
+    This is :func:`charge_cubes` without the naming details, for callers that
+    only need the files.
+    """
+    found = charge_cubes(job, outdir, nspin, cube)
+    if found is None:
+        return None
+    return [item.path for item in found]
 
 
 def restart_files(outdir: Path) -> List[Path]:
@@ -133,13 +176,20 @@ def find_density_source(
     job_path = Path(job)
     nspin = int(inputs.get("nspin", 1))
     outdir = output_directory(job_path, inputs)
-    found = cube_paths(job_path, outdir, nspin, cube)
+    found = charge_cubes(job_path, outdir, nspin, cube)
     if found is not None:
-        return DensitySource("cube", list(found), nspin)
+        return DensitySource(
+            "cube",
+            [item.path for item in found],
+            nspin,
+            naming=found[0].naming,
+            step=found[0].step,
+        )
     restarts = restart_files(outdir)
     if not restarts:
         raise ChargeDensityError(
-            f"no charge density in {outdir}: expected SPIN*_CHG.cube or "
+            f"no charge density in {outdir}: expected charge-density cubes "
+            "(SPIN*_CHG.cube in the LTS branch, chg*.cube in develop) or "
             "*-CHARGE-DENSITY.restart"
         )
     return DensitySource("restart", [restarts[0]], nspin)
@@ -324,7 +374,8 @@ def read_job_density(
 ) -> JobDensity:
     """Assemble the spin-resolved density of one job.
 
-    The density is read from ``SPIN*_CHG.cube``. A job that only stores a
+    The density is read from the charge-density cubes of either branch
+    (``SPIN*_CHG.cube`` or ``chg*.cube``). A job that only stores a
     ``*-CHARGE-DENSITY.restart`` file is reported as unsupported here, because
     converting it needs the FFT grid of the calculation.
 
@@ -355,8 +406,9 @@ def read_job_density(
     source = find_density_source(job_path, inputs)
     if source.kind != "cube":
         raise ChargeDensityError(
-            f"{job_path} has no SPIN*_CHG.cube; only {source.paths[0].name} was "
-            "found, which needs the FFT grid to be converted"
+            f"{job_path} has no charge-density cube; only "
+            f"{source.paths[0].name} was found, which needs the FFT grid to be "
+            "converted"
         )
     return JobDensity(job_path, source, read_cube_charges(source))
 

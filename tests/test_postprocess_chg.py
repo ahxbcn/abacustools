@@ -296,3 +296,18 @@ def test_slice_can_skip_the_atoms(tmp_path: Path, capsys: pytest.CaptureFixture)
     assert run(_args(job, slice="c", no_atoms=True, json=True)) == 0
 
     assert json.loads(capsys.readouterr().out)["slice"]["atoms"] == []
+
+
+def test_develop_named_job_is_reported(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    job, output = _job(tmp_path, nspin=2)
+    _cube(output / "chgs1.cube", np.full((2, 2, 2), 0.75))
+    _cube(output / "chgs2.cube", np.full((2, 2, 2), 0.25))
+
+    assert run(_args(job, json=True)) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["source"] == "cube (develop: chgs1.cube, chgs2.cube)"
+    assert report["cube_files"] == [str(output / "chgs1.cube"), str(output / "chgs2.cube")]
+    assert report["electrons"] == pytest.approx(64.0)

@@ -29,7 +29,7 @@ def _register_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("-j", "--job", required=True, type=_job_directory, help="ABACUS job directory.")
     parser.add_argument("-o", "--output", default=None, help="Write a JSON report, relative to JOB by default.")
     parser.add_argument("--bader-exe", default=None, help="Bader executable (default: BADER_EXE env var or config).")
-    parser.add_argument("--cube", default=None, help="Explicit SPIN*_CHG.cube file or directory, relative to JOB.")
+    parser.add_argument("--cube", default=None, help="Explicit charge-density cube file or directory, relative to JOB.")
     parser.add_argument("--reference", default=None, help="Reference charge cube passed to bader -ref.")
     parser.add_argument("--grid", type=int, nargs=3, metavar=("NX", "NY", "NZ"), default=None, help="FFT grid for restart input when it cannot be read from the log.")
     parser.add_argument("--lat0", type=float, default=ANG_TO_BOHR, help="ABACUS LATTICE_CONSTANT in Bohr (default: 1.889726).")

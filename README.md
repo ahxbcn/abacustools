@@ -648,10 +648,14 @@ before the analysis and turns the command into a general density-difference
 tool, as long as both grids match, so a bonding or adsorption difference no
 longer needs a prepared `workflow chgdiff` set.
 
-The density is taken from `SPIN*_CHG.cube`, which an SCF calculation writes
-with `out_chg 1`. A job that only stores `*-CHARGE-DENSITY.restart` is reported
-as unsupported, because converting it needs the FFT grid of the calculation;
-`postprocess bader --grid` still reads those jobs. The summary compares the
+The density is taken from the cubes that an SCF calculation writes with
+`out_chg 1`, and both ABACUS naming conventions are read: the LTS branch writes
+`SPIN1_CHG.cube` while develop writes `chg.cube` or `chgs1.cube`, and a
+geometry-step token such as `chgs1g3.cube` is recognised, with the last step
+used when the job wrote one file per step. A job that only stores
+`*-CHARGE-DENSITY.restart` is reported as unsupported, because converting it
+needs the FFT grid of the calculation; `postprocess bader --grid` still reads
+those jobs. The summary compares the
 integrated charge with the valence charge of the atoms that the cube stores, so
 a deviation reports either a charged cell or the truncation of the real-space
 grid; the comparison is left out for a spin channel or a difference, where it
@@ -865,7 +869,9 @@ postprocessing with an explicit error.
 Surface work functions can be calculated from the averaged electrostatic
 potential. The prepare stage enables `out_pot=2` and writes a calculation
 under `workfunc_job`; the postprocess stage identifies vacuum plateaus and
-writes the work-function results and potential profile:
+writes the work-function results and potential profile. Both branch names of
+that cube are read, `ElecStaticPot.cube` in the LTS branch and `potes.cube` in
+develop, together with the `pot_es.cube` that the develop manual mentions:
 
 ```text
 abacustools workflow workfunc prepare -j JOB

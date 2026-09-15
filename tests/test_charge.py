@@ -19,6 +19,7 @@ from abacustools.data.charge import (
     integrate,
     planar_profile,
     read_cube_charges,
+    read_job_density,
     read_job_total_density,
     read_restart_charges,
     select_spin,
@@ -253,7 +254,7 @@ def test_read_job_total_density_rejects_unusable_jobs(tmp_path: Path) -> None:
 
     restart_only, output = _job(tmp_path / "restart_only", nspin=1)
     _write_restart(output / "ABACUS-CHARGE-DENSITY.restart")
-    with pytest.raises(ChargeDensityError, match=r"SPIN\*_CHG.cube"):
+    with pytest.raises(ChargeDensityError, match="no charge-density cube"):
         read_job_total_density(restart_only)
 
 
@@ -412,3 +413,28 @@ def test_atoms_in_plane_wraps_across_the_boundary(tmp_path: Path) -> None:
     distances = sorted(atom["distance"] for atom in atoms)
     assert distances[0] == pytest.approx(-0.04, abs=1e-6)
     assert distances[1] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_read_job_density_reads_develop_charge_files(tmp_path: Path) -> None:
+    job, output = _job(tmp_path, nspin=2)
+    _write_cube(output / "chgs1.cube", np.full((2, 2, 2), 0.75))
+    _write_cube(output / "chgs2.cube", np.full((2, 2, 2), 0.25))
+
+    density = read_job_density(job)
+
+    assert density.nspin == 2
+    assert density.source.naming == "develop"
+    assert density.source.describe() == "cube (develop: chgs1.cube, chgs2.cube)"
+    np.testing.assert_allclose(density.total().data, 1.0)
+
+
+def test_develop_step_files_use_the_last_geometry_step(tmp_path: Path) -> None:
+    job, output = _job(tmp_path, nspin=1)
+    _write_cube(output / "chgg1.cube", np.full((2, 2, 2), 1.0))
+    _write_cube(output / "chgg4.cube", np.full((2, 2, 2), 4.0))
+
+    density = read_job_density(job)
+
+    assert density.source.step == 4
+    assert density.source.describe() == "cube (develop, step 4: chgg4.cube)"
+    np.testing.assert_allclose(density.total().data, 4.0)
