@@ -189,7 +189,9 @@ termination is written to its own file named after `--output-prefix`, such as
 Conversions issue a `StructureConversionWarning` when ABACUS-specific data
 such as pseudopotential/orbital filenames, spin settings, velocities,
 movement constraints, or `NUMERICAL_DESCRIPTOR` cannot be represented by the
-target format. Standard XYZ files do not contain a periodic cell; provide
+target format. Trajectories are converted with `file traj`, which reads and
+writes any multi-frame format that ASE supports, so an `extxyz` file becomes
+an ASE `.traj`, a plain `.xyz` or an `.xsf` for a viewer of choice. Standard XYZ files do not contain a periodic cell; provide
 `--cell` when converting one to `STRU`.
 
 Complete ABACUS input directories can be prepared with a resource library
@@ -699,6 +701,34 @@ crosses; `--no-atoms` leaves those markers out and `--vmin`/`--vmax` fix the
 colour range. `--data-output`, `--slice-output`, `--plot` and `--slice-plot`
 change the file names, and a plot flag without a name writes
 `chg_profile_<axis>_<kind>.png` or `chg_slice_<axis>_<position>.png`.
+
+Molecular-dynamics trajectories are written to standard formats. ABACUS
+appends one block per dumped step to `OUT.<suffix>/MD_dump`, holding the cell,
+the positions and, when `dump_force`, `dump_vel` and `dump_virial` are enabled,
+the forces, the velocities and the virial; `postprocess md` turns those blocks
+into a trajectory file, with the energy, temperature and pressure of every step
+attached from the running log:
+
+```text
+abacustools postprocess md -j JOB
+abacustools postprocess md -j JOB -o traj.extxyz --first 100 --last 2000 --stride 5
+abacustools postprocess md -j JOB -o trajectory.traj --json
+```
+
+The suffix of the output selects the format, which is any format ASE writes,
+such as `extxyz`, `xyz`, `traj` or `xsf`, and `--format` sets it explicitly.
+Positions are in Angstrom, forces in eV/Angstrom, velocities in Angstrom/fs and
+the virial in kBar, as in `MD_dump` itself. A job that wrote no `MD_dump` is
+read from its per-step `STRU_MD_*` structures instead, which is what `out_stru 1`
+produces in the job directory of the LTS branch and in a directory per step of
+develop; those frames carry positions and velocities but no forces or virial.
+
+`file traj` converts a trajectory between formats with the same machinery:
+
+```text
+abacustools file traj trajectory.extxyz trajectory.xyz
+abacustools file traj dump.traj dump.extxyz --stride 10
+```
 
 Mayer bond orders can be analyzed from an ABACUS LCAO calculation with
 `out_mat_hs=1` (and `out_dm=1` for gamma-only jobs):

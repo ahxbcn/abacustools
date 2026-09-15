@@ -3,6 +3,7 @@
 from . import input as input_command
 from . import kpt as kpt_command
 from . import stru as stru_command
+from . import traj as traj_command
 from . import structure_info as structure_info_command
 from . import editstru as editstru_command
 
@@ -25,3 +26,4 @@ def register_parser(subparsers) -> None:
     editstru_command.register_parser(file_subparsers)
     structure_info_command.register_parser(file_subparsers)
     kpt_command.register_parser(file_subparsers)
+    traj_command.register_parser(file_subparsers)

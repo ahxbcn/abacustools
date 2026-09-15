@@ -6,6 +6,7 @@ from . import chg as chg_command
 from . import cohp as cohp_command
 from . import dos as dos_command
 from . import mayer as mayer_command
+from . import md as md_command
 from . import result as result_command
 
 
@@ -28,4 +29,5 @@ def register_parser(subparsers) -> None:
     cohp_command.register_parser(postprocess_subparsers)
     dos_command.register_parser(postprocess_subparsers)
     mayer_command.register_parser(postprocess_subparsers)
+    md_command.register_parser(postprocess_subparsers)
     result_command.register_parser(postprocess_subparsers)
