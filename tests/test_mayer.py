@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from abacustools.data.mayer import (
     _develop_density_files,
@@ -344,3 +345,82 @@ def test_analyze_mayer_bond_order_reads_develop_job(tmp_path):
     # (D S)[0, 1] = (D S)[1, 0] = 0.75 for the synthetic matrices above.
     np.testing.assert_allclose(pair.bond_order, 0.5625)
     np.testing.assert_allclose(pair.distance, 0.7)
+
+
+def _stru(cell, fractional):
+    """Build a structure whose atoms sit at the given fractional coordinates."""
+    from abacustools.io.stru import AbacusATOM, AbacusSTRU
+
+    cell = np.asarray(cell, dtype=float)
+    return AbacusSTRU(
+        cell=cell.tolist(),
+        atoms=[
+            AbacusATOM(
+                label="H",
+                element="H",
+                coord=tuple((np.asarray(coords, dtype=float) @ cell).tolist()),
+            )
+            for coords in fractional
+        ],
+    )
+
+
+def test_periodic_distance_is_correct_for_a_strongly_skewed_cell():
+    """A skewed cell needs the reduced basis that pymatgen searches in.
+
+    Searching the 27 images of this raw cell gives 4.5574, because the nearest
+    image sits two cells away along the second lattice vector.
+    """
+    from abacustools.data.mayer import _minimum_distance
+    from abacustools.io.stru import periodic_lattice
+
+    structure = _stru(
+        [[8.384, 0.0, 0.0], [1.742, 3.008, 0.0], [2.194, 4.553, 6.765]],
+        [[0.9103, 0.4235, 0.9889], [0.4074, 0.9272, 0.6554]],
+    )
+
+    distance = _minimum_distance(
+        periodic_lattice(structure), *structure.coords_direct
+    )
+
+    np.testing.assert_allclose(distance, 4.4205, atol=1e-4)
+
+
+def test_periodic_distance_crosses_the_cell_boundary():
+    from abacustools.data.mayer import _minimum_distance
+    from abacustools.io.stru import periodic_lattice
+
+    structure = _stru(
+        [[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]],
+        [[0.95, 0.0, 0.0], [0.05, 0.0, 0.0]],
+    )
+
+    distance = _minimum_distance(
+        periodic_lattice(structure), *structure.coords_direct
+    )
+
+    np.testing.assert_allclose(distance, 1.0)
+
+
+def test_select_atom_pairs_uses_the_periodic_distance():
+    from abacustools.data.mayer import select_atom_pairs
+
+    structure = _stru(
+        [[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]],
+        [[0.95, 0.0, 0.0], [0.05, 0.0, 0.0]],
+    )
+
+    assert select_atom_pairs(structure, cutoff=2.0) == [(0, 1)]
+    assert select_atom_pairs(structure, cutoff=0.5) == []
+
+
+def test_periodic_lattice_rejects_a_degenerate_cell():
+    from abacustools.io.stru import periodic_lattice
+
+    structure = _stru(
+        [[1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        [[0.0, 0.0, 0.0]],
+    )
+
+    with pytest.raises(ValueError, match="non-singular"):
+        periodic_lattice(structure)

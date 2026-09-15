@@ -2161,3 +2161,34 @@ def convert_structure(
     ):
         raise IOError(f"failed to write structure file: {destination}")
     return structure
+
+
+def periodic_lattice(structure: "AbacusSTRU"):
+    """Return a pymatgen lattice used for periodic distance and image searches.
+
+    Every periodic distance in the package goes through pymatgen, which
+    LLL-reduces the basis before scanning the neighbouring cells, so strongly
+    skewed cells stay correct.
+
+    Args:
+        structure: Structure whose cell defines the lattice.
+
+    Returns:
+        pymatgen.core.Lattice: Lattice built from the cell of ``structure``.
+
+    Raises:
+        ValueError: If the cell is not a finite, non-singular 3x3 matrix.
+    """
+    from pymatgen.core import Lattice
+
+    cell = np.asarray(structure.cell, dtype=float)
+    if cell.shape != (3, 3) or not np.all(np.isfinite(cell)):
+        raise ValueError("a finite 3x3 cell is required for periodic distances")
+    # pymatgen accepts a singular cell and then fails deep inside the LLL
+    # reduction with a linear-algebra error, so reject it up front.
+    if abs(float(np.linalg.det(cell))) <= 1e-12:
+        raise ValueError(
+            "a non-singular cell is required for periodic distances: "
+            "the lattice volume is zero"
+        )
+    return Lattice(cell)

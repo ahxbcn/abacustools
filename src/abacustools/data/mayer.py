@@ -10,7 +10,7 @@ from typing import Any, Iterable, Optional
 import numpy as np
 
 from abacustools.io.abacus import ReadInput
-from abacustools.io.stru import AbacusSTRU
+from abacustools.io.stru import AbacusSTRU, periodic_lattice
 
 _FLOAT = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[EeDd][+-]?\d+)?"
 _COMPLEX_TOKEN = re.compile(rf"^\(({_FLOAT}),({_FLOAT})\)$")
@@ -507,12 +507,16 @@ def read_density_matrix_develop(dmk_file: str | Path) -> np.ndarray:
     return matrix
 
 
-def _minimum_distance(frac1: Iterable[float], frac2: Iterable[float], cell: np.ndarray) -> float:
-    difference = np.asarray(frac2, dtype=float) - np.asarray(frac1, dtype=float)
-    difference -= np.round(difference)
-    shifts = np.array(np.meshgrid(*[np.arange(-1, 2)] * 3, indexing="ij")).reshape(3, -1).T
-    cartesian = (difference + shifts) @ cell
-    return float(np.sqrt(np.min(np.einsum("ij,ij->i", cartesian, cartesian))))
+def _minimum_distance(lattice, frac1: Iterable[float], frac2: Iterable[float]) -> float:
+    """Return the shortest periodic distance between two fractional coordinates.
+
+    The minimum-image search is delegated to pymatgen, which LLL-reduces the
+    lattice before scanning the neighbouring cells. Searching the images of the
+    raw cell instead overestimates the distance as soon as the cell is strongly
+    skewed, because the nearest image may then sit more than one cell away.
+    """
+    distance, _image = lattice.get_distance_and_image(frac1, frac2)
+    return float(distance)
 
 
 def _validate_pair(first: int, second: int, natoms: int, context: str) -> tuple[int, int]:
@@ -552,9 +556,9 @@ def select_atom_pairs(structure: AbacusSTRU, cutoff: Optional[float] = None, pai
     if cutoff is not None:
         if cutoff <= 0:
             raise ValueError("cutoff must be positive")
-        cell = np.asarray(structure.cell, dtype=float)
+        lattice = periodic_lattice(structure)
         fractions = structure.coords_direct
-        return [(i, j) for i in range(structure.natoms) for j in range(i + 1, structure.natoms) if _minimum_distance(fractions[i], fractions[j], cell) <= cutoff]
+        return [(i, j) for i in range(structure.natoms) for j in range(i + 1, structure.natoms) if _minimum_distance(lattice, fractions[i], fractions[j]) <= cutoff]
     if pairs_file is not None:
         return read_pairs_from_file(pairs_file, structure.natoms)
     if pairs_str is not None:
@@ -803,8 +807,8 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
                     data_files.append(str(wfc_paths[ik + len(weights)]))
 
     fractions = structure.coords_direct
-    cell = np.asarray(structure.cell, dtype=float)
-    result_pairs = tuple(MayerPair(first + 1, second + 1, str(structure.atoms[first].element or structure.atoms[first].label), str(structure.atoms[second].element or structure.atoms[second].label), float(_minimum_distance(fractions[first], fractions[second], cell)), float(orders[(first, second)])) for first, second in selected_pairs)
+    lattice = periodic_lattice(structure)
+    result_pairs = tuple(MayerPair(first + 1, second + 1, str(structure.atoms[first].element or structure.atoms[first].label), str(structure.atoms[second].element or structure.atoms[second].label), float(_minimum_distance(lattice, fractions[first], fractions[second])), float(orders[(first, second)])) for first, second in selected_pairs)
     return MayerAnalysis(str(job_path), calculation, nspin, gamma_only, basis_functions, str(output), tuple(dict.fromkeys(data_files)), result_pairs)
 
 
