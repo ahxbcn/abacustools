@@ -6,6 +6,7 @@ from . import chgdiff as chgdiff_workflow
 from . import dftu as dftu_workflow
 from . import ecutwfc as ecutwfc_workflow
 from . import eos as eos_workflow
+from . import exchange as exchange_workflow
 from . import elastic as elastic_workflow
 from . import fdforce as fdforce_workflow
 from . import fdstress as fdstress_workflow
@@ -36,6 +37,7 @@ def register_parser(subparsers) -> None:
     dftu_workflow.register_parser(workflow_subparsers)
     ecutwfc_workflow.register_parser(workflow_subparsers)
     eos_workflow.register_parser(workflow_subparsers)
+    exchange_workflow.register_parser(workflow_subparsers)
     kspacing_workflow.register_parser(workflow_subparsers)
     elastic_workflow.register_parser(workflow_subparsers)
     fdforce_workflow.register_parser(workflow_subparsers)

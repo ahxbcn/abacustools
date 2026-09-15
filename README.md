@@ -890,6 +890,64 @@ resulting `U` per atom to `dftu_results.json` together with a `dftu_response.png
 plot. Submit scripts are generated on request with `--submit-script` and
 `--submission-type`.
 
+Magnetic exchange coupling constants can be calculated with the four-state
+method, which maps the total energy of a magnetic pair onto the Heisenberg
+form. Prepare one reference calculation together with three tilted
+magnetization configurations per tilt angle: only the first moment tilted,
+only the second one tilted, and both moments tilted by half the angle, so all
+three share the same pair angle. Pairs are given on the command line or in a
+`magj.txt` file that holds one `LABEL1 INDEX1 LABEL2 INDEX2` line per pair,
+where the indices are one-based within the atoms of that label:
+
+```text
+abacustools workflow exchange prepare -j JOB --pair Fe 1 Fe 2
+abacustools workflow exchange prepare -j JOB --step 10 --number 5
+abacustools workflow exchange prepare -j JOB -f pairs.txt
+abacustools workflow exchange postprocess -j JOB
+```
+
+The `exchange` workflow is also available as `magj`, the name of the
+`abacus-test` model it follows. The input job needs noncollinear magnetism
+(`nspin 4`), and both atoms of a pair need a magnetic moment: a scalar moment
+counts as a moment along `z`, a vector `mag x y z` keeps its direction. The
+generated `STRU` files keep the magnitudes of the reference moments and tilt
+them in the plane of the reference pair. `--step` is the tilt step in degrees
+and `--number` the number of tilt angles, so the defaults of 1 degree and five
+steps test 1 to 5 degrees, as the reference implementation does; larger tilts
+raise the energy difference that is fitted and therefore give a better
+conditioned result. Repeating `--pair` calculates several pairs in one go, and
+a pair that is requested in both orders, or twice, is calculated once because
+the two atoms are symmetric in the method.
+
+Postprocessing combines the four energies into
+
+```text
+dE = (E_both - E_atom1) - (E_atom2 - E_original)
+```
+
+and fits `dE = J (1 - cos(theta))`, so the slope `J` is positive for
+antiferromagnetic coupling. The fit is reported per pair together with its
+coefficient of determination and its residual, which show whether the energy
+difference follows the Heisenberg form. Results are written to
+`exchange_results.json`, with the energies, angles and four-state differences
+of every point, and the fit is plotted to `exchange_fit.png`. The fit uses the
+angles of the configurations that were generated, so a run whose moments
+rotate away from the prescribed directions is best checked with
+`postprocess result -p atom_orb_mag` before its coupling constant is used.
+Postprocessing stops when a calculation did not reach `scf_thr`; some magnetic
+configurations converge their energy while the density error keeps oscillating,
+so `--allow-unconverged` fits them anyway and lists the affected calculations
+in `unconverged_tasks` next to a `converged` flag on every fitted point.
+Because the moments keep their reference magnitudes, `J` is the coefficient of
+the unit directions of the two moments times the product of their magnitudes;
+divide by that product to obtain a coupling constant per unit moment.
+Tilted configurations converge more slowly than the reference one, so the
+per-point `delta_energy_ev` and `x` of the JSON are worth a look: every tilt
+should give the same slope, and a tilt that does not is a calculation that has
+not reached the configuration it was given. The generated calculations live
+below `magj/`, with one directory per tilt angle and path, and the reference
+calculation in `magj/original`.
+
 Generated calculation directories are protected by default. Use `--override`
 when intentionally replacing them. The BEC workflow's `run_bec.sh` is only a
 local four-step runner for one generated task; cluster submission scripts are
