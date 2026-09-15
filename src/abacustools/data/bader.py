@@ -23,18 +23,23 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-import numpy as np
-from ase.data import atomic_numbers, chemical_symbols
+from ase.data import chemical_symbols
 
 from abacustools.core.config import CONFIG
-from abacustools.core.constant import ANG_TO_BOHR, BOHR_TO_ANG
-from abacustools.data.grid import Charge, RestartCharge
+from abacustools.core.constant import ANG_TO_BOHR
+from abacustools.data.charge import (
+    ChargeDensityError,
+    combine,
+    find_density_source,
+    read_cube_charges,
+    read_restart_charges,
+    total_charge,
+)
 from abacustools.io.abacus import ReadInput
 from abacustools.io.pseudo import UPF
 from abacustools.io.stru import AbacusSTRU
 
 
-BOHR2A = BOHR_TO_ANG
 A2BOHR = ANG_TO_BOHR
 
 # ABACUS LTS logs write "fft grid", develop writes "FFT grid".
@@ -248,68 +253,6 @@ def _valence_electrons(stru: AbacusSTRU, pseudo_dir: Optional[str], job: Path) -
     return valences
 
 
-def _atomic_numbers(elements: Sequence[Optional[str]]) -> List[int]:
-    numbers = []
-    for element in elements:
-        if element is None or element not in atomic_numbers:
-            raise BaderError(f"unknown element in STRU: {element!r}")
-        numbers.append(int(atomic_numbers[element]))
-    return numbers
-
-
-def _restart_charges(
-    restart_file: Path,
-    grid_shape: Tuple[int, int, int],
-    stru: AbacusSTRU,
-    valences: Sequence[float],
-    lat0: float,
-) -> List[Charge]:
-    restart = RestartCharge.read(str(restart_file))
-    if restart.nspin > 2:
-        raise BaderError(f"nspin={restart.nspin} is not supported (only 1 and 2)")
-    real = restart.to_real(grid_shape)
-    cell_ang = np.linalg.inv(restart.reciprocal_lattice) * lat0 * BOHR2A
-    positions = np.asarray(stru.coords, dtype=float)
-    types = _atomic_numbers(stru.elements)
-    charges = [float(value) for value in valences]
-    result = []
-    for ispin in range(restart.nspin):
-        result.append(
-            Charge(real[ispin] / BOHR2A**3, cell_ang, positions, types, charges)
-        )
-    return result
-
-
-def _cube_charges(cube_paths: Sequence[Path]) -> List[Charge]:
-    return [Charge.from_cube(str(path), format="abacus") for path in cube_paths]
-
-
-def _resolve_cube_paths(job: Path, outdir: Path, nspin: int, cube: Optional[str]) -> Optional[List[Path]]:
-    if cube is not None:
-        path = Path(cube)
-        if not path.is_absolute():
-            path = job / path
-        if path.is_dir():
-            found = sorted(path.glob("SPIN*_CHG.cube"))
-            return found or None
-        return [path]
-    expected = [outdir / f"SPIN{index + 1}_CHG.cube" for index in range(nspin)]
-    if all(path.is_file() for path in expected):
-        return expected
-    return None
-
-
-def _combine(first: Charge, second: Charge, sign: float) -> Charge:
-    return Charge(
-        first.data + sign * second.data,
-        first.cell,
-        first.atom_positions,
-        first.atom_types,
-        first.atom_charges,
-        first.origin,
-    )
-
-
 def _vacuum_arguments(vacuum: Optional[object]) -> List[str]:
     if vacuum is None:
         return []
@@ -370,41 +313,38 @@ def analyze_bader(
     if not outdir.is_dir():
         raise BaderError(f"output directory not found: {outdir}")
 
-    cube_paths = _resolve_cube_paths(job_path, outdir, nspin, cube)
-    if cube_paths is not None:
-        spin_charges = _cube_charges(cube_paths)
-        charge_source = "cube"
-        valences = [float(charge) for charge in spin_charges[0].atom_charges]
-        elements = [chemical_symbols[int(number)] for number in spin_charges[0].atom_types]
-    else:
-        restarts = sorted(outdir.glob("*-CHARGE-DENSITY.restart"))
-        if not restarts:
-            raise BaderError(
-                f"no charge density in {outdir}: expected SPIN*_CHG.cube or "
-                "*-CHARGE-DENSITY.restart"
+    try:
+        source = find_density_source(job_path, inputs, cube=cube)
+        if source.kind == "cube":
+            spin_charges = read_cube_charges(source)
+            charge_source = source.describe()
+            valences = [float(charge) for charge in spin_charges[0].atom_charges]
+            elements = [
+                chemical_symbols[int(number)] for number in spin_charges[0].atom_types
+            ]
+        else:
+            stru = AbacusSTRU.read(str(job_path / "STRU"))
+            valences = _valence_electrons(stru, inputs.get("pseudo_dir"), job_path)
+            elements = list(stru.elements)
+            shape = grid_shape or fft_grid_from_log(outdir / "running_scf.log")
+            if shape is None:
+                raise BaderError(
+                    "could not determine the FFT grid; pass --grid nx ny nz"
+                )
+            spin_charges = read_restart_charges(
+                source,
+                structure=stru,
+                valences=valences,
+                grid_shape=shape,
+                lat0=lat0,
             )
-        stru = AbacusSTRU.read(str(job_path / "STRU"))
-        valences = _valence_electrons(stru, inputs.get("pseudo_dir"), job_path)
-        elements = list(stru.elements)
-        shape = grid_shape or fft_grid_from_log(outdir / "running_scf.log")
-        if shape is None:
-            raise BaderError(
-                "could not determine the FFT grid; pass --grid nx ny nz"
-            )
-        spin_charges = _restart_charges(restarts[0], shape, stru, valences, lat0)
-        charge_source = f"restart ({restarts[0].name}, grid={shape})"
-
-    if len(spin_charges) != nspin:
-        raise BaderError(
-            f"found {len(spin_charges)} spin channel(s) but INPUT has nspin={nspin}"
-        )
-
-    total = spin_charges[0]
-    for extra in spin_charges[1:]:
-        total = _combine(total, extra, 1.0)
-    magnetization = None
-    if nspin == 2:
-        magnetization = _combine(spin_charges[0], spin_charges[1], -1.0)
+            charge_source = source.describe(grid=shape)
+        total = total_charge(spin_charges)
+        magnetization = None
+        if nspin == 2:
+            magnetization = combine(spin_charges[0], spin_charges[1], -1.0)
+    except ChargeDensityError as error:
+        raise BaderError(str(error)) from error
 
     if workdir is not None:
         work = Path(workdir).expanduser().absolute()

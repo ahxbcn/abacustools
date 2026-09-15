@@ -1,0 +1,263 @@
+"""Tests for job-level charge-density assembly."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from abacustools.core.constant import BOHR_TO_ANG
+from abacustools.data.charge import (
+    ChargeDensityError,
+    combine,
+    cube_paths,
+    find_density_source,
+    read_cube_charges,
+    read_job_total_density,
+    read_restart_charges,
+    total_charge,
+    validate_same_grid,
+)
+from abacustools.data.grid import Charge, Grid, RestartCharge
+from abacustools.io.abacus import ReadInput
+from abacustools.io.stru import AbacusSTRU
+
+
+BOHR2A = BOHR_TO_ANG
+
+STRU = """\
+ATOMIC_SPECIES
+Si 28.0855 Si.upf
+
+LATTICE_CONSTANT
+1.889726
+
+LATTICE_VECTORS
+4 0 0
+0 4 0
+0 0 4
+
+ATOMIC_POSITIONS
+Cartesian
+
+Si
+0.0
+2
+0.0 0.0 0.0 1 1 1
+2.0 2.0 2.0 1 1 1
+"""
+
+
+def _job(base: Path, *, nspin: int = 1, suffix: str = "ABACUS") -> tuple[Path, Path]:
+    """Create a minimal job directory with an INPUT and return it with OUT.*."""
+    job = base / "job"
+    output = job / f"OUT.{suffix}"
+    output.mkdir(parents=True)
+    (job / "INPUT").write_text(
+        f"INPUT_PARAMETERS\nsuffix {suffix}\nnspin {nspin}\n", encoding="utf-8"
+    )
+    return job, output
+
+
+def _charge(data, *, cell=None, origin=None) -> Charge:
+    return Charge(
+        np.asarray(data, dtype=float),
+        np.diag([4.0, 4.0, 4.0]) if cell is None else np.asarray(cell, dtype=float),
+        np.array([[0.0, 0.0, 0.0], [2.0, 2.0, 2.0]]),
+        [14, 14],
+        [4.0, 4.0],
+        np.zeros(3) if origin is None else np.asarray(origin, dtype=float),
+    )
+
+
+def _write_cube(path: Path, data, **kwargs) -> Charge:
+    charge = _charge(data, **kwargs)
+    charge.save_cube(str(path))
+    return charge
+
+
+def _write_restart(
+    path: Path, *, nspin: int = 1, shape: tuple[int, int, int] = (2, 2, 2)
+) -> Path:
+    """Write a small restart file whose reciprocal and real spaces are related."""
+    fractions = [np.fft.fftfreq(count) * count for count in shape]
+    mesh = np.meshgrid(*fractions, indexing="ij")
+    miller = np.stack([entry.ravel() for entry in mesh], axis=1).astype(np.int64)
+    reciprocal = np.linalg.inv(np.diag([4.0, 4.0, 4.0]))
+    rng = np.random.default_rng(0)
+    rhog = rng.standard_normal((nspin, miller.shape[0])) + 1j * np.random.default_rng(
+        1
+    ).standard_normal((nspin, miller.shape[0]))
+    RestartCharge(rhog, miller, reciprocal).write(str(path))
+    return path
+
+
+def test_cubes_keep_the_abacus_units_through_the_charge_class(tmp_path: Path) -> None:
+    data = np.linspace(0.5, 1.5, 8).reshape(2, 2, 2)
+    path = tmp_path / "SPIN1_CHG.cube"
+    written = _write_cube(path, data)
+
+    # The cube writer keeps 12 significant digits per number.
+    raw = Grid.from_cube(str(path))
+    np.testing.assert_allclose(raw.data, data * BOHR2A**3, rtol=1e-10)
+    np.testing.assert_allclose(raw.cell, written.cell / BOHR2A, rtol=1e-10)
+
+    roundtripped = Charge.from_cube(str(path), format="abacus")
+    np.testing.assert_allclose(roundtripped.data, data, rtol=1e-10)
+    np.testing.assert_allclose(roundtripped.cell, written.cell, rtol=1e-10)
+
+
+def test_find_density_source_prefers_cube_files(tmp_path: Path) -> None:
+    job, output = _job(tmp_path, nspin=2)
+    _write_cube(output / "SPIN1_CHG.cube", np.ones((2, 2, 2)))
+    _write_cube(output / "SPIN2_CHG.cube", np.ones((2, 2, 2)) * 0.5)
+    (output / "ABACUS-CHARGE-DENSITY.restart").write_bytes(b"unused")
+
+    source = find_density_source(job, ReadInput(str(job / "INPUT")))
+
+    assert source.kind == "cube"
+    assert [path.name for path in source.paths] == ["SPIN1_CHG.cube", "SPIN2_CHG.cube"]
+    assert source.describe() == "cube"
+
+
+def test_explicit_cube_directory_overrides_the_output_directory(tmp_path: Path) -> None:
+    job, output = _job(tmp_path, nspin=1)
+    stored = tmp_path / "stored"
+    stored.mkdir()
+    _write_cube(stored / "SPIN1_CHG.cube", np.ones((2, 2, 2)) * 3.0)
+    (output / "SPIN1_CHG.cube").write_text("ignored", encoding="utf-8")
+    inputs = ReadInput(str(job / "INPUT"))
+
+    directory = find_density_source(job, inputs, cube=str(stored))
+    assert directory.paths == [stored / "SPIN1_CHG.cube"]
+
+    single = find_density_source(job, inputs, cube="OUT.ABACUS/SPIN1_CHG.cube")
+    assert single.paths == [job / "OUT.ABACUS/SPIN1_CHG.cube"]
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert cube_paths(job, output, 1, cube=str(empty)) is None
+
+
+def test_find_density_source_falls_back_to_the_restart_file(tmp_path: Path) -> None:
+    job, output = _job(tmp_path, nspin=1)
+    restart = _write_restart(output / "ABACUS-CHARGE-DENSITY.restart")
+
+    source = find_density_source(job, ReadInput(str(job / "INPUT")))
+
+    assert source.kind == "restart"
+    assert source.paths == [restart]
+    assert source.describe((2, 2, 2)) == (
+        "restart (ABACUS-CHARGE-DENSITY.restart, grid=(2, 2, 2))"
+    )
+
+
+def test_find_density_source_reports_a_missing_density(tmp_path: Path) -> None:
+    job, _ = _job(tmp_path, nspin=1)
+    with pytest.raises(ChargeDensityError, match="no charge density"):
+        find_density_source(job, ReadInput(str(job / "INPUT")))
+
+
+def test_read_cube_charges_checks_the_channel_count(tmp_path: Path) -> None:
+    job, output = _job(tmp_path, nspin=2)
+    _write_cube(output / "SPIN1_CHG.cube", np.ones((2, 2, 2)))
+    inputs = ReadInput(str(job / "INPUT"))
+    source = find_density_source(job, inputs, cube="OUT.ABACUS/SPIN1_CHG.cube")
+
+    with pytest.raises(ChargeDensityError, match="found 1 spin channel"):
+        read_cube_charges(source)
+
+
+def test_read_restart_charges_uses_the_structure_and_converts_units(tmp_path: Path) -> None:
+    job, output = _job(tmp_path, nspin=1)
+    (job / "STRU").write_text(STRU, encoding="utf-8")
+    structure = AbacusSTRU.read(str(job / "STRU"))
+    restart = _write_restart(output / "ABACUS-CHARGE-DENSITY.restart")
+    source = find_density_source(job, ReadInput(str(job / "INPUT")))
+
+    charges = read_restart_charges(
+        source,
+        structure=structure,
+        valences=[4.0, 4.0],
+        grid_shape=(2, 2, 2),
+        lat0=1.889726,
+    )
+
+    expected = RestartCharge.read(str(restart)).to_real((2, 2, 2))[0]
+    assert len(charges) == 1
+    np.testing.assert_allclose(charges[0].data, expected / BOHR2A**3, rtol=1e-12)
+    np.testing.assert_allclose(charges[0].cell, np.diag([4.0, 4.0, 4.0]), rtol=1e-6)
+    assert list(charges[0].atom_types) == [14, 14]
+    assert list(charges[0].atom_charges) == [4.0, 4.0]
+
+
+def test_read_restart_charges_rejects_noncollinear_channels(tmp_path: Path) -> None:
+    job, output = _job(tmp_path, nspin=4)
+    (job / "STRU").write_text(STRU, encoding="utf-8")
+    _write_restart(output / "ABACUS-CHARGE-DENSITY.restart", nspin=4)
+    source = find_density_source(job, ReadInput(str(job / "INPUT")))
+
+    with pytest.raises(ChargeDensityError, match="nspin=4 is not supported"):
+        read_restart_charges(
+            source,
+            structure=AbacusSTRU.read(str(job / "STRU")),
+            valences=[4.0, 4.0],
+            grid_shape=(2, 2, 2),
+        )
+
+
+def test_combine_and_total_charge_do_not_mutate_their_inputs() -> None:
+    first = _charge(np.ones((2, 2, 2)))
+    second = _charge(np.full((2, 2, 2), 2.0))
+
+    np.testing.assert_allclose(combine(first, second, 1.0).data, 3.0)
+    np.testing.assert_allclose(combine(first, second, -1.0).data, -1.0)
+    np.testing.assert_allclose(total_charge([first, second]).data, 3.0)
+    np.testing.assert_allclose(first.data, 1.0)
+
+
+def test_grid_checks_reject_incompatible_densities() -> None:
+    first = _charge(np.ones((2, 2, 2)))
+
+    with pytest.raises(ChargeDensityError, match="incompatible grid shape"):
+        validate_same_grid(first, _charge(np.ones((2, 2, 3))), "test")
+    with pytest.raises(ChargeDensityError, match="incompatible grid geometry"):
+        validate_same_grid(first, _charge(np.ones((2, 2, 2)), cell=np.diag([5.0] * 3)), "test")
+    with pytest.raises(ChargeDensityError, match="no charge-density channel"):
+        total_charge([])
+
+
+def test_read_job_total_density_sums_the_spin_channels(tmp_path: Path) -> None:
+    job, output = _job(tmp_path, nspin=2)
+    _write_cube(output / "SPIN1_CHG.cube", np.full((2, 2, 2), 1.0))
+    _write_cube(output / "SPIN2_CHG.cube", np.full((2, 2, 2), 0.5))
+
+    total = read_job_total_density(job)
+
+    np.testing.assert_allclose(total.data, 1.5)
+
+
+def test_read_job_total_density_rejects_unusable_jobs(tmp_path: Path) -> None:
+    noncollinear, _ = _job(tmp_path / "noncollinear", nspin=4)
+    with pytest.raises(ChargeDensityError, match="nspin 1 and 2"):
+        read_job_total_density(noncollinear)
+
+    restart_only, output = _job(tmp_path / "restart_only", nspin=1)
+    _write_restart(output / "ABACUS-CHARGE-DENSITY.restart")
+    with pytest.raises(ChargeDensityError, match=r"SPIN\*_CHG.cube"):
+        read_job_total_density(restart_only)
+
+
+def test_read_job_total_density_can_require_convergence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job, output = _job(tmp_path, nspin=1)
+    _write_cube(output / "SPIN1_CHG.cube", np.ones((2, 2, 2)))
+    monkeypatch.setattr(
+        "abacustools.data.charge.get_result_from_job",
+        lambda *args, **kwargs: {"converged": False},
+    )
+
+    with pytest.raises(ChargeDensityError, match="did not converge"):
+        read_job_total_density(job, require_converged=True)

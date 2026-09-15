@@ -6,16 +6,18 @@ import argparse
 from copy import deepcopy
 from pathlib import Path
 
-import numpy as np
-
+from abacustools.data.charge import (
+    combine,
+    read_job_total_density,
+    validate_same_grid,
+)
 from abacustools.data.versions import default_version
 
 from .common import (
     clear_generated_jobs,
     kpoint_filename,
-    read_manifest,
-    read_job_input,
     read_job_structure,
+    read_manifest,
     register_stages,
     write_abacus_job,
     write_manifest,
@@ -114,40 +116,13 @@ def prepare(args: argparse.Namespace) -> int:
 
 
 def _read_total_charge_density(job: Path, version: str):
-    """Read total charge density, combining spin channels when necessary."""
-    from abacustools.data.abacus_result import get_result_from_job
-    from abacustools.data.grid import Grid
-
-    inputs = read_job_input(job)
-    result = get_result_from_job(job, ["converged"], version)
-    if not result["converged"]:
-        raise RuntimeError(f"SCF calculation did not converge: {job}")
-
-    output_dir = job / f"OUT.{inputs.get('suffix', 'ABACUS')}"
-    nspin = inputs.get("nspin", 1)
-    spin1 = Grid.from_cube(output_dir / "SPIN1_CHG.cube")
-    if nspin == 1:
-        return spin1
-    if nspin != 2:
-        raise ValueError("charge-density difference supports only nspin=1 and nspin=2")
-
-    spin2 = Grid.from_cube(output_dir / "SPIN2_CHG.cube")
-    _validate_grid(spin1, spin2, "spin channels")
-    spin1.data = spin1.data + spin2.data
-    return spin1
-
-
-def _validate_grid(reference, other, description: str) -> None:
-    """Ensure two cube data sets can be combined point by point."""
-    if reference.data.shape != other.data.shape:
-        raise ValueError(
-            f"incompatible grid shape for {description}: "
-            f"{reference.data.shape} != {other.data.shape}"
-        )
-    if not np.allclose(reference.cell, other.cell) or not np.allclose(
-        reference.origin, other.origin
-    ):
-        raise ValueError(f"incompatible grid geometry for {description}")
+    """Read the total charge density of one prepared subsystem."""
+    return read_job_total_density(
+        job,
+        version=version,
+        require_converged=True,
+        description="charge-density difference",
+    )
 
 
 def postprocess(args: argparse.Namespace) -> int:
@@ -161,15 +136,15 @@ def postprocess(args: argparse.Namespace) -> int:
     full = _read_total_charge_density(job / "full_system", args.version)
     subsystem1 = _read_total_charge_density(job / "subsys1", args.version)
     subsystem2 = _read_total_charge_density(job / "subsys2", args.version)
-    _validate_grid(full, subsystem1, "full system and subsystem 1")
-    _validate_grid(full, subsystem2, "full system and subsystem 2")
+    validate_same_grid(full, subsystem1, "full system and subsystem 1")
+    validate_same_grid(full, subsystem2, "full system and subsystem 2")
 
-    full.data = full.data - subsystem1.data - subsystem2.data
+    difference = combine(combine(full, subsystem1, -1.0), subsystem2, -1.0)
     output = Path(args.output)
     if not output.is_absolute():
         output = job / output
     output.parent.mkdir(parents=True, exist_ok=True)
-    full.save_cube(output)
+    difference.save_cube(output)
     print(f"  charge-density difference: {output}")
     return 0
 
