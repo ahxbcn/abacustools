@@ -10,6 +10,9 @@ import pytest
 from abacustools.core.constant import BOHR_TO_ANG
 from abacustools.data.charge import (
     ChargeDensityError,
+    DensitySource,
+    JobDensity,
+    atoms_in_plane,
     combine,
     cube_paths,
     find_density_source,
@@ -18,6 +21,9 @@ from abacustools.data.charge import (
     read_cube_charges,
     read_job_total_density,
     read_restart_charges,
+    select_spin,
+    slice_plane,
+    subtract,
     total_charge,
     validate_same_grid,
 )
@@ -310,3 +316,99 @@ def test_planar_profile_validates_its_arguments() -> None:
         planar_profile(density, "d")
     with pytest.raises(ChargeDensityError, match="unknown profile kind"):
         planar_profile(density, "c", kind="density")
+
+
+def _density(channels) -> JobDensity:
+    charges = [_charge(channel) for channel in channels]
+    source = DensitySource("cube", [Path(f"SPIN{index + 1}_CHG.cube") for index in range(len(charges))], len(charges))
+    return JobDensity(Path("job"), source, charges)
+
+
+def test_select_spin_returns_channels_and_their_difference() -> None:
+    density = _density([np.full((2, 2, 2), 0.75), np.full((2, 2, 2), 0.25)])
+
+    np.testing.assert_allclose(select_spin(density, "total").data, 1.0)
+    np.testing.assert_allclose(select_spin(density, "up").data, 0.75)
+    np.testing.assert_allclose(select_spin(density, "down").data, 0.25)
+    np.testing.assert_allclose(select_spin(density, "difference").data, 0.5)
+
+
+def test_select_spin_validates_its_arguments() -> None:
+    single = _density([np.ones((2, 2, 2))])
+
+    with pytest.raises(ChargeDensityError, match="unknown spin choice"):
+        select_spin(single, "sideways")
+    with pytest.raises(ChargeDensityError, match="needs an nspin 2 calculation"):
+        select_spin(single, "difference")
+    with pytest.raises(ChargeDensityError, match="needs an nspin 2 calculation"):
+        select_spin(single, "up")
+
+
+def test_subtract_checks_the_grid() -> None:
+    first = _charge(np.full((2, 2, 2), 3.0))
+    second = _charge(np.full((2, 2, 2), 1.0))
+
+    np.testing.assert_allclose(subtract(first, second, "the two jobs").data, 2.0)
+    with pytest.raises(ChargeDensityError, match="incompatible grid shape for the two jobs"):
+        subtract(first, _charge(np.ones((3, 3, 3))), "the two jobs")
+
+
+def test_slice_plane_takes_the_closest_grid_plane() -> None:
+    values = np.arange(1.0, 25.0).reshape(2, 3, 4)
+    density = _charge(values)
+
+    plane = slice_plane(density, "c", position=0.6)
+
+    assert plane.index == 2
+    assert plane.position == pytest.approx(0.5)
+    assert plane.distance == pytest.approx(2.0)
+    np.testing.assert_allclose(plane.values, values[:, :, 2])
+    assert plane.labels == ("a", "b")
+    np.testing.assert_allclose(plane.coordinates[0], np.linspace(0.0, 4.0, 2, endpoint=False))
+    np.testing.assert_allclose(plane.coordinates[1], np.linspace(0.0, 4.0, 3, endpoint=False))
+
+
+def test_slice_plane_validates_its_arguments() -> None:
+    density = _charge(np.ones((2, 2, 2)))
+
+    with pytest.raises(ChargeDensityError, match="unknown slice axis"):
+        slice_plane(density, "d")
+    with pytest.raises(ChargeDensityError, match="fractional coordinate"):
+        slice_plane(density, "c", position=1.0)
+
+
+def test_atoms_in_plane_marks_the_crossed_atoms(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    job.mkdir()
+    (job / "STRU").write_text(STRU, encoding="utf-8")
+    structure = AbacusSTRU.read(str(job / "STRU"))
+    density = _charge(np.ones((2, 2, 2)))
+
+    plane = slice_plane(density, "c", position=0.5)
+    atoms = atoms_in_plane(density, plane, structure)
+
+    assert [atom["label"] for atom in atoms] == ["Si"]
+    np.testing.assert_allclose(atoms[0]["coordinates"], [2.0, 2.0])
+    assert atoms[0]["distance"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_atoms_in_plane_wraps_across_the_boundary(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    job.mkdir()
+    (job / "STRU").write_text(
+        STRU.replace("2.0 2.0 2.0 1 1 1", "0.0 0.0 3.96 1 1 1"), encoding="utf-8"
+    )
+    structure = AbacusSTRU.read(str(job / "STRU"))
+    density = _charge(np.ones((4, 4, 4)))
+
+    plane = slice_plane(density, "c", position=0.01)
+    atoms = atoms_in_plane(density, plane, structure)
+
+    # A 4x4x4 grid snaps the requested position 0.01 onto the plane at 0.0. The
+    # atom at 0.99 still crosses that plane once the periodic image is used,
+    # which is one grid step away from it.
+    assert plane.index == 0
+    assert [atom["label"] for atom in atoms] == ["Si", "Si"]
+    distances = sorted(atom["distance"] for atom in atoms)
+    assert distances[0] == pytest.approx(-0.04, abs=1e-6)
+    assert distances[1] == pytest.approx(0.0, abs=1e-6)

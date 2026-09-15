@@ -34,14 +34,33 @@ def _cube(path: Path, data) -> None:
     ).save_cube(str(path))
 
 
+def _stru(job: Path) -> None:
+    """Write a two-atom Si cell whose second atom sits in the c = 0.5 plane."""
+    (job / "STRU").write_text(
+        "ATOMIC_SPECIES\nSi 28.0855 Si.upf\n\nLATTICE_CONSTANT\n1.889726\n\n"
+        "LATTICE_VECTORS\n4 0 0\n0 4 0\n0 0 4\n\nATOMIC_POSITIONS\n"
+        "Cartesian\n\nSi\n0.0\n2\n0.0 0.0 0.0 1 1 1\n2.0 2.0 2.0 1 1 1\n",
+        encoding="utf-8",
+    )
+
+
 def _args(job: Path, **overrides) -> Namespace:
     arguments = {
         "job": job,
+        "spin": "total",
+        "difference": None,
         "cube": None,
         "profile": None,
         "profile_kind": "average",
         "data_output": None,
         "plot": None,
+        "slice": None,
+        "slice_index": 0.5,
+        "slice_output": None,
+        "slice_plot": None,
+        "vmin": None,
+        "vmax": None,
+        "no_atoms": False,
         "json": False,
     }
     arguments.update(overrides)
@@ -162,3 +181,118 @@ def test_missing_density_is_reported(
     assert run(_args(job)) == 1
 
     assert "Charge-density analysis failed" in capsys.readouterr().out
+
+
+def test_spin_choices_select_the_channels(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    job, output = _job(tmp_path, nspin=2)
+    _cube(output / "SPIN1_CHG.cube", np.full((2, 2, 2), 0.75))
+    _cube(output / "SPIN2_CHG.cube", np.full((2, 2, 2), 0.25))
+
+    assert run(_args(job, spin="up", json=True)) == 0
+    assert json.loads(capsys.readouterr().out)["electrons"] == pytest.approx(0.75 * 64.0)
+
+    assert run(_args(job, spin="down", json=True)) == 0
+    assert json.loads(capsys.readouterr().out)["electrons"] == pytest.approx(0.25 * 64.0)
+
+    assert run(_args(job, spin="difference", json=True)) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["spin"] == "difference"
+    assert report["electrons"] == pytest.approx(0.5 * 64.0)
+    assert report["magnetization"] == pytest.approx(0.5 * 64.0)
+    # The valence comparison only means something for the total density.
+    assert report["valence_electrons"] is None
+    assert report["deviation"] is None
+
+
+def test_spin_choice_needs_two_channels(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    job, output = _job(tmp_path)
+    _cube(output / "SPIN1_CHG.cube", np.ones((2, 2, 2)))
+
+    assert run(_args(job, spin="difference")) == 1
+
+    assert "needs an nspin 2 calculation" in capsys.readouterr().out
+
+
+def test_difference_of_two_jobs(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    job, output = _job(tmp_path)
+    _cube(output / "SPIN1_CHG.cube", np.full((2, 2, 2), 0.5))
+    other, other_output = _job(tmp_path / "other")
+    _cube(other_output / "SPIN1_CHG.cube", np.full((2, 2, 2), 0.125))
+
+    assert run(_args(job, difference=str(other), cube="difference.cube", json=True)) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["difference_of"] == str(other)
+    assert report["electrons"] == pytest.approx((0.5 - 0.125) * 64.0)
+    assert report["valence_electrons"] is None
+    np.testing.assert_allclose(
+        Charge.from_cube(str(job / "difference.cube"), format="abacus").data,
+        0.375,
+        rtol=1e-9,
+    )
+
+
+def test_difference_requires_the_same_grid(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    job, output = _job(tmp_path)
+    _cube(output / "SPIN1_CHG.cube", np.ones((2, 2, 2)))
+    other, other_output = _job(tmp_path / "other")
+    Charge(
+        np.ones((3, 3, 3)),
+        np.diag([4.0, 4.0, 4.0]),
+        np.array([[0.0, 0.0, 0.0], [2.0, 2.0, 2.0]]),
+        [14, 14],
+        [4.0, 4.0],
+    ).save_cube(str(other_output / "SPIN1_CHG.cube"))
+
+    assert run(_args(job, difference=str(other))) == 1
+
+    assert "incompatible grid shape for the two jobs" in capsys.readouterr().out
+
+
+def test_slice_writes_the_data_plot_and_atoms(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    values = np.array([1.0, 2.0, 3.0, 4.0])
+    job, output = _job(tmp_path)
+    _cube(output / "SPIN1_CHG.cube", np.broadcast_to(values[None, None, :], (4, 4, 4)))
+    _stru(job)
+
+    assert run(_args(job, slice="c", slice_plot=_AUTO_PLOT, json=True)) == 0
+
+    slc = json.loads(capsys.readouterr().out)["slice"]
+    assert slc["axis"] == "c"
+    assert slc["index"] == 2
+    assert slc["position"] == pytest.approx(0.5)
+    assert slc["distance"] == pytest.approx(2.0)
+    assert slc["unit"] == "e/Angstrom^3"
+    assert slc["points"] == 16
+    assert [atom["label"] for atom in slc["atoms"]] == ["Si"]
+    assert Path(slc["data_output"]).name == "chg_slice_c_0.5000.dat"
+    assert Path(slc["plot"]).name == "chg_slice_c_0.5000.png"
+    assert (job / "chg_slice_c_0.5000.png").is_file()
+
+    rows = [
+        line.split()
+        for line in Path(slc["data_output"]).read_text().splitlines()
+        if not line.startswith("#")
+    ]
+    assert len(rows) == 16
+    assert all(len(row) == 3 for row in rows)
+    # The density varies along c only, so every value of the slice is the same.
+    np.testing.assert_allclose([float(row[2]) for row in rows], 3.0)
+
+
+def test_slice_can_skip_the_atoms(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    job, output = _job(tmp_path)
+    _cube(output / "SPIN1_CHG.cube", np.ones((2, 2, 2)))
+    _stru(job)
+
+    assert run(_args(job, slice="c", no_atoms=True, json=True)) == 0
+
+    assert json.loads(capsys.readouterr().out)["slice"]["atoms"] == []

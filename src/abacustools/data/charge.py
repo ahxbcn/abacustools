@@ -28,6 +28,12 @@ from abacustools.io.abacus import ReadInput
 
 BOHR2A = BOHR_TO_ANG
 
+#: Lattice directions used by the profile and slice helpers.
+AXES = ("a", "b", "c")
+
+#: Spin-resolved quantities that :func:`select_spin` can return.
+SPIN_CHOICES = ("total", "up", "down", "difference")
+
 
 class ChargeDensityError(RuntimeError):
     """Raised when the charge density of a job cannot be assembled."""
@@ -245,9 +251,22 @@ def validate_same_grid(reference: Charge, other: Charge, description: str) -> No
         raise ChargeDensityError(f"incompatible grid geometry for {description}")
 
 
-def combine(first: Charge, second: Charge, sign: float) -> Charge:
-    """Return ``first + sign * second`` on the grid of the first density."""
-    validate_same_grid(first, second, "spin channels")
+def combine(
+    first: Charge,
+    second: Charge,
+    sign: float,
+    *,
+    description: str = "spin channels",
+) -> Charge:
+    """Return ``first + sign * second`` on the grid of the first density.
+
+    Args:
+        first: Density that defines the grid.
+        second: Density that is added or subtracted.
+        sign: ``+1`` to add and ``-1`` to subtract.
+        description: Name of the combination, used in error messages.
+    """
+    validate_same_grid(first, second, description)
     return Charge(
         first.data + sign * second.data,
         first.cell,
@@ -374,7 +393,7 @@ def read_job_total_density(
     ).total()
 
 
-def integrate(density: Charge) -> dict:
+def integrate(density: Charge, *, compare_valence: bool = True) -> dict:
     """Integrate a density and compare it with its valence electrons.
 
     The atom column of a cube written by ABACUS holds the number of valence
@@ -384,17 +403,25 @@ def integrate(density: Charge) -> dict:
 
     Args:
         density: Density in e/Angstrom**3 on an Angstrom cell.
+        compare_valence: Report the valence comparison. It is meaningless for a
+            derived density such as a difference, which integrates to zero for
+            two neutral cells.
 
     Returns:
         A mapping with the grid shape, the cell volume in Angstrom**3, the
         integrated number of electrons, the sum of the valence charges (``None``
-        when the grid carries none) and their difference.
+        when the grid carries none or the comparison is off) and their
+        difference.
     """
     volume = abs(float(np.linalg.det(np.asarray(density.cell, dtype=float))))
     weight = volume / density.data.size
     electrons = float(np.sum(density.data) * weight)
     valence = [float(value) for value in density.atom_charges]
-    expected = float(sum(valence)) if any(value != 0.0 for value in valence) else None
+    expected = (
+        float(sum(valence))
+        if compare_valence and any(value != 0.0 for value in valence)
+        else None
+    )
     return {
         "grid": [int(size) for size in density.data.shape],
         "volume_angstrom3": volume,
@@ -402,6 +429,157 @@ def integrate(density: Charge) -> dict:
         "valence_electrons": expected,
         "deviation": None if expected is None else electrons - expected,
     }
+
+
+def select_spin(density: "JobDensity", spin: str = "total") -> Charge:
+    """Return one spin-resolved quantity of an assembled density.
+
+    Args:
+        density: Assembled job density.
+        spin: ``"total"`` for the sum of the channels, ``"up"`` or ``"down"``
+            for a single channel, ``"difference"`` for up minus down.
+
+    Returns:
+        The selected density.
+
+    Raises:
+        ChargeDensityError: If the choice is unknown or needs more channels.
+    """
+    if spin == "total":
+        return density.total()
+    if spin not in SPIN_CHOICES:
+        raise ChargeDensityError(f"unknown spin choice: {spin!r}")
+    if density.nspin < 2:
+        raise ChargeDensityError(
+            f"the {spin!r} density needs an nspin 2 calculation, but the job has "
+            f"{density.nspin} spin channel(s)"
+        )
+    if spin == "up":
+        return density.channels[0]
+    if spin == "down":
+        return density.channels[1]
+    return combine(density.channels[0], density.channels[1], -1.0)
+
+
+def subtract(first: Charge, second: Charge, description: str) -> Charge:
+    """Return ``first - second`` after checking that both share one grid."""
+    return combine(first, second, -1.0, description=description)
+
+
+@dataclass
+class PlaneSlice:
+    """One plane of a density.
+
+    Attributes:
+        axis: Lattice direction the plane is perpendicular to.
+        index: Grid index of the plane.
+        position: Fractional coordinate of the plane in [0, 1).
+        distance: Distance along ``axis`` in Angstrom.
+        values: Values of the plane, with the shape of the two other axes.
+        coordinates: Angstrom coordinates of the two other axes.
+        labels: Names of the two other axes, in the order of ``values``.
+    """
+
+    axis: str
+    index: int
+    position: float
+    distance: float
+    values: np.ndarray
+    coordinates: Tuple[np.ndarray, np.ndarray]
+    labels: Tuple[str, str]
+
+
+def slice_plane(density: Charge, axis: str, position: float = 0.5) -> PlaneSlice:
+    """Cut one plane out of a density.
+
+    Args:
+        density: Density in e/Angstrom**3 on an Angstrom cell.
+        axis: Lattice direction perpendicular to the plane.
+        position: Fractional coordinate of the plane along ``axis``, rounded to
+            the closest grid plane.
+
+    Returns:
+        The requested :class:`PlaneSlice`.
+
+    Raises:
+        ChargeDensityError: If the axis is unknown or the position is not a
+            fractional coordinate in [0, 1).
+    """
+    if axis not in AXES:
+        raise ChargeDensityError(f"unknown slice axis: {axis!r}")
+    if not 0.0 <= position < 1.0:
+        raise ChargeDensityError(
+            f"the slice position must be a fractional coordinate in [0, 1): {position}"
+        )
+    axis_index = AXES.index(axis)
+    size = int(density.data.shape[axis_index])
+    index = int(round(position * size)) % size
+    values = np.asarray(np.take(density.data, index, axis=axis_index), dtype=float)
+    labels = tuple(letter for letter in AXES if letter != axis)
+    cell = np.asarray(density.cell, dtype=float)
+    coordinates = tuple(
+        np.linspace(
+            0.0,
+            float(np.linalg.norm(cell[AXES.index(letter)])),
+            values.shape[position_index],
+            endpoint=False,
+        )
+        for position_index, letter in enumerate(labels)
+    )
+    distance = float(index * np.linalg.norm(cell[axis_index]) / size)
+    return PlaneSlice(
+        axis=axis,
+        index=index,
+        position=index / size,
+        distance=distance,
+        values=values,
+        coordinates=coordinates,
+        labels=labels,
+    )
+
+
+def atoms_in_plane(
+    density: Charge,
+    plane: PlaneSlice,
+    structure,
+    tolerance: Optional[float] = None,
+) -> List[dict]:
+    """Return the atoms that the given grid plane crosses.
+
+    Args:
+        density: Density whose cell defines the fractional coordinates.
+        plane: Plane that selects the atoms.
+        structure: Structure whose atoms are tested.
+        tolerance: Half thickness of the plane in fractional coordinates,
+            defaulting to half a grid spacing.
+
+    Returns:
+        One mapping per atom with its label, its two in-plane coordinates in
+        Angstrom and its distance to the plane in Angstrom.
+    """
+    cell = np.asarray(density.cell, dtype=float)
+    axis_index = AXES.index(plane.axis)
+    other = [index for index in range(3) if index != axis_index]
+    if tolerance is None:
+        tolerance = 0.5 / density.data.shape[axis_index]
+    atoms = []
+    for atom in structure.atoms:
+        fractional = np.linalg.solve(cell.T, np.asarray(atom.coord, dtype=float))
+        delta = float(fractional[axis_index]) - plane.position
+        delta -= round(delta)
+        if abs(delta) > tolerance:
+            continue
+        atoms.append(
+            {
+                "label": atom.label,
+                "coordinates": [
+                    float(fractional[index] * np.linalg.norm(cell[index]))
+                    for index in other
+                ],
+                "distance": float(delta * np.linalg.norm(cell[axis_index])),
+            }
+        )
+    return atoms
 
 
 def planar_profile(
