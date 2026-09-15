@@ -661,6 +661,18 @@ a deviation reports either a charged cell or the truncation of the real-space
 grid; the comparison is left out for a spin channel or a difference, where it
 has no meaning.
 
+`--quantity` moves the analysis to a field derived from the selected density,
+with the definitions of Quantum ESPRESSO's `pp.x`: `rdg` is the reduced density
+gradient (`plot_num=19`), `sl2rho` is `sign(lambda_2) rho` built from the middle
+eigenvalue of the density Hessian (`plot_num=20`), and `dori` is the density
+overlap regions indicator (`plot_num=123`). The derivatives are evaluated in
+reciprocal space, as `pp.x` does, so the two codes agree on the same grid, and
+`--cube`, `--profile` and `--slice` work on the derived field as well.
+`--nci-plot` draws the non-covalent interaction plot of the density, the
+reduced density gradient against `sign(lambda_2) rho`, keeping the grid points
+below `--nci-rho-max` (`0.05` e/Bohr^3 by default) so that the cores and the
+bonds stay out of the plot.
+
 `--profile AXIS` writes the in-plane average of every plane in e/Angstrom^3 to
 `chg_profile_<axis>_average.dat`, or the charge of every plane in e with
 `--profile-kind integral`, whose sum is the total number of electrons.

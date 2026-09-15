@@ -48,6 +48,9 @@ def _args(job: Path, **overrides) -> Namespace:
     arguments = {
         "job": job,
         "spin": "total",
+        "quantity": "density",
+        "nci_plot": None,
+        "nci_rho_max": 0.05,
         "difference": None,
         "cube": None,
         "profile": None,
@@ -311,3 +314,76 @@ def test_develop_named_job_is_reported(
     assert report["source"] == "cube (develop: chgs1.cube, chgs2.cube)"
     assert report["cube_files"] == [str(output / "chgs1.cube"), str(output / "chgs2.cube")]
     assert report["electrons"] == pytest.approx(64.0)
+
+
+def _varied_cube(path: Path) -> None:
+    """Write a density that varies along c, so the NCI fields are not zero."""
+    z = np.linspace(0.0, 4.0, 4, endpoint=False)
+    values = (0.05 + 0.01 * np.cos(2 * np.pi * z / 4.0))[None, None, :]
+    _cube(path, np.broadcast_to(values, (4, 4, 4)).copy())
+
+
+def test_quantity_rdg_reports_field_statistics(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    job, output = _job(tmp_path, nspin=1)
+    _varied_cube(output / "SPIN1_CHG.cube")
+
+    assert run(_args(job, quantity="rdg", json=True)) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["quantity"] == "rdg"
+    assert "electrons" not in report
+    assert report["field"]["minimum"] >= 0.0
+    assert report["grid"] == [4, 4, 4]
+
+
+def test_quantity_dori_exports_a_bounded_cube(tmp_path: Path) -> None:
+    job, output = _job(tmp_path, nspin=1)
+    _varied_cube(output / "SPIN1_CHG.cube")
+
+    assert run(_args(job, quantity="dori", cube="dori.cube")) == 0
+
+    values = Charge.from_cube(str(job / "dori.cube"), format="abacus").data
+    assert np.all(values >= 0.0)
+    assert np.all(values < 1.0)
+
+
+def test_nci_plot_is_written_and_reported(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    job, output = _job(tmp_path, nspin=1)
+    _varied_cube(output / "SPIN1_CHG.cube")
+
+    assert run(_args(job, nci_plot="auto", json=True)) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["nci"]["points"] > 0
+    assert report["nci"]["plot"] == str(job / "nci.png")
+    assert (job / "nci.png").is_file()
+
+
+def test_quantity_is_used_by_the_slice_and_its_unit(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    job, output = _job(tmp_path, nspin=1)
+    _varied_cube(output / "SPIN1_CHG.cube")
+
+    assert run(_args(job, quantity="sl2rho", slice="c", json=True)) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["slice"]["unit"] == "e/Angstrom^3"
+    header = Path(report["slice"]["data_output"]).read_text().splitlines()[1]
+    assert "e/Angstrom^3" in header
+
+
+def test_profile_of_a_dimensionless_field_names_its_unit(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    job, output = _job(tmp_path, nspin=1)
+    _varied_cube(output / "SPIN1_CHG.cube")
+
+    assert run(_args(job, quantity="rdg", profile="c", json=True)) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["profile"]["unit"] == "dimensionless"
