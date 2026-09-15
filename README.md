@@ -626,6 +626,32 @@ Use `--combined` to overlay the total DOS with the species-projected DOS
 with `--atom-index` for single-atom projections, and `--list` (optionally with
 `--json`) to list the available species, shells, orbitals and atoms.
 
+Charge densities can be inspected without leaving the command line. The
+command reads the total density of a job (combining the spin channels of an
+`nspin 2` calculation), reports the integrated number of electrons next to the
+valence electrons of the atoms, and writes the density as a cube or reduces it
+to a planar profile:
+
+```text
+abacustools postprocess chg -j JOB
+abacustools postprocess chg -j JOB --cube charge.cube
+abacustools postprocess chg -j JOB --profile c
+abacustools postprocess chg -j JOB --profile c --profile-kind integral --plot
+abacustools postprocess chg -j JOB --json
+```
+
+The density is taken from `SPIN*_CHG.cube`, which an SCF calculation writes
+with `out_chg 1`. A job that only stores `*-CHARGE-DENSITY.restart` is reported
+as unsupported, because converting it needs the FFT grid of the calculation;
+`postprocess bader --grid` still reads those jobs. The summary compares the
+integrated charge with the valence charge of the atoms that the cube stores, so
+a deviation reports either a charged cell or the truncation of the real-space
+grid. `--profile AXIS` writes the in-plane average of every plane in
+e/Angstrom^3 to `chg_profile_<axis>_average.dat`, or the charge of every plane
+in e with `--profile-kind integral`, whose sum is the total number of
+electrons. `--data-output` and `--plot` change those file names, and `--plot`
+without a name writes `chg_profile_<axis>_<kind>.png`.
+
 Mayer bond orders can be analyzed from an ABACUS LCAO calculation with
 `out_mat_hs=1` (and `out_dm=1` for gamma-only jobs):
 

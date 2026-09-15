@@ -272,14 +272,38 @@ def total_charge(channels: Sequence[Charge]) -> Charge:
     return total
 
 
-def read_job_total_density(
+@dataclass
+class JobDensity:
+    """The assembled density of one ABACUS job.
+
+    Attributes:
+        job: Job directory the density was read from.
+        source: Files that hold the density.
+        channels: One :class:`Charge` per spin channel.
+    """
+
+    job: Path
+    source: DensitySource
+    channels: List[Charge]
+
+    @property
+    def nspin(self) -> int:
+        """Number of spin channels the density holds."""
+        return len(self.channels)
+
+    def total(self) -> Charge:
+        """Return the sum of the spin channels."""
+        return total_charge(self.channels)
+
+
+def read_job_density(
     job: Path,
     *,
     version: Optional[str] = None,
     require_converged: bool = False,
     description: str = "charge-density assembly",
-) -> Charge:
-    """Return the total charge density of one job as a single grid.
+) -> JobDensity:
+    """Assemble the spin-resolved density of one job.
 
     The density is read from ``SPIN*_CHG.cube``. A job that only stores a
     ``*-CHARGE-DENSITY.restart`` file is reported as unsupported here, because
@@ -292,7 +316,7 @@ def read_job_total_density(
         description: Name of the consumer, used in error messages.
 
     Returns:
-        The total density in e/Angstrom**3 on an Angstrom cell.
+        The assembled :class:`JobDensity`.
 
     Raises:
         ChargeDensityError: If the job has no usable charge density.
@@ -315,4 +339,101 @@ def read_job_total_density(
             f"{job_path} has no SPIN*_CHG.cube; only {source.paths[0].name} was "
             "found, which needs the FFT grid to be converted"
         )
-    return total_charge(read_cube_charges(source))
+    return JobDensity(job_path, source, read_cube_charges(source))
+
+
+def read_job_total_density(
+    job: Path,
+    *,
+    version: Optional[str] = None,
+    require_converged: bool = False,
+    description: str = "charge-density assembly",
+) -> Charge:
+    """Return the total charge density of one job as a single grid.
+
+    This is :func:`read_job_density` for callers that do not need to know where
+    the density came from.
+
+    Args:
+        job: ABACUS job directory.
+        version: ABACUS version hint used when checking the SCF convergence.
+        require_converged: Refuse a job whose SCF calculation did not converge.
+        description: Name of the consumer, used in error messages.
+
+    Returns:
+        The total density in e/Angstrom**3 on an Angstrom cell.
+
+    Raises:
+        ChargeDensityError: If the job has no usable charge density.
+    """
+    return read_job_density(
+        job,
+        version=version,
+        require_converged=require_converged,
+        description=description,
+    ).total()
+
+
+def integrate(density: Charge) -> dict:
+    """Integrate a density and compare it with its valence electrons.
+
+    The atom column of a cube written by ABACUS holds the number of valence
+    electrons per atom, so the integral of a neutral cell is that sum. A
+    deviation reports either a charged cell or the truncation of the real-space
+    grid.
+
+    Args:
+        density: Density in e/Angstrom**3 on an Angstrom cell.
+
+    Returns:
+        A mapping with the grid shape, the cell volume in Angstrom**3, the
+        integrated number of electrons, the sum of the valence charges (``None``
+        when the grid carries none) and their difference.
+    """
+    volume = abs(float(np.linalg.det(np.asarray(density.cell, dtype=float))))
+    weight = volume / density.data.size
+    electrons = float(np.sum(density.data) * weight)
+    valence = [float(value) for value in density.atom_charges]
+    expected = float(sum(valence)) if any(value != 0.0 for value in valence) else None
+    return {
+        "grid": [int(size) for size in density.data.shape],
+        "volume_angstrom3": volume,
+        "electrons": electrons,
+        "valence_electrons": expected,
+        "deviation": None if expected is None else electrons - expected,
+    }
+
+
+def planar_profile(
+    density: Charge,
+    axis: str,
+    *,
+    kind: str = "average",
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Reduce a density to one value per plane along a lattice direction.
+
+    Args:
+        density: Density in e/Angstrom**3 on an Angstrom cell.
+        axis: Lattice direction ``"a"``, ``"b"`` or ``"c"``.
+        kind: ``"average"`` for the in-plane average in e/Angstrom**3, or
+            ``"integral"`` for the charge of one plane in e, whose sum over the
+            planes is the total number of electrons.
+
+    Returns:
+        The value of every plane and the distance along ``axis`` in Angstrom.
+
+    Raises:
+        ChargeDensityError: If the axis or the kind is unknown.
+    """
+    if axis not in ("a", "b", "c"):
+        raise ChargeDensityError(f"unknown profile axis: {axis!r}")
+    if kind not in ("average", "integral"):
+        raise ChargeDensityError(f"unknown profile kind: {kind!r}")
+    values, distances = density.profile1d(
+        axis, average=(kind == "average"), cartesian=True
+    )
+    values = np.asarray(values, dtype=float)
+    if kind == "integral":
+        volume = abs(float(np.linalg.det(np.asarray(density.cell, dtype=float))))
+        values = values * volume / density.data.size
+    return values, np.asarray(distances, dtype=float)

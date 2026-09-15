@@ -13,6 +13,8 @@ from abacustools.data.charge import (
     combine,
     cube_paths,
     find_density_source,
+    integrate,
+    planar_profile,
     read_cube_charges,
     read_job_total_density,
     read_restart_charges,
@@ -60,13 +62,13 @@ def _job(base: Path, *, nspin: int = 1, suffix: str = "ABACUS") -> tuple[Path, P
     return job, output
 
 
-def _charge(data, *, cell=None, origin=None) -> Charge:
+def _charge(data, *, cell=None, origin=None, charges=(4.0, 4.0)) -> Charge:
     return Charge(
         np.asarray(data, dtype=float),
         np.diag([4.0, 4.0, 4.0]) if cell is None else np.asarray(cell, dtype=float),
         np.array([[0.0, 0.0, 0.0], [2.0, 2.0, 2.0]]),
         [14, 14],
-        [4.0, 4.0],
+        list(charges),
         np.zeros(3) if origin is None else np.asarray(origin, dtype=float),
     )
 
@@ -261,3 +263,50 @@ def test_read_job_total_density_can_require_convergence(
 
     with pytest.raises(ChargeDensityError, match="did not converge"):
         read_job_total_density(job, require_converged=True)
+
+
+def test_integrate_reports_the_electrons_and_the_valence_check() -> None:
+    density = _charge(np.full((2, 2, 2), 0.5))
+
+    report = integrate(density)
+
+    assert report["grid"] == [2, 2, 2]
+    assert report["volume_angstrom3"] == pytest.approx(64.0)
+    assert report["electrons"] == pytest.approx(0.5 * 64.0)
+    assert report["valence_electrons"] == pytest.approx(8.0)
+    assert report["deviation"] == pytest.approx(0.5 * 64.0 - 8.0)
+
+
+def test_integrate_skips_the_valence_check_without_atom_charges() -> None:
+    density = _charge(np.full((2, 2, 2), 0.5), charges=(0.0, 0.0))
+
+    report = integrate(density)
+
+    assert report["valence_electrons"] is None
+    assert report["deviation"] is None
+    assert report["electrons"] == pytest.approx(0.5 * 64.0)
+
+
+def test_planar_profile_average_and_integral_agree() -> None:
+    # The density varies along c only, so the profile reproduces the values.
+    values = np.array([1.0, 2.0, 3.0, 4.0])
+    density = _charge(np.broadcast_to(values[None, None, :], (2, 2, 4)).copy())
+
+    average, distances = planar_profile(density, "c", kind="average")
+    integral, _ = planar_profile(density, "c", kind="integral")
+
+    np.testing.assert_allclose(average, values)
+    # A 64 Angstrom**3 cell with 16 grid points has 4 Angstrom**3 per point, so
+    # the four points of one plane sum to 16 Angstrom**3 of charge.
+    np.testing.assert_allclose(integral, values * 16.0)
+    assert integral.sum() == pytest.approx(float(density.data.sum()) * 4.0)
+    np.testing.assert_allclose(distances, np.linspace(0.0, 4.0, 4))
+
+
+def test_planar_profile_validates_its_arguments() -> None:
+    density = _charge(np.ones((2, 2, 2)))
+
+    with pytest.raises(ChargeDensityError, match="unknown profile axis"):
+        planar_profile(density, "d")
+    with pytest.raises(ChargeDensityError, match="unknown profile kind"):
+        planar_profile(density, "c", kind="density")
