@@ -254,8 +254,46 @@ def test_read_job_total_density_rejects_unusable_jobs(tmp_path: Path) -> None:
 
     restart_only, output = _job(tmp_path / "restart_only", nspin=1)
     _write_restart(output / "ABACUS-CHARGE-DENSITY.restart")
-    with pytest.raises(ChargeDensityError, match="no charge-density cube"):
+    # The restart file can be converted, but that needs the structure.
+    with pytest.raises(ChargeDensityError, match="the structure"):
         read_job_total_density(restart_only)
+
+
+def test_read_job_density_converts_a_restart_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job, output = _job(tmp_path, nspin=1)
+    (job / "STRU").write_text(STRU, encoding="utf-8")
+    restart = output / "ABACUS-CHARGE-DENSITY.restart"
+    _write_restart(restart)
+    (output / "running_scf.log").write_text(
+        "            fft grid for charge/potential = [ 2, 2, 2 ]\n", encoding="utf-8"
+    )
+    expected = RestartCharge.read(str(restart)).to_real((2, 2, 2))[0]
+    monkeypatch.setattr(
+        "abacustools.data.charge.valence_electrons", lambda *args, **kwargs: [4.0, 4.0]
+    )
+
+    density = read_job_density(job)
+
+    assert density.nspin == 1
+    assert density.source.kind == "restart"
+    assert density.source.grid == (2, 2, 2)
+    assert density.source.describe() == (
+        "restart (ABACUS-CHARGE-DENSITY.restart, grid=(2, 2, 2))"
+    )
+    np.testing.assert_allclose(
+        density.total().data, expected / BOHR2A**3, rtol=1e-12
+    )
+
+
+def test_read_job_density_reports_a_missing_fft_grid(tmp_path: Path) -> None:
+    job, output = _job(tmp_path, nspin=1)
+    (job / "STRU").write_text(STRU, encoding="utf-8")
+    _write_restart(output / "ABACUS-CHARGE-DENSITY.restart")
+
+    with pytest.raises(ChargeDensityError, match="does not report the FFT grid"):
+        read_job_density(job)
 
 
 def test_read_job_total_density_can_require_convergence(

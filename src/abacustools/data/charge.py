@@ -13,6 +13,7 @@ back to the ABACUS units of e/Bohr**3 and Bohr.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, List, Mapping, Optional, Sequence, Tuple
@@ -33,12 +34,19 @@ from abacustools.data.grid_files import (
     spin_channels,
 )
 from abacustools.io.abacus import ReadInput
+from abacustools.io.pseudo import UPF
+from abacustools.io.stru import AbacusSTRU
 
 
 BOHR2A = BOHR_TO_ANG
 
 #: Lattice directions used by the profile and slice helpers.
 AXES = ("a", "b", "c")
+
+#: ABACUS LTS logs write "fft grid", develop writes "FFT grid".
+_FFT_GRID_PATTERN = re.compile(
+    r"fft grid for charge/potential\s*=\s*\[([^\]]+)\]", re.IGNORECASE
+)
 
 #: Spin-resolved quantities that :func:`select_spin` can return.
 SPIN_CHOICES = ("total", "up", "down", "difference")
@@ -61,6 +69,7 @@ class DensitySource:
             quantity differently.
         step: Geometry step of a develop cube file, ``None`` when the file is
             not tied to a geometry step.
+        grid: FFT grid a restart file was converted with, when it is known.
     """
 
     kind: str
@@ -68,6 +77,7 @@ class DensitySource:
     nspin: int
     naming: str = LTS
     step: Optional[int] = None
+    grid: Optional[Tuple[int, int, int]] = None
 
     def describe(self, grid: Optional[Tuple[int, int, int]] = None) -> str:
         """Return a short description of the source for reports.
@@ -88,7 +98,8 @@ class DensitySource:
                 details.append(f"step {self.step}")
             names = ", ".join(path.name for path in self.paths)
             return f"cube ({', '.join(details)}: {names})"
-        shape = "" if grid is None else f", grid={tuple(grid)}"
+        known = grid if grid is not None else self.grid
+        shape = "" if known is None else f", grid={tuple(known)}"
         return f"restart ({self.paths[0].name}{shape})"
 
 
@@ -193,6 +204,97 @@ def find_density_source(
             "*-CHARGE-DENSITY.restart"
         )
     return DensitySource("restart", [restarts[0]], nspin)
+
+
+def fft_grid_from_log(log_path: Path) -> Optional[Tuple[int, int, int]]:
+    """Read the charge/potential FFT grid dimensions from an ABACUS log.
+
+    Args:
+        log_path: Path of a ``running_*.log`` file.
+
+    Returns:
+        The grid dimensions, or ``None`` when the file is missing or does not
+        report them.
+    """
+    path = Path(log_path)
+    if not path.is_file():
+        return None
+    match = _FFT_GRID_PATTERN.search(path.read_text(encoding="utf-8", errors="replace"))
+    if match is None:
+        return None
+    values = re.findall(r"\d+", match.group(1))
+    if len(values) != 3:
+        return None
+    return (int(values[0]), int(values[1]), int(values[2]))
+
+
+def job_fft_grid(job: Path, inputs: Mapping[str, Any]) -> Optional[Tuple[int, int, int]]:
+    """Find the FFT grid of a job in the log of its calculation.
+
+    A job can keep several running logs, and an earlier one may describe a
+    different grid, such as a relaxation whose cell axes were ordered
+    differently. The log of the current ``calculation`` therefore wins, and the
+    other logs are only fallbacks.
+
+    Args:
+        job: ABACUS job directory.
+        inputs: Parsed INPUT of the job.
+
+    Returns:
+        The FFT grid, or ``None`` when no log reports one.
+    """
+    outdir = output_directory(job, inputs)
+    calculation = str(inputs.get("calculation", "scf")).lower()
+    candidates = [outdir / f"running_{calculation}.log", outdir / "running_scf.log"]
+    candidates.extend(sorted(outdir.glob("running_*.log")))
+    seen = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        shape = fft_grid_from_log(candidate)
+        if shape is not None:
+            return shape
+    return None
+
+
+def valence_electrons(
+    structure,
+    pseudo_dir: Optional[str],
+    job: Path,
+) -> List[float]:
+    """Return the number of valence electrons of every atom of a structure.
+
+    ABACUS resolves the pseudopotential names of the STRU below ``pseudo_dir``
+    when INPUT defines it, and in the job directory otherwise.
+
+    Args:
+        structure: Structure whose pseudopotential files are read.
+        pseudo_dir: ``pseudo_dir`` of INPUT, or ``None``.
+        job: ABACUS job directory.
+
+    Returns:
+        One valence charge per atom.
+
+    Raises:
+        ChargeDensityError: If a pseudopotential is missing or cannot be read.
+    """
+    directory = Path(job)
+    if pseudo_dir:
+        candidate = Path(str(pseudo_dir))
+        directory = candidate if candidate.is_absolute() else Path(job) / candidate
+    cache: dict = {}
+    valences: List[float] = []
+    for pp in structure.pps:
+        if pp is None:
+            raise ChargeDensityError("STRU atom is missing a pseudopotential filename")
+        if pp not in cache:
+            path = directory / str(pp)
+            if not path.is_file():
+                raise ChargeDensityError(f"pseudopotential file not found: {path}")
+            cache[pp] = float(UPF.read_from_file(path).z_valence)
+        valences.append(cache[pp])
+    return valences
 
 
 def element_numbers(elements: Sequence[Optional[str]]) -> List[int]:
@@ -365,25 +467,75 @@ class JobDensity:
         return total_charge(self.channels)
 
 
+def _read_restart_density(
+    job: Path,
+    inputs: Mapping[str, Any],
+    source: DensitySource,
+    *,
+    grid_shape: Optional[Tuple[int, int, int]] = None,
+    lat0: Optional[float] = None,
+) -> JobDensity:
+    """Convert a ``*-CHARGE-DENSITY.restart`` file into real-space densities.
+
+    The file stores ``rho(G)`` only, so the conversion needs the FFT grid of the
+    calculation and the cell of the job; the valence charges that the cube
+    columns carry are read from the pseudopotentials the STRU names.
+    """
+    structure_file = job / str(inputs.get("stru_file", "STRU"))
+    if not structure_file.is_file():
+        raise ChargeDensityError(
+            f"cannot convert {source.paths[0].name}: the structure "
+            f"{structure_file} is missing"
+        )
+    structure = AbacusSTRU.read(str(structure_file))
+    if structure is None:
+        raise ChargeDensityError(f"cannot read the structure: {structure_file}")
+
+    shape = grid_shape or job_fft_grid(job, inputs)
+    if shape is None:
+        raise ChargeDensityError(
+            f"the restart file of {job} does not report the FFT grid; keep the "
+            "running log of the calculation or pass --grid NX NY NZ"
+        )
+    constant = lat0
+    if constant is None:
+        constant = float(structure.metadata.get("lattice_constant", 1.0) or 1.0)
+    valences = valence_electrons(structure, inputs.get("pseudo_dir"), job)
+    channels = read_restart_charges(
+        source,
+        structure=structure,
+        valences=valences,
+        grid_shape=shape,
+        lat0=constant,
+    )
+    source.grid = shape
+    return JobDensity(job, source, channels)
+
+
 def read_job_density(
     job: Path,
     *,
     version: Optional[str] = None,
     require_converged: bool = False,
     description: str = "charge-density assembly",
+    grid_shape: Optional[Tuple[int, int, int]] = None,
+    lat0: Optional[float] = None,
 ) -> JobDensity:
     """Assemble the spin-resolved density of one job.
 
     The density is read from the charge-density cubes of either branch
     (``SPIN*_CHG.cube`` or ``chg*.cube``). A job that only stores a
-    ``*-CHARGE-DENSITY.restart`` file is reported as unsupported here, because
-    converting it needs the FFT grid of the calculation.
+    ``*-CHARGE-DENSITY.restart`` file is converted from ``rho(G)`` instead,
+    which needs its structure and the FFT grid of the calculation.
 
     Args:
         job: ABACUS job directory.
         version: ABACUS version hint used when checking the SCF convergence.
         require_converged: Refuse a job whose SCF calculation did not converge.
         description: Name of the consumer, used in error messages.
+        grid_shape: FFT grid of a restart file, read from the log when omitted.
+        lat0: ``LATTICE_CONSTANT`` of the job in Bohr, taken from the STRU when
+            omitted.
 
     Returns:
         The assembled :class:`JobDensity`.
@@ -404,13 +556,11 @@ def read_job_density(
         if not result["converged"]:
             raise ChargeDensityError(f"SCF calculation did not converge: {job_path}")
     source = find_density_source(job_path, inputs)
-    if source.kind != "cube":
-        raise ChargeDensityError(
-            f"{job_path} has no charge-density cube; only "
-            f"{source.paths[0].name} was found, which needs the FFT grid to be "
-            "converted"
-        )
-    return JobDensity(job_path, source, read_cube_charges(source))
+    if source.kind == "cube":
+        return JobDensity(job_path, source, read_cube_charges(source))
+    return _read_restart_density(
+        job_path, inputs, source, grid_shape=grid_shape, lat0=lat0
+    )
 
 
 def read_job_total_density(
@@ -419,6 +569,8 @@ def read_job_total_density(
     version: Optional[str] = None,
     require_converged: bool = False,
     description: str = "charge-density assembly",
+    grid_shape: Optional[Tuple[int, int, int]] = None,
+    lat0: Optional[float] = None,
 ) -> Charge:
     """Return the total charge density of one job as a single grid.
 
@@ -442,6 +594,8 @@ def read_job_total_density(
         version=version,
         require_converged=require_converged,
         description=description,
+        grid_shape=grid_shape,
+        lat0=lat0,
     ).total()
 
 

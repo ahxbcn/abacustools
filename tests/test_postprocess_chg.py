@@ -48,6 +48,7 @@ def _args(job: Path, **overrides) -> Namespace:
     arguments = {
         "job": job,
         "spin": "total",
+        "grid": None,
         "quantity": "density",
         "nci_plot": None,
         "nci_rho_max": 0.05,

@@ -86,6 +86,17 @@ def _register_arguments(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--grid",
+        type=int,
+        nargs=3,
+        metavar=("NX", "NY", "NZ"),
+        default=None,
+        help=(
+            "FFT grid of the job, needed to convert a charge-density restart "
+            "file when no running log reports it."
+        ),
+    )
+    parser.add_argument(
         "--difference",
         default=None,
         metavar="OTHER_JOB",
@@ -556,7 +567,10 @@ def _print_report(report: Dict[str, Any]) -> None:
 
 def _analyse(args: argparse.Namespace, job: Path) -> Dict[str, Any]:
     """Assemble the density and run the requested actions."""
-    density = read_job_density(job, description="postprocess chg")
+    grid_shape = tuple(args.grid) if args.grid else None
+    density = read_job_density(
+        job, description="postprocess chg", grid_shape=grid_shape
+    )
     spin = str(args.spin)
     base = select_spin(density, spin)
 

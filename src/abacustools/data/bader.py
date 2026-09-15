@@ -15,13 +15,12 @@ to obtain per-atom spin moments.
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from ase.data import chemical_symbols
 
@@ -30,23 +29,18 @@ from abacustools.core.constant import ANG_TO_BOHR
 from abacustools.data.charge import (
     ChargeDensityError,
     combine,
+    fft_grid_from_log,
     find_density_source,
     read_cube_charges,
     read_restart_charges,
     total_charge,
+    valence_electrons as _valence_electrons,
 )
 from abacustools.io.abacus import ReadInput
-from abacustools.io.pseudo import UPF
 from abacustools.io.stru import AbacusSTRU
 
 
 A2BOHR = ANG_TO_BOHR
-
-# ABACUS LTS logs write "fft grid", develop writes "FFT grid".
-_FFT_GRID_PATTERN = re.compile(
-    r"fft grid for charge/potential\s*=\s*\[([^\]]+)\]", re.IGNORECASE
-)
-
 
 class BaderError(RuntimeError):
     """Raised when a Bader analysis cannot be completed."""
@@ -217,40 +211,6 @@ def run_bader(
             f"bader exited with code {completed.returncode}: {completed.stderr.strip()}"
         )
     return completed.stdout
-
-
-def fft_grid_from_log(log_path: str | os.PathLike) -> Optional[Tuple[int, int, int]]:
-    """Read the charge/potential FFT grid dimensions from an ABACUS log."""
-    path = Path(log_path)
-    if not path.is_file():
-        return None
-    match = _FFT_GRID_PATTERN.search(path.read_text(encoding="utf-8", errors="replace"))
-    if match is None:
-        return None
-    values = re.findall(r"\d+", match.group(1))
-    if len(values) != 3:
-        return None
-    return (int(values[0]), int(values[1]), int(values[2]))
-
-
-def _valence_electrons(stru: AbacusSTRU, pseudo_dir: Optional[str], job: Path) -> List[float]:
-    if not pseudo_dir:
-        raise BaderError("INPUT does not define pseudo_dir, cannot read valence charges")
-    directory = Path(pseudo_dir)
-    if not directory.is_absolute():
-        directory = job / directory
-    cache: Dict[str, float] = {}
-    valences: List[float] = []
-    for pp in stru.pps:
-        if pp is None:
-            raise BaderError("STRU atom is missing a pseudopotential filename")
-        if pp not in cache:
-            upf_path = directory / pp
-            if not upf_path.is_file():
-                raise BaderError(f"pseudopotential file not found: {upf_path}")
-            cache[pp] = float(UPF.read_from_file(upf_path).z_valence)
-        valences.append(cache[pp])
-    return valences
 
 
 def _vacuum_arguments(vacuum: Optional[object]) -> List[str]:

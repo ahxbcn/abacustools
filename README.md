@@ -652,10 +652,14 @@ The density is taken from the cubes that an SCF calculation writes with
 `out_chg 1`, and both ABACUS naming conventions are read: the LTS branch writes
 `SPIN1_CHG.cube` while develop writes `chg.cube` or `chgs1.cube`, and a
 geometry-step token such as `chgs1g3.cube` is recognised, with the last step
-used when the job wrote one file per step. A job that only stores
-`*-CHARGE-DENSITY.restart` is reported as unsupported, because converting it
-needs the FFT grid of the calculation; `postprocess bader --grid` still reads
-those jobs. The summary compares the
+used when the job wrote one file per step. A job that only stores the
+`*-CHARGE-DENSITY.restart` backup, which is what `out_chg 0` leaves behind, is
+converted from `rho(G)` instead: the structure and its pseudopotentials give
+the cell and the valence charges, and the FFT grid comes from the log of the
+current calculation, with `--grid NX NY NZ` as an override. A `gamma_only`
+restart file, the usual case at the Gamma point, stores one G-vector of every
+`+G`/`-G` pair, and the missing half is rebuilt with `rho(-G) = conj(rho(G))`.
+The summary compares the
 integrated charge with the valence charge of the atoms that the cube stores, so
 a deviation reports either a charged cell or the truncation of the real-space
 grid; the comparison is left out for a spin channel or a difference, where it
