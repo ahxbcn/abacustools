@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from abacustools.core.constant import BOHR_TO_ANG as _BOHR_TO_ANG
 from abacustools.data.charge import (
     AXES,
     SPIN_CHOICES,
@@ -26,6 +27,13 @@ from abacustools.data.nci import (
     QUANTITIES as NCI_QUANTITIES,
     analyse as analyse_nci,
     nci_scatter_data,
+    reduced_density_gradient,
+    signed_density_hessian,
+)
+from abacustools.data.weak import (
+    delta_g,
+    iri,
+    promolecular_fields,
 )
 from abacustools.data.grid import Charge
 from abacustools.io.abacus import ReadInput
@@ -37,11 +45,28 @@ _KINDS = ("average", "integral")
 _UNITS = {"average": "e/Angstrom^3", "integral": "e"}
 _DENSITY_UNIT = "e/Angstrom^3"
 
-#: Quantity of the density itself plus the fields derived from it.
-_QUANTITIES = ("density",) + tuple(NCI_QUANTITIES)
+#: Fields derived from the promolecular reference of the job.
+_PROMOLECULAR_QUANTITIES = ("rdg-promolecular", "sl2rho-promolecular", "dg")
 
-#: Unit of every quantity, before the profile kind is taken into account.
-_QUANTITY_UNITS = {"density": _DENSITY_UNIT, "sl2rho": _DENSITY_UNIT, "rdg": "", "dori": ""}
+#: Quantity of the density itself plus the fields derived from it.
+_QUANTITIES = (
+    ("density",)
+    + tuple(NCI_QUANTITIES)
+    + ("iri",)
+    + _PROMOLECULAR_QUANTITIES
+)
+
+#: Unit of the in-plane average and of the charge per plane of every quantity.
+_QUANTITY_UNITS = {
+    "density": (_DENSITY_UNIT, "e"),
+    "sl2rho": (_DENSITY_UNIT, "e"),
+    "sl2rho-promolecular": (_DENSITY_UNIT, "e"),
+    "rdg": ("dimensionless", "Angstrom^3"),
+    "dori": ("dimensionless", "Angstrom^3"),
+    "iri": ("dimensionless", "Angstrom^3"),
+    "rdg-promolecular": ("dimensionless", "Angstrom^3"),
+    "dg": ("e/Angstrom^4", "e/Angstrom"),
+}
 
 #: Points a non-covalent interaction plot draws at most.
 _NCI_MAX_POINTS = 200_000
@@ -50,10 +75,8 @@ _NCI_RHO_MAX = 0.05
 
 def _profile_unit(quantity: str, kind: str) -> str:
     """Return the unit of a profile of the given quantity and kind."""
-    unit = _QUANTITY_UNITS[quantity]
-    if kind == "average":
-        return unit or "dimensionless"
-    return "e" if unit else "Angstrom^3"
+    average, integral = _QUANTITY_UNITS[quantity]
+    return average if kind == "average" else integral
 
 
 def _job_directory(value: str) -> Path:
@@ -171,6 +194,30 @@ def _register_arguments(parser: argparse.ArgumentParser) -> None:
             "Draw the non-covalent interaction plot of the selected density, "
             "reduced density gradient against sign(lambda_2) rho. Without FILE "
             "the plot is called nci.png."
+        ),
+    )
+    parser.add_argument(
+        "--igm-plot",
+        nargs="?",
+        const=_AUTO_PLOT,
+        default=None,
+        metavar="FILE",
+        help=(
+            "Draw the independent gradient model plot of the selected density, "
+            "delta g against sign(lambda_2) rho. Without FILE the plot is called "
+            "igm.png."
+        ),
+    )
+    parser.add_argument(
+        "--promolecular-plot",
+        nargs="?",
+        const=_AUTO_PLOT,
+        default=None,
+        metavar="FILE",
+        help=(
+            "Draw the non-covalent interaction plot of the promolecular "
+            "reference density. Without FILE the plot is called "
+            "nci_promolecular.png."
         ),
     )
     parser.add_argument(
@@ -411,6 +458,66 @@ def _nci_plot_path(value: Any, job: Path) -> Optional[Path]:
     return _output_path(job, str(value))
 
 
+def _percentile_limit(values: np.ndarray, percentile: float = 99.5) -> float:
+    """Return a robust upper limit for a plot axis."""
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return 1.0
+    return float(np.percentile(finite, percentile))
+
+
+def _plot_scatter(
+    path: Path,
+    abcissa: np.ndarray,
+    ordinate: np.ndarray,
+    *,
+    xlabel: str,
+    ylabel: str,
+    title: str,
+    xlim: tuple = (-_NCI_RHO_MAX, _NCI_RHO_MAX),
+    ylim: Optional[tuple] = None,
+) -> None:
+    """Draw a two-dimensional scatter of two grid fields."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    abcissa = np.asarray(abcissa, dtype=float)
+    ordinate = np.asarray(ordinate, dtype=float)
+    finite = np.isfinite(abcissa) & np.isfinite(ordinate)
+    abcissa = abcissa[finite]
+    ordinate = ordinate[finite]
+    if abcissa.size > _NCI_MAX_POINTS:
+        stride = int(np.ceil(abcissa.size / _NCI_MAX_POINTS))
+        abcissa = abcissa[::stride]
+        ordinate = ordinate[::stride]
+
+    figure, axes = plt.subplots(figsize=(6.0, 4.5))
+    axes.scatter(
+        abcissa,
+        ordinate,
+        c=abcissa,
+        cmap="seismic",
+        vmin=xlim[0],
+        vmax=xlim[1],
+        s=0.6,
+        alpha=0.5,
+        linewidths=0,
+        rasterized=True,
+    )
+    axes.axvline(0.0, color="gray", linewidth=0.6)
+    axes.set_xlim(*xlim)
+    axes.set_ylim(*(ylim if ylim is not None else (0.0, _percentile_limit(ordinate))))
+    axes.set_xlabel(xlabel)
+    axes.set_ylabel(ylabel)
+    axes.set_title(f"{title} ({abcissa.size} points)")
+    figure.tight_layout()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(path, dpi=200)
+    plt.close(figure)
+
+
 def _plot_nci(
     path: Path,
     signed: np.ndarray,
@@ -418,47 +525,57 @@ def _plot_nci(
     rho_max: float,
 ) -> None:
     """Draw the reduced density gradient against sign(lambda_2) rho."""
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    signed = np.asarray(signed, dtype=float)
-    gradient = np.asarray(gradient, dtype=float)
-    finite = np.isfinite(signed) & np.isfinite(gradient)
-    signed = signed[finite]
-    gradient = gradient[finite]
-    if signed.size > _NCI_MAX_POINTS:
-        stride = int(np.ceil(signed.size / _NCI_MAX_POINTS))
-        signed = signed[::stride]
-        gradient = gradient[::stride]
-
-    figure, axes = plt.subplots(figsize=(6.0, 4.5))
-    axes.scatter(
+    _plot_scatter(
+        path,
         signed,
         gradient,
-        c=signed,
-        cmap="seismic",
-        vmin=-_NCI_RHO_MAX,
-        vmax=_NCI_RHO_MAX,
-        s=0.6,
-        alpha=0.5,
-        linewidths=0,
-        rasterized=True,
+        xlabel="sign(lambda_2) rho (e/Bohr^3)",
+        ylabel="reduced density gradient",
+        title=f"Non-covalent interaction plot (rho <= {rho_max:g} e/Bohr^3)",
+        ylim=(0.0, 2.0),
     )
-    axes.axvline(0.0, color="gray", linewidth=0.6)
-    axes.set_xlim(-_NCI_RHO_MAX, _NCI_RHO_MAX)
-    axes.set_ylim(0.0, 2.0)
-    axes.set_xlabel("sign(lambda_2) rho (e/Bohr^3)")
-    axes.set_ylabel("reduced density gradient")
-    axes.set_title(
-        f"Non-covalent interaction plot (rho <= {rho_max:g} e/Bohr^3, "
-        f"{signed.size} points)"
-    )
-    figure.tight_layout()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(path, dpi=200)
-    plt.close(figure)
+
+
+#: Density of the promolecular reference kept by its NCI plot, in e/Bohr**3.
+_PROMOLECULAR_RHO_MAX = 0.1
+
+
+def _resolve_named_plot(value: Any, job: Path, filename: str) -> Optional[Path]:
+    """Resolve an optional plot flag into the file to write."""
+    if value is None:
+        return None
+    if str(value) == _AUTO_PLOT:
+        return job / filename
+    return _output_path(job, str(value))
+
+
+def _promolecular_fields(
+    job: Path,
+    density: Charge,
+    cache: Dict[str, Any],
+) -> tuple:
+    """Return the promolecular density and atomic gradient fields of a job."""
+    fields = cache.get("promolecular")
+    if fields is None:
+        inputs = ReadInput(str(job / "INPUT"))
+        structure_file = job / str(inputs.get("stru_file", "STRU"))
+        if not structure_file.is_file():
+            raise ChargeDensityError(
+                "the promolecular analysis needs the structure, but "
+                f"{structure_file} is missing"
+            )
+        structure = AbacusSTRU.read(str(structure_file))
+        if structure is None:
+            raise ChargeDensityError(f"cannot read the structure: {structure_file}")
+        fields = promolecular_fields(
+            density,
+            structure,
+            pseudo_dir=inputs.get("pseudo_dir"),
+            job=job,
+            cache=cache.setdefault("atomic-densities", {}),
+        )
+        cache["promolecular"] = fields
+    return fields
 
 
 def _charge_with_values(field: Charge, values: np.ndarray) -> Charge:
@@ -563,6 +680,15 @@ def _print_report(report: Dict[str, Any]) -> None:
             f"  nci plot: {nci['plot']} ({nci['points']} points with "
             f"rho <= {nci['rho_max']:g} e/Bohr^3)"
         )
+    igm = report.get("igm")
+    if igm:
+        print(f"  igm plot: {igm['plot']} ({igm['points']} points)")
+    promolecular = report.get("promolecular")
+    if promolecular:
+        print(
+            f"  promolecular nci plot: {promolecular['plot']} "
+            f"({promolecular['points']} points)"
+        )
 
 
 def _analyse(args: argparse.Namespace, job: Path) -> Dict[str, Any]:
@@ -587,10 +713,30 @@ def _analyse(args: argparse.Namespace, job: Path) -> Dict[str, Any]:
 
     quantity_name = str(args.quantity)
     derived = quantity_name != "density"
-    quantity = (
-        _charge_with_values(base, analyse_nci(base, quantity_name)) if derived else base
-    )
-    unit = _QUANTITY_UNITS[quantity_name]
+    cache: Dict[str, Any] = {}
+    if quantity_name in _PROMOLECULAR_QUANTITIES and difference_of is not None:
+        raise ChargeDensityError(
+            "the promolecular analyses compare a density with the atoms of its own "
+            "job, so they cannot be combined with --difference"
+        )
+    values: Optional[np.ndarray] = None
+    if quantity_name in NCI_QUANTITIES:
+        values = analyse_nci(base, quantity_name)
+    elif quantity_name == "iri":
+        values = iri(base)
+    elif quantity_name in _PROMOLECULAR_QUANTITIES:
+        promolecular, atomic_gradient = _promolecular_fields(job, base, cache)
+        if quantity_name == "dg":
+            values = delta_g(base, atomic_gradient)
+        else:
+            reference = _charge_with_values(base, promolecular)
+            values = (
+                reduced_density_gradient(reference)
+                if quantity_name == "rdg-promolecular"
+                else signed_density_hessian(reference)
+            )
+    quantity = _charge_with_values(base, values) if derived else base
+    unit = _QUANTITY_UNITS[quantity_name][0]
 
     magnetization = None
     if density.nspin == 2:
@@ -687,6 +833,47 @@ def _analyse(args: argparse.Namespace, job: Path) -> Dict[str, Any]:
             "plot": str(nci_path),
             "points": int(np.size(signed)),
             "rho_max": float(args.nci_rho_max),
+        }
+
+    igm_path = _resolve_named_plot(args.igm_plot, job, "igm.png")
+    if igm_path is not None:
+        _, atomic_gradient = _promolecular_fields(job, base, cache)
+        signed = signed_density_hessian(base)
+        gradient = delta_g(base, atomic_gradient)
+        _plot_scatter(
+            igm_path,
+            signed,
+            gradient,
+            xlabel="sign(lambda_2) rho (e/Bohr^3)",
+            ylabel="delta g (e/Angstrom^4)",
+            title="Independent gradient model",
+        )
+        report["igm"] = {"plot": str(igm_path), "points": int(np.size(signed))}
+
+    promolecular_path = _resolve_named_plot(
+        args.promolecular_plot, job, "nci_promolecular.png"
+    )
+    if promolecular_path is not None:
+        promolecular, _ = _promolecular_fields(job, base, cache)
+        reference = _charge_with_values(base, promolecular)
+        signed = signed_density_hessian(reference)
+        gradient = reduced_density_gradient(reference)
+        keep = promolecular * _BOHR_TO_ANG**3 <= _PROMOLECULAR_RHO_MAX
+        _plot_scatter(
+            promolecular_path,
+            signed[keep],
+            gradient[keep],
+            xlabel="sign(lambda_2) rho (e/Bohr^3)",
+            ylabel="reduced density gradient",
+            title=(
+                "Promolecular NCI plot "
+                f"(rho <= {_PROMOLECULAR_RHO_MAX:g} e/Bohr^3)"
+            ),
+            ylim=(0.0, 2.0),
+        )
+        report["promolecular"] = {
+            "plot": str(promolecular_path),
+            "points": int(np.count_nonzero(keep)),
         }
 
     return report

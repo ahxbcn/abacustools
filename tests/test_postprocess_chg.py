@@ -52,6 +52,8 @@ def _args(job: Path, **overrides) -> Namespace:
         "quantity": "density",
         "nci_plot": None,
         "nci_rho_max": 0.05,
+        "igm_plot": None,
+        "promolecular_plot": None,
         "difference": None,
         "cube": None,
         "profile": None,
@@ -388,3 +390,70 @@ def test_profile_of_a_dimensionless_field_names_its_unit(
 
     report = json.loads(capsys.readouterr().out)
     assert report["profile"]["unit"] == "dimensionless"
+
+
+def test_quantity_iri_is_reported(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    job, output = _job(tmp_path, nspin=1)
+    _varied_cube(output / "SPIN1_CHG.cube")
+
+    assert run(_args(job, quantity="iri", json=True)) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["quantity"] == "iri"
+    assert "electrons" not in report
+    assert report["field"]["maximum"] > 0.0
+
+
+def _promolecular_stub(density, structure, **kwargs):
+    shape = density.data.shape
+    rho = np.full(shape, 0.02)
+    gradient = np.full(shape, 1.0e-3)
+    return rho, gradient
+
+
+def test_promolecular_quantities_and_plots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    job, output = _job(tmp_path, nspin=1)
+    _varied_cube(output / "SPIN1_CHG.cube")
+    _stru(job)
+    monkeypatch.setattr(
+        "abacustools.commands.postprocess.chg.promolecular_fields",
+        _promolecular_stub,
+    )
+
+    assert run(_args(job, quantity="dg", cube="dg.cube", json=True)) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["quantity"] == "dg"
+    assert report["field"]["minimum"] >= 0.0
+    assert (job / "dg.cube").is_file()
+
+    assert run(_args(job, quantity="rdg-promolecular", json=True)) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["quantity"] == "rdg-promolecular"
+    assert report["field"]["maximum"] == pytest.approx(0.0)
+
+    assert run(_args(job, igm_plot="auto", json=True)) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["igm"]["plot"] == str(job / "igm.png")
+    assert (job / "igm.png").is_file()
+
+    assert run(_args(job, promolecular_plot="auto", json=True)) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["promolecular"]["points"] > 0
+    assert (job / "nci_promolecular.png").is_file()
+
+
+def test_promolecular_quantities_reject_the_difference(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    job, output = _job(tmp_path, nspin=1)
+    _varied_cube(output / "SPIN1_CHG.cube")
+    other, other_output = _job(tmp_path / "other", nspin=1)
+    _varied_cube(other_output / "SPIN1_CHG.cube")
+
+    assert run(_args(job, quantity="dg", difference=str(other))) == 1
+
+    assert "cannot be combined with --difference" in capsys.readouterr().out

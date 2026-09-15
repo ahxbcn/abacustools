@@ -677,6 +677,18 @@ reduced density gradient against `sign(lambda_2) rho`, keeping the grid points
 below `--nci-rho-max` (`0.05` e/Bohr^3 by default) so that the cores and the
 bonds stay out of the plot.
 
+`iri` is the interaction region indicator of Multiwfn, `|grad rho| / rho**1.1`,
+which shows covalent and non-covalent interactions in one function; points
+below `5e-5` e/Bohr^3 are replaced by zero instead of the placeholder Multiwfn
+uses. The `-promolecular` variants and `dg` build the promolecular reference
+from the `PP_RHOATOM` table of the same UPF files that the calculation used:
+the reference is the superposition of the pseudoatomic densities of the atoms,
+and `dg` is the independent gradient model function `sum_A |grad rho_A| -
+|grad rho|`, whose plot against `sign(lambda_2) rho` comes from `--igm-plot`.
+These three need the structure and its pseudopotentials, so they cannot be
+combined with `--difference`, and `--promolecular-plot` draws the NCI plot of
+the reference density itself.
+
 `--profile AXIS` writes the in-plane average of every plane in e/Angstrom^3 to
 `chg_profile_<axis>_average.dat`, or the charge of every plane in e with
 `--profile-kind integral`, whose sum is the total number of electrons.

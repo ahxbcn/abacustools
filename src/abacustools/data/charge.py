@@ -258,6 +258,42 @@ def job_fft_grid(job: Path, inputs: Mapping[str, Any]) -> Optional[Tuple[int, in
     return None
 
 
+def pseudopotential_files(
+    structure,
+    pseudo_dir: Optional[str],
+    job: Path,
+) -> List[Path]:
+    """Resolve the pseudopotential file of every atom of a structure.
+
+    ABACUS resolves the pseudopotential names of the STRU below ``pseudo_dir``
+    when INPUT defines it, and in the job directory otherwise.
+
+    Args:
+        structure: Structure whose pseudopotential names are resolved.
+        pseudo_dir: ``pseudo_dir`` of INPUT, or ``None``.
+        job: ABACUS job directory.
+
+    Returns:
+        One existing UPF path per atom.
+
+    Raises:
+        ChargeDensityError: If a name is missing or the file does not exist.
+    """
+    directory = Path(job)
+    if pseudo_dir:
+        candidate = Path(str(pseudo_dir))
+        directory = candidate if candidate.is_absolute() else Path(job) / candidate
+    paths: List[Path] = []
+    for pp in structure.pps:
+        if pp is None:
+            raise ChargeDensityError("STRU atom is missing a pseudopotential filename")
+        path = directory / str(pp)
+        if not path.is_file():
+            raise ChargeDensityError(f"pseudopotential file not found: {path}")
+        paths.append(path)
+    return paths
+
+
 def valence_electrons(
     structure,
     pseudo_dir: Optional[str],
@@ -279,21 +315,12 @@ def valence_electrons(
     Raises:
         ChargeDensityError: If a pseudopotential is missing or cannot be read.
     """
-    directory = Path(job)
-    if pseudo_dir:
-        candidate = Path(str(pseudo_dir))
-        directory = candidate if candidate.is_absolute() else Path(job) / candidate
     cache: dict = {}
     valences: List[float] = []
-    for pp in structure.pps:
-        if pp is None:
-            raise ChargeDensityError("STRU atom is missing a pseudopotential filename")
-        if pp not in cache:
-            path = directory / str(pp)
-            if not path.is_file():
-                raise ChargeDensityError(f"pseudopotential file not found: {path}")
-            cache[pp] = float(UPF.read_from_file(path).z_valence)
-        valences.append(cache[pp])
+    for path in pseudopotential_files(structure, pseudo_dir, job):
+        if path not in cache:
+            cache[path] = float(UPF.read_from_file(path).z_valence)
+        valences.append(cache[path])
     return valences
 
 
