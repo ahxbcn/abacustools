@@ -16,6 +16,7 @@ from .monitor import (
     _format_metric,
     _job_directory,
     _print_table,
+    _structure_lattice,
 )
 
 
@@ -81,7 +82,9 @@ def _summary(job: Path, jobs: list[Path]) -> dict[str, Any]:
         "log": None if status.log is None else str(status.log),
     }
     if _is_relaxation(calculation) and status.log is not None:
-        history = read_relaxation_history(status.log)
+        history = read_relaxation_history(
+            status.log, lattice=_structure_lattice(job, validation.inputs)
+        )
         if history:
             latest = history[-1]
             item.update(

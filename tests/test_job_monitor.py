@@ -12,6 +12,8 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+from pymatgen.core import Lattice
+
 from abacustools.commands.job.monitor import (
     DEFAULT_TAIL,
     _format_force_site,
@@ -275,7 +277,7 @@ class TestStepHistories(unittest.TestCase):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".log") as stream:
             stream.write(COORDINATE_RELAX_LOG)
             stream.flush()
-            history = read_relaxation_history(stream.name)
+            history = read_relaxation_history(stream.name, lattice=Lattice.cubic(10.0))
 
         self.assertAlmostEqual(
             history[0]["rms_displacement"],
@@ -286,6 +288,73 @@ class TestStepHistories(unittest.TestCase):
             history[1]["rms_displacement"],
             (((0.05**2 + 0.3**2) / 2) ** 0.5) * BOHR_TO_ANG,
         )
+
+    def test_displacement_is_omitted_without_a_lattice(self) -> None:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log") as stream:
+            stream.write(COORDINATE_RELAX_LOG)
+            stream.flush()
+            history = read_relaxation_history(stream.name)
+
+        self.assertIsNone(history[0]["rms_displacement"])
+        self.assertIsNone(history[0]["max_displacement"])
+        self.assertIsNone(history[1]["rms_displacement"])
+
+    def test_displacement_unfolds_the_periodic_wrap(self) -> None:
+        """An atom crossing the cell boundary moved 0.3 A, not 9.7 A."""
+        first = 0.2 / BOHR_TO_ANG
+        second = 9.9 / BOHR_TO_ANG
+        text = (
+            "CARTESIAN COORDINATES ( UNIT = 1.0 Bohr ).\n"
+            "    atom                   x                   y                   z\n"
+            f"H1 {first:.10f} 0.0 0.0\n"
+            "\n STEP OF RELAXATION : 1\n"
+            " final etot is -1.000000 eV\n"
+            "CARTESIAN COORDINATES ( UNIT = 1.0 Bohr ).\n"
+            "    atom                   x                   y                   z\n"
+            f"H1 {second:.10f} 0.0 0.0\n"
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log") as stream:
+            stream.write(text)
+            stream.flush()
+            without_cell = read_relaxation_history(stream.name)
+            with_cell = read_relaxation_history(
+                stream.name, lattice=Lattice.cubic(10.0)
+            )
+
+        # Without the cell the metrics stay unreported.
+        self.assertIsNone(without_cell[0]["max_displacement"])
+        self.assertAlmostEqual(with_cell[0]["max_displacement"], 0.3, places=6)
+        self.assertAlmostEqual(with_cell[0]["rms_displacement"], 0.3, places=6)
+
+
+class TestJobLattice(unittest.TestCase):
+    def test_structure_lattice_reads_the_job_cell(self) -> None:
+        from abacustools.commands.job.monitor import _structure_lattice
+        from abacustools.io.stru import AbacusATOM, AbacusSTRU
+
+        with tempfile.TemporaryDirectory() as temporary:
+            job, _log = _job_with_log(
+                Path(temporary), "run.log", RELAX_LOG, calculation="relax"
+            )
+            AbacusSTRU(
+                cell=[[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]],
+                atoms=[AbacusATOM(label="H", element="H", coord=(0.0, 0.0, 0.0))],
+            ).write(str(job / "STRU"))
+
+            lattice = _structure_lattice(job, {"stru_file": "STRU"})
+
+        self.assertIsNotNone(lattice)
+        self.assertAlmostEqual(lattice.volume, 1000.0, places=6)
+
+    def test_structure_lattice_is_none_without_a_stru(self) -> None:
+        from abacustools.commands.job.monitor import _structure_lattice
+
+        with tempfile.TemporaryDirectory() as temporary:
+            job, _log = _job_with_log(
+                Path(temporary), "run.log", RELAX_LOG, calculation="relax"
+            )
+
+            self.assertIsNone(_structure_lattice(job, {"stru_file": "STRU"}))
 
     def test_names_the_component_of_the_largest_stress(self) -> None:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".log") as stream:

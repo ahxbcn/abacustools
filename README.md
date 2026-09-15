@@ -437,7 +437,9 @@ then every ionic step with the step number, total energy, energy change, the
 largest force, and the atom it belongs to, written as its log label plus the
 Cartesian component such as `H1x` for the `x` component of atom `H1`. Each
 relaxation step also reports the atomic RMS displacement and maximum
-atomic displacement from the preceding structure, in Angstrom. A
+atomic displacement from the preceding structure, in Angstrom; they are taken
+as periodic minimum images, which needs the cell of the job, so they are left
+empty when the `STRU` of the job cannot be read. A
 `cell-relax` calculation adds the largest stress with its Voigt component. An
 `md` calculation prints the total, potential and kinetic energy, the
 temperature and the pressure of every MD step, together with the settings of

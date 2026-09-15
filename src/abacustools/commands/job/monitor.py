@@ -17,7 +17,7 @@ from abacustools.data.abacus_result import (
     read_relaxation_history,
     read_scf_history,
 )
-from abacustools.io.stru import AbacusSTRU
+from abacustools.io.stru import AbacusSTRU, periodic_lattice
 
 
 ENERGY_UNIT = "eV"
@@ -154,12 +154,14 @@ def _task_type(calculation: str) -> str:
     return "scf"
 
 
-def _read_history(task: str, log: Path) -> list[dict[str, Any]]:
+def _read_history(
+    task: str, log: Path, lattice: Any = None
+) -> list[dict[str, Any]]:
     """Read the step history matching one monitoring mode."""
     if task == "md":
         return read_md_history(log)
     if task in {"relax", "cell-relax"}:
-        return read_relaxation_history(log)
+        return read_relaxation_history(log, lattice=lattice)
     return read_scf_history(log)
 
 
@@ -268,20 +270,38 @@ def _scf_criteria(inputs: dict[str, Any]) -> dict[str, Any]:
     return {"scf_thr": float(threshold), "scf_thr_type": int(threshold_type)}
 
 
-def _structure_moves(
-    job: Path, inputs: dict[str, Any]
-) -> Optional[list[tuple[bool, bool, bool]]]:
-    """Read the movement constraints of the job's STRU, when it can be read."""
+def _job_structure(job: Path, inputs: dict[str, Any]) -> Optional[AbacusSTRU]:
+    """Read the job's STRU, or return None when it cannot be read."""
     stru_file = Path(str(inputs.get("stru_file", "STRU")))
     if not stru_file.is_absolute():
         stru_file = job / stru_file
     if not stru_file.is_file():
         return None
     try:
-        structure = AbacusSTRU.read(stru_file)
+        return AbacusSTRU.read(stru_file)
     except (OSError, ValueError, TypeError):
         return None
+
+
+def _structure_moves(
+    job: Path, inputs: dict[str, Any]
+) -> Optional[list[tuple[bool, bool, bool]]]:
+    """Read the movement constraints of the job's STRU, when it can be read."""
+    structure = _job_structure(job, inputs)
+    if structure is None:
+        return None
     return [tuple(bool(flag) for flag in move) for move in structure.moves]
+
+
+def _structure_lattice(job: Path, inputs: dict[str, Any]):
+    """Return the periodic lattice of the job's STRU, when it can be read."""
+    structure = _job_structure(job, inputs)
+    if structure is None:
+        return None
+    try:
+        return periodic_lattice(structure)
+    except ValueError:
+        return None
 
 
 def _payload(
@@ -799,7 +819,11 @@ def run(args: argparse.Namespace) -> int:
         status.state,
         read_normal_end(log) if log is not None else False,
     )
-    history = _read_history(task, log) if log is not None else []
+    history = (
+        _read_history(task, log, _structure_lattice(job, validation.inputs))
+        if log is not None
+        else []
+    )
     payload = _payload(
         job,
         state,
