@@ -229,5 +229,44 @@ def test_str_summarises_composition_and_cell() -> None:
     assert "3.0000000" in text
 
 
+VECTOR_MOMENT_STRU = """\
+ATOMIC_SPECIES
+Fe 55.845 Fe.upf
+
+LATTICE_CONSTANT
+1.0
+
+LATTICE_VECTORS
+5 0 0
+0 5 0
+0 0 5
+
+ATOMIC_POSITIONS
+Cartesian
+
+Fe
+0.0
+2
+0 0 0 mag 0 0 2.5
+2 2 2 mag 2.5 0 0
+"""
+
+
+def test_vector_magnetic_moments_are_read_and_written(tmp_path: Path) -> None:
+    structure_file = tmp_path / "STRU"
+    structure_file.write_text(VECTOR_MOMENT_STRU, encoding="utf-8")
+
+    structure = AbacusSTRU.read(str(structure_file))
+
+    assert structure.atom_mags == [(0.0, 0.0, 2.5), (2.5, 0.0, 0.0)]
+    assert structure.atoms[0].atommag_magnitude == pytest.approx(2.5)
+    assert structure.atoms[0].atommag == (0.0, 0.0, 2.5)
+
+    output = tmp_path / "OUT.STRU"
+    assert structure.write(str(output))
+    roundtripped = AbacusSTRU.read(str(output))
+    assert roundtripped.atom_mags == [(0.0, 0.0, 2.5), (2.5, 0.0, 0.0)]
+
+
 if __name__ == "__main__":
     unittest.main()

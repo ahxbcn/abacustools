@@ -335,8 +335,14 @@ class AbacusATOM(BaseModel):
     @property
     def atommag(self) -> Union[float, Tuple[float, float, float]]:
         """Get the atomic magnetic moment: one float for colinear case, or a tuple of three floats for non-colinear case.
+
+        A moment given as three Cartesian components in the STRU file is
+        returned unchanged. Otherwise the magnitude stored in ``mag`` is
+        combined with ``angle1`` and ``angle2`` when they are set.
         """
         import numpy as np
+        if isinstance(self.mag, (list, tuple)) and len(self.mag) == 3:
+            return tuple(float(value) for value in self.mag)
         if self.noncolinear:
             mag_norm = self.mag
             angle1 = angle2 = 0.0
@@ -1989,14 +1995,18 @@ def write_stru_file(
                 cc += "%d %d %d " % tuple(move[icoord + j])
             if velocity and velocity[icoord + j] and len(velocity[icoord + j]) == 3:
                 cc += "v %f %f %f " % tuple(velocity[icoord + j])
+            # A moment is either a scalar or a sequence of one or three numbers.
+            # Pydantic turns the three components read from a STRU file into a
+            # tuple, so both sequences have to be accepted here.
             if magmom and magmom[icoord + j] is not None:
-                if isinstance(magmom[icoord + j],list):
-                    if len(magmom[icoord + j]) == 3:
-                        cc += "mag %12.8f %12.8f %12.8f " % tuple(magmom[icoord + j])
-                    elif len(magmom[icoord + j]) == 1:
-                        cc += "mag %12.8f " % magmom[icoord + j][0]
-                elif magmom[icoord + j] is not None:
-                    cc += "mag %12.8f " % magmom[icoord + j]
+                value = magmom[icoord + j]
+                if isinstance(value, (list, tuple)):
+                    if len(value) == 3:
+                        cc += "mag %12.8f %12.8f %12.8f " % tuple(value)
+                    elif len(value) == 1:
+                        cc += "mag %12.8f " % value[0]
+                else:
+                    cc += "mag %12.8f " % value
             if angle1 and angle1[icoord + j] is not None:
                     cc += "angle1 %f " % angle1[icoord + j]
             if angle2 and angle2[icoord + j] is not None:
