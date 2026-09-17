@@ -532,6 +532,34 @@ def grid_issues(density: Charge) -> List[DdecIssue]:
     return issues
 
 
+def electron_count_issues(density: Charge, net_charge: float) -> List[DdecIssue]:
+    """Compare the electrons of a density with the charge the job declares.
+
+    A cube written for a neutral cell integrates to the sum of the valence
+    charges of its atoms; with a net charge of ``q`` it holds that sum minus
+    ``q``. Chargemol stops when the two numbers disagree, so a job whose
+    ``nelec`` keyword does not match its density, or a cube taken from another
+    calculation, is reported before the program runs.
+    """
+    volume = abs(float(np.linalg.det(np.asarray(density.cell, dtype=float))))
+    electrons = float(np.sum(density.data)) * volume / float(density.data.size)
+    valence = float(sum(float(value) for value in density.atom_charges))
+    expected = valence - net_charge
+    tolerance = max(0.1, 0.001 * abs(expected))
+    if abs(electrons - expected) <= tolerance:
+        return []
+    return [
+        DdecIssue(
+            "error",
+            "electron-count",
+            f"the charge density holds {electrons:.4f} electrons but the net "
+            f"charge {net_charge:+.4f} and the valence charges of the atoms "
+            f"({valence:.4f}) imply {expected:.4f}; the cube and INPUT belong "
+            f"to different calculations, or --net-charge is wrong",
+        )
+    ]
+
+
 def chargemol_executable(explicit: Optional[str] = None) -> str:
     """Resolve the Chargemol executable from an argument, the environment or config."""
     candidate = (
@@ -875,8 +903,18 @@ def select_pairs(
     return selected
 
 
-def _net_charge_from_input(inputs: Any, valences: Sequence[float]) -> Optional[float]:
-    """Return the cell charge implied by the ``nelec`` keyword of INPUT."""
+def _net_charge_from_input(
+    inputs: Any, atom_valences: Sequence[float]
+) -> Optional[float]:
+    """Return the cell charge implied by ``nelec``/``nelec_delta`` of INPUT.
+
+    ABACUS reads ``nelec 0``, its default, as "the total number of electrons is
+    the sum of the valence charges of the atoms", which describes a neutral
+    cell; a positive value counts the electrons of a charged cell and
+    ``nelec_delta`` shifts them. ``atom_valences`` holds one valence charge per
+    atom, because a cell with repeated atoms has more electrons than the sum
+    over its distinct elements.
+    """
     value = inputs.get("nelec")
     if value is None or isinstance(value, bool):
         return None
@@ -884,10 +922,16 @@ def _net_charge_from_input(inputs: Any, valences: Sequence[float]) -> Optional[f
         if not value:
             return None
         value = value[0]
+    delta = inputs.get("nelec_delta", 0.0)
+    if isinstance(delta, (list, tuple)):
+        delta = delta[0] if delta else 0.0
     try:
-        return float(sum(valences)) - float(value)
+        electrons = float(value) + float(delta)
     except (TypeError, ValueError):
         return None
+    if electrons <= 0.0:
+        return None
+    return float(sum(atom_valences)) - electrons
 
 
 def assemble_density(
@@ -1022,7 +1066,15 @@ def analyze_ddec(
 
     entries = apply_core_electron_overrides(core_electron_counts(total), core_electrons)
     directory = atomic_densities_directory(atomic_densities)
-    issues = reference_issues(directory, entries) + grid_issues(total)
+    if net_charge is None:
+        atom_valences = [float(value) for value in total.atom_charges]
+        derived = _net_charge_from_input(inputs, atom_valences)
+        net_charge = 0.0 if derived is None else derived
+    issues = (
+        reference_issues(directory, entries)
+        + grid_issues(total)
+        + electron_count_issues(total, net_charge)
+    )
     errors = [issue for issue in issues if issue.level == "error"]
     warnings = [issue.message for issue in issues if issue.level == "warning"]
     if errors:
@@ -1031,10 +1083,6 @@ def analyze_ddec(
             + "\n".join(f"  - [{issue.code}] {issue.message}" for issue in errors)
         )
 
-    if net_charge is None:
-        valences = [entry.z_valence for entry in entries]
-        derived = _net_charge_from_input(inputs, valences)
-        net_charge = 0.0 if derived is None else derived
     want_spin = (nspin == 2) if spin is None else bool(spin)
     if want_spin and magnetization is None:
         raise DdecError("a spin density needs an nspin 2 charge density")

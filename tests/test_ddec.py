@@ -22,6 +22,7 @@ from abacustools.data.ddec import (
     chargemol_executable,
     core_electron_counts,
     core_reference_path,
+    electron_count_issues,
     grid_issues,
     read_analysis_log,
     read_bond_orders,
@@ -29,6 +30,7 @@ from abacustools.data.ddec import (
     reference_issues,
     select_pairs,
     write_job_control,
+    _net_charge_from_input,
 )
 from abacustools.data.grid import Charge, RestartCharge
 
@@ -183,17 +185,54 @@ def _fake_chargemol(tmp_path: Path) -> Path:
     return path
 
 
-def _cube(path: Path, points: int = 20, valence: float = 4.0) -> None:
+def _cube(
+    path: Path, points: int = 20, valence: float = 4.0, fraction: float = 1.0
+) -> None:
+    """Write a cube whose density integrates to ``fraction`` of the valence charge."""
     cell = np.diag([2.0, 2.0, 2.0])
     positions = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
+    total = valence * len(positions)
+    value = fraction * total / abs(np.linalg.det(cell))  # e per Angstrom^3
     charge = Charge(
-        np.full((points, points, points), 0.05),
+        np.full((points, points, points), value),
         cell,
         positions,
         [14, 14],
         [valence, valence],
     )
     charge.save_cube(str(path), format="abacus")
+
+
+def _write_restart(
+    path: Path,
+    shape: tuple[int, int, int],
+    lattice_vectors,
+    lat0: float,
+    electrons: float,
+    seed: int = 0,
+) -> None:
+    """Write a restart file whose density integrates to ``electrons``.
+
+    ``lattice_vectors`` are the dimensionless vectors of STRU and ``lat0`` its
+    LATTICE_CONSTANT in Bohr, which together give the cell the file describes.
+    """
+    vectors = np.asarray(lattice_vectors, dtype=float)
+    cell_bohr = vectors * lat0
+    fractions = [np.fft.fftfreq(n) * n for n in shape]
+    mesh = np.meshgrid(*fractions, indexing="ij")
+    miller = np.stack([axis.ravel() for axis in mesh], axis=1).astype(np.int64)
+    reciprocal = np.linalg.inv(vectors)
+    rng = np.random.default_rng(seed)
+    rhog = rng.standard_normal((1, miller.shape[0])) + 1j * rng.standard_normal(
+        (1, miller.shape[0])
+    )
+    integral = (
+        RestartCharge(rhog, miller, reciprocal).to_real(shape).sum()
+        * abs(np.linalg.det(cell_bohr))
+        / float(np.prod(shape))
+    )
+    rhog = rhog * (electrons / integral)
+    RestartCharge(rhog, miller, reciprocal).write(str(path))
 
 
 def _atomic_densities(directory: Path, *, z: int = 14, ncore: int = 10) -> Path:
@@ -215,9 +254,12 @@ def _job(tmp_path: Path, *, nspin: int = 1, points: int = 20) -> Path:
         encoding="utf-8",
     )
     (job / "STRU").write_text(STRU_FIXTURE, encoding="utf-8")
-    _cube(output / "SPIN1_CHG.cube", points=points)
     if nspin == 2:
-        _cube(output / "SPIN2_CHG.cube", points=points)
+        # The two channels add up to the valence charge of the cell.
+        _cube(output / "SPIN1_CHG.cube", points=points, fraction=0.6)
+        _cube(output / "SPIN2_CHG.cube", points=points, fraction=0.4)
+    else:
+        _cube(output / "SPIN1_CHG.cube", points=points)
     return job
 
 
@@ -247,6 +289,89 @@ def _namespace(job: Path, **overrides) -> Namespace:
     )
     values.update(overrides)
     return Namespace(**values)
+
+
+
+def test_net_charge_from_input_follows_the_abacus_keywords() -> None:
+    """nelec 0 is the "use the valence charges" sentinel, not an empty cell."""
+    valences = [4.0, 4.0, 6.0]
+    assert _net_charge_from_input({}, valences) is None
+    assert _net_charge_from_input({"nelec": 0}, valences) is None
+    assert _net_charge_from_input({"nelec": [0]}, valences) is None
+    assert _net_charge_from_input({"nelec": 13.0}, valences) == pytest.approx(1.0)
+    assert _net_charge_from_input(
+        {"nelec": 14.0, "nelec_delta": -1.0}, valences
+    ) == pytest.approx(1.0)
+
+
+def test_electron_count_issues_compares_density_and_charge() -> None:
+    cell = np.diag([2.0, 2.0, 2.0])
+    positions = np.array([[0.0, 0.0, 0.0]])
+    eight = Charge(np.full((2, 2, 2), 1.0), cell, positions, [14], [8.0])
+    assert electron_count_issues(eight, 0.0) == []
+    issues = electron_count_issues(eight, 4.0)  # the cube still holds 8 electrons
+    assert [issue.code for issue in issues] == ["electron-count"]
+    assert "8.0000" in issues[0].message and "4.0000" in issues[0].message
+
+
+def test_ddec_command_keeps_a_neutral_cell_for_nelec_zero(tmp_path: Path) -> None:
+    job = _job(tmp_path)
+    (job / "INPUT").write_text(
+        "INPUT_PARAMETERS\nsuffix ABACUS\nnspin 1\npseudo_dir ./pp\nnelec 0\n",
+        encoding="utf-8",
+    )
+    work = tmp_path / "work"
+    code = run(
+        _namespace(
+            job,
+            chargemol_exe=str(_fake_chargemol(tmp_path)),
+            atomic_densities=str(_atomic_densities(tmp_path / "atomic_densities")),
+            workdir=str(work),
+        )
+    )
+    assert code == 0
+    control = (work / "captured_job_control.txt").read_text(encoding="utf-8")
+    assert "<net charge>\n0.000000\n</net charge>" in control
+
+
+def test_ddec_command_derives_the_charge_of_a_charged_cell(tmp_path: Path) -> None:
+    job = _job(tmp_path)
+    (job / "INPUT").write_text(
+        "INPUT_PARAMETERS\nsuffix ABACUS\nnspin 1\npseudo_dir ./pp\nnelec 7\n",
+        encoding="utf-8",
+    )
+    output = job / "OUT.ABACUS"
+    (output / "SPIN1_CHG.cube").unlink()
+    _cube(output / "SPIN1_CHG.cube", fraction=7.0 / 8.0)
+    work = tmp_path / "work"
+    code = run(
+        _namespace(
+            job,
+            chargemol_exe=str(_fake_chargemol(tmp_path)),
+            atomic_densities=str(_atomic_densities(tmp_path / "atomic_densities")),
+            workdir=str(work),
+        )
+    )
+    assert code == 0
+    control = (work / "captured_job_control.txt").read_text(encoding="utf-8")
+    assert "<net charge>\n1.000000\n</net charge>" in control
+
+
+def test_ddec_command_reports_a_density_that_does_not_match_input(tmp_path: Path) -> None:
+    job = _job(tmp_path)
+    (job / "INPUT").write_text(
+        "INPUT_PARAMETERS\nsuffix ABACUS\nnspin 1\npseudo_dir ./pp\nnelec 1\n",
+        encoding="utf-8",
+    )
+    code = run(
+        _namespace(
+            job,
+            chargemol_exe=str(_fake_chargemol(tmp_path)),
+            atomic_densities=str(_atomic_densities(tmp_path / "atomic_densities")),
+            workdir=str(tmp_path / "work"),
+        )
+    )
+    assert code == 1
 
 
 def test_write_job_control_matches_the_chargemol_format(tmp_path: Path) -> None:
@@ -469,15 +594,14 @@ def test_analyze_ddec_converts_a_restart_file(tmp_path: Path) -> None:
     job = _job(tmp_path)
     output = job / "OUT.ABACUS"
     (output / "SPIN1_CHG.cube").unlink()
-    shape = (32, 32, 32)
-    fractions = [np.fft.fftfreq(n) * n for n in shape]
-    mesh = np.meshgrid(*fractions, indexing="ij")
-    miller = np.stack([axis.ravel() for axis in mesh], axis=1).astype(np.int64)
-    reciprocal = np.linalg.inv(np.diag([2.0, 2.0, 2.0]))
-    rng = np.random.default_rng(0)
-    rhog = rng.standard_normal((1, miller.shape[0])) + 1j * rng.standard_normal((1, miller.shape[0]))
-    RestartCharge(rhog, miller, reciprocal).write(
-        str(output / "ABACUS-CHARGE-DENSITY.restart")
+    # The cell of the fixture is LATTICE_CONSTANT (Bohr) times the 2.0 lattice
+    # vectors, so the restart file has to describe the same box.
+    _write_restart(
+        output / "ABACUS-CHARGE-DENSITY.restart",
+        (32, 32, 32),
+        np.diag([2.0, 2.0, 2.0]),
+        ANG_TO_BOHR,
+        8.0,
     )
     (output / "running_scf.log").write_text(
         "fft grid for charge/potential = [ 32, 32, 32 ]\n", encoding="utf-8"
@@ -505,15 +629,12 @@ def test_analyze_ddec_restart_uses_lattice_constant_from_stru(tmp_path: Path) ->
         STRU_FIXTURE.replace("LATTICE_CONSTANT\n1.889726", "LATTICE_CONSTANT\n1.0"),
         encoding="utf-8",
     )
-    shape = (32, 32, 32)
-    fractions = [np.fft.fftfreq(n) * n for n in shape]
-    mesh = np.meshgrid(*fractions, indexing="ij")
-    miller = np.stack([axis.ravel() for axis in mesh], axis=1).astype(np.int64)
-    reciprocal = np.linalg.inv(np.diag([2.0, 2.0, 2.0]))
-    rng = np.random.default_rng(0)
-    rhog = rng.standard_normal((1, miller.shape[0])) + 1j * rng.standard_normal((1, miller.shape[0]))
-    RestartCharge(rhog, miller, reciprocal).write(
-        str(output / "ABACUS-CHARGE-DENSITY.restart")
+    _write_restart(
+        output / "ABACUS-CHARGE-DENSITY.restart",
+        (32, 32, 32),
+        np.diag([2.0, 2.0, 2.0]),
+        1.0,
+        8.0,
     )
     (output / "running_scf.log").write_text(
         "fft grid for charge/potential = [ 32, 32, 32 ]\n", encoding="utf-8"
