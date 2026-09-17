@@ -543,10 +543,15 @@ class Grid:
                 f.write(f"{self.data.shape[i]:5d} {self.cell[i,0] * box_factor/self.data.shape[i]:20.12f} {self.cell[i,1] * box_factor/self.data.shape[i]:20.12f} {self.cell[i,2] * box_factor/self.data.shape[i]:20.12f}\n")
             for i in range(len(self.atom_types)):
                 f.write(f"{self.atom_types[i]:5d} {self.atom_charges[i]:12.6f} {self.atom_positions[i,0] * box_factor:20.12f} {self.atom_positions[i,1] * box_factor:20.12f} {self.atom_positions[i,2] * box_factor:20.12f}\n")
-            flat_data = self.data.flatten() * data_factor
-            for i in range(0, len(flat_data), 6):
-                line_data = flat_data[i:i+6] 
-                f.write(" ".join(f"{x:17.11e}" for x in line_data) + "\n")
+            # Chargemol reads one (i, j) row per Fortran READ statement, and a
+            # list-directed READ discards the rest of the record it stopped in,
+            # so every row of the inner (z) axis has to end with a newline, as
+            # it does in the cubes ABACUS itself writes.
+            inner = int(self.data.shape[2])
+            for row in (self.data.reshape(-1, inner) * data_factor):
+                for i in range(0, inner, 6):
+                    line_data = row[i:i + 6]
+                    f.write(" ".join(f"{x:17.11e}" for x in line_data) + "\n")
     
     def save_cube(self, filename: str):
         """Save the grid data to a cube file in its original units."""
