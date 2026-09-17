@@ -9,7 +9,6 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
-from abacustools.core.constant import ANG_TO_BOHR
 from abacustools.data.bader import BaderAnalysis, BaderError, analyze_bader
 
 
@@ -32,7 +31,7 @@ def _register_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--cube", default=None, help="Explicit charge-density cube file or directory, relative to JOB.")
     parser.add_argument("--reference", default=None, help="Reference charge cube passed to bader -ref.")
     parser.add_argument("--grid", type=int, nargs=3, metavar=("NX", "NY", "NZ"), default=None, help="FFT grid for restart input when it cannot be read from the log.")
-    parser.add_argument("--lat0", type=float, default=ANG_TO_BOHR, help="ABACUS LATTICE_CONSTANT in Bohr (default: 1.889726).")
+    parser.add_argument("--lat0", type=float, default=None, help="ABACUS LATTICE_CONSTANT in Bohr (default: the value in STRU).")
     parser.add_argument("--vacuum", default=None, help="Vacuum handling for bader -vac: 'off', 'auto' or a density value.")
     parser.add_argument("--workdir", default=None, help="Keep the generated cubes and bader output in this directory.")
     parser.add_argument("--keep-cubes", action="store_true", help="Keep the temporary cubes and bader output.")

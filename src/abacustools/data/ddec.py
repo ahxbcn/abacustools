@@ -41,8 +41,8 @@ from abacustools.data.charge import (
     ChargeDensityError,
     check_channel_count,
     combine,
-    fft_grid_from_log,
     find_density_source,
+    job_fft_grid,
     read_cube_charges,
     read_restart_charges,
     total_charge,
@@ -896,7 +896,7 @@ def assemble_density(
     *,
     cube: Optional[str] = None,
     grid_shape: Optional[Tuple[int, int, int]] = None,
-    lat0: float = ANG_TO_BOHR,
+    lat0: Optional[float] = None,
 ) -> Tuple[Charge, Optional[Charge], str]:
     """Build the total and spin densities that Chargemol reads.
 
@@ -906,7 +906,8 @@ def assemble_density(
         cube: Explicit charge-density cube or directory, relative to ``job``.
         grid_shape: FFT grid used to convert a ``*-CHARGE-DENSITY.restart``
             file, read from the running log when omitted.
-        lat0: ``LATTICE_CONSTANT`` of the job in Bohr.
+        lat0: ``LATTICE_CONSTANT`` of the job in Bohr, taken from the structure
+            when omitted.
 
     Returns:
         The total density, the magnetization density of an ``nspin 2`` job and
@@ -925,11 +926,13 @@ def assemble_density(
             structure = AbacusSTRU.read(str(structure_file))
             if structure is None:
                 raise DdecError(f"cannot read the structure of {job_path}")
+            constant = lat0
+            if constant is None:
+                constant = float(structure.metadata.get("lattice_constant", 1.0) or 1.0)
             valences = valence_electrons(
                 structure, inputs.get("pseudo_dir"), job_path
             )
-            outdir = job_path / f"OUT.{inputs.get('suffix', 'ABACUS')}"
-            shape = grid_shape or fft_grid_from_log(outdir / "running_scf.log")
+            shape = grid_shape or job_fft_grid(job_path, inputs)
             if shape is None:
                 raise DdecError(
                     "the restart file does not report the FFT grid; keep the "
@@ -940,10 +943,10 @@ def assemble_density(
                 structure=structure,
                 valences=valences,
                 grid_shape=shape,
-                lat0=lat0,
+                lat0=constant,
             )
         check_channel_count(source, len(channels))
-    except ChargeDensityError as error:
+    except (ChargeDensityError, ValueError) as error:
         raise DdecError(str(error)) from error
     total = total_charge(channels)
     spin = combine(channels[0], channels[1], -1.0) if len(channels) == 2 else None
@@ -963,7 +966,7 @@ def analyze_ddec(
     spin: Optional[bool] = None,
     cube: Optional[str] = None,
     grid_shape: Optional[Tuple[int, int, int]] = None,
-    lat0: float = ANG_TO_BOHR,
+    lat0: Optional[float] = None,
     workdir: Optional[str | os.PathLike] = None,
     keep: bool = False,
     threads: Optional[int] = None,
@@ -991,7 +994,8 @@ def analyze_ddec(
             to ``True`` for ``nspin 2``.
         cube: Explicit charge-density cube or directory.
         grid_shape: FFT grid for restart input.
-        lat0: ``LATTICE_CONSTANT`` of the job in Bohr.
+        lat0: ``LATTICE_CONSTANT`` of the job in Bohr, taken from the structure
+            when omitted.
         workdir: Directory that keeps the cubes and the Chargemol output.
         keep: Keep a temporary working directory.
         threads: Value of ``OMP_NUM_THREADS``.

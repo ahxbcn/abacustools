@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from abacustools.commands.postprocess.ddec import run
-from abacustools.core.constant import ANG_TO_BOHR
+from abacustools.core.constant import ANG_TO_BOHR, BOHR_TO_ANG
 from abacustools.data.ddec import (
     CHARGE_TYPE_FILES,
     CoreElectrons,
@@ -491,6 +491,43 @@ def test_analyze_ddec_converts_a_restart_file(tmp_path: Path) -> None:
     assert analysis.density_source.startswith("restart")
     assert analysis.core_electrons[0].ncore == 10
     assert analysis.atoms[0].net_charge == pytest.approx(-0.125)
+
+
+
+def test_analyze_ddec_restart_uses_lattice_constant_from_stru(tmp_path: Path) -> None:
+    """The restart conversion has to scale by LATTICE_CONSTANT of the job."""
+    job = _job(tmp_path)
+    output = job / "OUT.ABACUS"
+    (output / "SPIN1_CHG.cube").unlink()
+    # LATTICE_CONSTANT 1.0 Bohr with 2.0 lattice vectors gives a 2 Bohr cell;
+    # the old default of 1.889726 Bohr would have produced a 3.779 Bohr cell.
+    (job / "STRU").write_text(
+        STRU_FIXTURE.replace("LATTICE_CONSTANT\n1.889726", "LATTICE_CONSTANT\n1.0"),
+        encoding="utf-8",
+    )
+    shape = (32, 32, 32)
+    fractions = [np.fft.fftfreq(n) * n for n in shape]
+    mesh = np.meshgrid(*fractions, indexing="ij")
+    miller = np.stack([axis.ravel() for axis in mesh], axis=1).astype(np.int64)
+    reciprocal = np.linalg.inv(np.diag([2.0, 2.0, 2.0]))
+    rng = np.random.default_rng(0)
+    rhog = rng.standard_normal((1, miller.shape[0])) + 1j * rng.standard_normal((1, miller.shape[0]))
+    RestartCharge(rhog, miller, reciprocal).write(
+        str(output / "ABACUS-CHARGE-DENSITY.restart")
+    )
+    (output / "running_scf.log").write_text(
+        "fft grid for charge/potential = [ 32, 32, 32 ]\n", encoding="utf-8"
+    )
+    work = tmp_path / "work"
+    analysis = analyze_ddec(
+        job,
+        exe=str(_fake_chargemol(tmp_path)),
+        atomic_densities=str(_atomic_densities(tmp_path / "atomic_densities")),
+        workdir=work,
+    )
+    assert analysis.density_source.startswith("restart")
+    written = Charge.from_cube(str(work / "valence_density.cube"), format="abacus")
+    assert written.cell[0][0] == pytest.approx(2.0 * BOHR_TO_ANG)
 
 
 def test_analyze_ddec_writes_the_spin_density(tmp_path: Path) -> None:

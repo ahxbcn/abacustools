@@ -123,6 +123,29 @@ def test_fft_grid_from_log(tmp_path: Path) -> None:
     assert fft_grid_from_log(tmp_path / "missing.log") is None
 
 
+def test_fft_grid_from_log_prefers_the_finest_grid(tmp_path: Path) -> None:
+    """A restart file holds rho(G) on the finest grid the log reports."""
+    log = tmp_path / "running_scf.log"
+    log.write_text(
+        " | dimensions of FFT grid. The number of FFT grid on each processor |\n"
+        "            fft grid for charge/potential = [ 36, 36, 36 ]\n"
+        "                        fft grid division = [ 1, 1, 1 ]\n"
+        "        big fft grid for charge/potential = [ 54, 54, 54 ]\n"
+        "      fft grid for dense charge/potential = [ 54, 54, 54 ]\n",
+        encoding="utf-8",
+    )
+    assert fft_grid_from_log(log) == (54, 54, 54)
+
+    # An old log can report the plain grid as the larger one, such as the
+    # 864 x 32 x 54 grid of a slab with a 216 x 8 x 27 "big" grid.
+    log.write_text(
+        "            fft grid for charge/potential = [ 864, 32, 54 ]\n"
+        "        big fft grid for charge/potential = [ 216, 8, 27 ]\n",
+        encoding="utf-8",
+    )
+    assert fft_grid_from_log(log) == (864, 32, 54)
+
+
 def test_fft_grid_from_develop_log(tmp_path: Path) -> None:
     log = tmp_path / "running_scf.log"
     log.write_text(
@@ -210,6 +233,50 @@ def test_bader_command_restart_input(tmp_path: Path, monkeypatch) -> None:
     assert analysis.charge_source.startswith("restart")
     assert [atom.element for atom in analysis.atoms] == ["Si", "Si"]
     assert analysis.atoms[0].net_charge == pytest.approx(0.1)
+
+
+
+def test_analyze_bader_restart_uses_lattice_constant_from_stru(
+    tmp_path: Path, monkeypatch
+) -> None:
+    job = tmp_path / "job"
+    output = job / "OUT.ABACUS"
+    output.mkdir(parents=True)
+    (job / "INPUT").write_text(
+        "INPUT_PARAMETERS\nsuffix ABACUS\nnspin 1\npseudo_dir ./pp\n", encoding="utf-8"
+    )
+    # LATTICE_CONSTANT 3.779452 Bohr with 4.0 lattice vectors gives an 8 A cell;
+    # the old default of 1.889726 Bohr would have produced a 4 A cell.
+    (job / "STRU").write_text(
+        "ATOMIC_SPECIES\n"
+        "Si 28.0855 Si.upf\n\n"
+        "LATTICE_CONSTANT\n"
+        "3.779452\n\n"
+        "LATTICE_VECTORS\n"
+        "4.0 0.0 0.0\n0.0 4.0 0.0\n0.0 0.0 4.0\n\n"
+        "ATOMIC_POSITIONS\nCartesian\nSi\n0.0\n2\n"
+        "0.0 0.0 0.0 1 1 1\n2.0 2.0 2.0 1 1 1\n",
+        encoding="utf-8",
+    )
+    (output / "running_scf.log").write_text(
+        "fft grid for charge/potential = [ 4, 4, 4 ]\n", encoding="utf-8"
+    )
+    shape = (4, 4, 4)
+    fractions = [np.fft.fftfreq(n) * n for n in shape]
+    mesh = np.meshgrid(*fractions, indexing="ij")
+    miller = np.stack([m.ravel() for m in mesh], axis=1).astype(np.int64)
+    reciprocal = np.linalg.inv(np.diag([4.0, 4.0, 4.0]))
+    rng = np.random.default_rng(0)
+    rhog = rng.standard_normal((1, miller.shape[0])) + 1j * rng.standard_normal((1, miller.shape[0]))
+    RestartCharge(rhog, miller, reciprocal).write(str(output / "ABACUS-CHARGE-DENSITY.restart"))
+
+    monkeypatch.setattr(
+        "abacustools.data.bader._valence_electrons", lambda *args, **kwargs: [4.0, 4.0]
+    )
+    work = tmp_path / "work"
+    analyze_bader(job, exe=str(_fake_bader(tmp_path)), workdir=work)
+    written = Charge.from_cube(str(work / "charge_total.cube"), format="abacus")
+    assert written.cell[0][0] == pytest.approx(8.0)
 
 
 def test_analyze_bader_rejects_nspin4(tmp_path: Path) -> None:

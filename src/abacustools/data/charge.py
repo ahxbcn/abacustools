@@ -43,9 +43,13 @@ BOHR2A = BOHR_TO_ANG
 #: Lattice directions used by the profile and slice helpers.
 AXES = ("a", "b", "c")
 
-#: ABACUS LTS logs write "fft grid", develop writes "FFT grid".
+#: ABACUS LTS logs write "fft grid", develop writes "FFT grid". A log can
+#: report the plain charge/potential grid, the grid of the extended ("big") box
+#: and, in recent versions, an explicitly named dense grid; the restart file
+#: holds ``rho(G)`` on the grid with the most points, so every report is
+#: collected and the finest one wins.
 _FFT_GRID_PATTERN = re.compile(
-    r"fft grid for charge/potential\s*=\s*\[([^\]]+)\]", re.IGNORECASE
+    r"fft grid for (?:dense )?charge/potential\s*=\s*\[([^\]]+)\]", re.IGNORECASE
 )
 
 #: Spin-resolved quantities that :func:`select_spin` can return.
@@ -219,13 +223,14 @@ def fft_grid_from_log(log_path: Path) -> Optional[Tuple[int, int, int]]:
     path = Path(log_path)
     if not path.is_file():
         return None
-    match = _FFT_GRID_PATTERN.search(path.read_text(encoding="utf-8", errors="replace"))
-    if match is None:
+    shapes = []
+    for group in _FFT_GRID_PATTERN.findall(path.read_text(encoding="utf-8", errors="replace")):
+        values = re.findall(r"\d+", group)
+        if len(values) == 3:
+            shapes.append((int(values[0]), int(values[1]), int(values[2])))
+    if not shapes:
         return None
-    values = re.findall(r"\d+", match.group(1))
-    if len(values) != 3:
-        return None
-    return (int(values[0]), int(values[1]), int(values[2]))
+    return max(shapes, key=lambda shape: shape[0] * shape[1] * shape[2])
 
 
 def job_fft_grid(job: Path, inputs: Mapping[str, Any]) -> Optional[Tuple[int, int, int]]:

@@ -252,7 +252,7 @@ def analyze_bader(
     reference: Optional[str] = None,
     exe: Optional[str] = None,
     grid_shape: Optional[Tuple[int, int, int]] = None,
-    lat0: float = A2BOHR,
+    lat0: Optional[float] = None,
     vacuum: Optional[object] = None,
     workdir: Optional[str | os.PathLike] = None,
     keep: bool = False,
@@ -291,12 +291,15 @@ def analyze_bader(
                 raise BaderError(
                     "could not determine the FFT grid; pass --grid nx ny nz"
                 )
+            constant = lat0
+            if constant is None:
+                constant = float(stru.metadata.get("lattice_constant", 1.0) or 1.0)
             spin_charges = read_restart_charges(
                 source,
                 structure=stru,
                 valences=valences,
                 grid_shape=shape,
-                lat0=lat0,
+                lat0=constant,
             )
             charge_source = source.describe(grid=shape)
         total = total_charge(spin_charges)

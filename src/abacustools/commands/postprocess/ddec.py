@@ -9,7 +9,6 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
-from abacustools.core.constant import ANG_TO_BOHR
 from abacustools.data.ddec import (
     CHARGE_TYPES,
     DdecAnalysis,
@@ -112,8 +111,8 @@ def _register_arguments(parser: argparse.ArgumentParser) -> None:
         help="FFT grid for restart input when it cannot be read from the log.",
     )
     parser.add_argument(
-        "--lat0", type=float, default=ANG_TO_BOHR,
-        help="ABACUS LATTICE_CONSTANT in Bohr (default: 1.889726).",
+        "--lat0", type=float, default=None,
+        help="ABACUS LATTICE_CONSTANT in Bohr (default: the value in STRU).",
     )
     parser.add_argument(
         "--threads", type=int, default=None,
