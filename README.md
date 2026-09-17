@@ -756,6 +756,7 @@ abacustools postprocess ddec -j JOB
 abacustools postprocess ddec -j JOB --charge-type DDEC3 --json -o ddec.json
 abacustools postprocess ddec -j JOB --no-spin --threshold 0.1
 abacustools postprocess ddec -j JOB --pairs 1-2,1-3 --cutoff 3.0
+abacustools postprocess ddec -j JOB --no-bos --threads 16
 abacustools postprocess ddec -j JOB --core-electrons "26 10" --workdir ddec
 ```
 
@@ -786,6 +787,31 @@ the recommended spacing), and a charge-density cube of a PAW or ultrasoft
 calculation does not integrate to the valence charge, so only norm-conserving
 pseudopotentials work. A molecule in a box wants
 `--periodicity false false false`.
+
+The net charge of the cell follows the `nelec` and `nelec_delta` keywords of
+INPUT: `nelec 0`, the default, means that the electrons are the sum of the
+valence charges of the atoms, so the cell is neutral, while a positive value
+describes a charged cell, and `--net-charge` overrides the derived value. The
+command also compares the electrons of the cube with the charge of the cell
+before Chargemol runs and stops with an explanation when they disagree, which
+happens when the cube and INPUT belong to different calculations or when the
+density comes from another grid or another `--cube`.
+
+A job that kept no cube is read from its `*-CHARGE-DENSITY.restart` file. That
+conversion uses the finest FFT grid the running log reports and the
+`LATTICE_CONSTANT` of STRU, with `--grid` and `--lat0` as overrides, and it
+agrees with the cube route to about 1e-4 e, so a job whose `out_chg` was turned
+off can still be analysed.
+
+Bond orders and overlap populations are the expensive part of a Chargemol run:
+the time grows with the number of atoms times the number of grid points. On 16
+threads, 64 atoms on a 135^3 grid (2.5 million points) took 15 s, 224 atoms on
+a 256x250x150 grid (9.6 million points) 66 s and 224 atoms on a 320x320x180
+grid (18 million points) more than two minutes, while the same job with
+`--no-bos` finished in 109 s. The charges and spin moments are identical with
+and without bond orders, so a large system is best analysed with `--no-bos`
+first. `--threads` sets `OMP_NUM_THREADS` of the OpenMP binary, and one
+Chargemol instance should run at a time.
 
 Chargemol 3.5 crashes on a valence-only cube when a spin density is present,
 because `module_format_valence_cube_density` never allocates the arrays that
