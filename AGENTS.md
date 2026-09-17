@@ -100,6 +100,17 @@ menu-specific branching in command modules.
   real ABACUS binary. Prefer small synthetic fixtures over large reference files.
 - Run the full suite (`python -m pytest tests`) before considering work done.
 
+## Branching
+
+- Never develop directly on `develop` or `main`. Before the first edit of a
+  task, create a topic branch from the up-to-date base branch:
+  `git switch -c <type>/<topic>` (for example `feat/ddec-postprocess`,
+  `fix/bader-vacuum`).
+- One branch carries one topic. If a new request is unrelated to the branch at
+  hand, branch off the base branch again instead of stacking more work on top.
+- State the branch in the final answer of a task so the user can check it out,
+  and leave the branch checked out when the work is done.
+
 ## Git and commits
 
 - Commit subjects are short and imperative: `Add <feature>` or `feat: ...`,
@@ -111,6 +122,7 @@ menu-specific branching in command modules.
 
 ## Agent checklist
 
+- [ ] The work happened on a topic branch, not on `develop`/`main`.
 - [ ] Logic lives outside the CLI layer; the command file only wires arguments.
 - [ ] New behavior is covered by tests in `tests/`.
 - [ ] `python -m pytest tests` passes.
