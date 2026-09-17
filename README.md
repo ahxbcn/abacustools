@@ -747,6 +747,51 @@ develop layout (`sk*_nao.txt` with `dm*_nao.txt`), including the gamma-only
 names that omit the k-point index. The develop density matrices are used
 directly, so no wavefunction reconstruction is needed there.
 
+DDEC6 and DDEC3 net atomic charges, spin moments and bond orders are
+computed with the external [Chargemol](https://ddec.sourceforge.net) program,
+which partitions the valence density of a job:
+
+```text
+abacustools postprocess ddec -j JOB
+abacustools postprocess ddec -j JOB --charge-type DDEC3 --json -o ddec.json
+abacustools postprocess ddec -j JOB --no-spin --threshold 0.1
+abacustools postprocess ddec -j JOB --pairs 1-2,1-3 --cutoff 3.0
+abacustools postprocess ddec -j JOB --core-electrons "26 10" --workdir ddec
+```
+
+The command writes the `valence_density.cube` (and the `spin_density.cube` of
+an `nspin 2` job) that the program expects, together with its
+`job_control.txt`, into a working directory, runs Chargemol there and parses
+the `*.xyz` results, so the tables list the net charge, the sum of bond orders
+and, for a spin-polarized job, the DDEC spin moment of every atom next to the
+bond orders and their periodic images. `--workdir` and `--keep` preserve that
+directory, `--output` writes the complete report as JSON and `--json` prints
+it. The executable and the reference density tables are set by
+`chargemol.exe` and `chargemol.atomic_densities` in
+`~/.abacustools/config.yaml`, and can also come from the `CHARGEMOL_EXE` and
+`CHARGEMOL_ATOMIC_DENSITIES` environment variables or from
+`--chargemol-exe` and `--atomic-densities`.
+
+A valence-only cube makes Chargemol insert the core electrons from its
+`atomic_densities` tables, which fixes the number of core electrons of every
+element to `Z - z_valence` of the pseudopotential; the command derives that
+number from the atom columns of the density and checks the tables before the
+program starts, so the trivalent lanthanide pseudopotentials of the APNS
+library, whose 4f electrons sit in the core, or any other element whose core
+count the distribution does not ship, are reported instead of failing inside
+Chargemol. `--core-electrons "26 10"` overrides the count of one element. The
+charge density should come from `out_chg 1 10` so that the cube carries enough
+digits, its grid has to be finer than 0.25 Bohr per direction (0.14 Bohr is
+the recommended spacing), and a charge-density cube of a PAW or ultrasoft
+calculation does not integrate to the valence charge, so only norm-conserving
+pseudopotentials work. A molecule in a box wants
+`--periodicity false false false`.
+
+Chargemol 3.5 crashes on a valence-only cube when a spin density is present,
+because `module_format_valence_cube_density` never allocates the arrays that
+its spin reader uses. The command recognises the crash, explains it and
+suggests either a patched build of Chargemol or `--no-spin`.
+
 Complex calculation workflows are organized by task and stage. The BSSE
 workflow currently provides the preparation and postprocessing framework:
 

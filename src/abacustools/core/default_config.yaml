@@ -30,6 +30,15 @@ abacus:
 bader:
   exe: "bader"
 
+# Chargemol settings for `postprocess ddec`. `exe` names the binary (the
+# serial or OpenMP build of the distribution), `atomic_densities` the directory
+# that holds its `core_*` and `c2_*` reference density tables. Both can also be
+# overridden with the CHARGEMOL_EXE and CHARGEMOL_ATOMIC_DENSITIES environment
+# variables or with --chargemol-exe and --atomic-densities.
+chargemol:
+  exe: "chargemol"
+  atomic_densities: null
+
 # Fill these machine-dependent paths in ~/.abacustools/config.yaml.
 resources:
   default: apns
