@@ -651,6 +651,34 @@ def test_analyze_ddec_restart_uses_lattice_constant_from_stru(tmp_path: Path) ->
     assert written.cell[0][0] == pytest.approx(2.0 * BOHR_TO_ANG)
 
 
+
+def test_analyze_ddec_restart_needs_a_grid_or_a_log(tmp_path: Path) -> None:
+    """The shared assembly turns a restart into a cube, so it needs the grid."""
+    job = _job(tmp_path)
+    output = job / "OUT.ABACUS"
+    (output / "SPIN1_CHG.cube").unlink()
+    _write_restart(
+        output / "ABACUS-CHARGE-DENSITY.restart",
+        (32, 32, 32),
+        np.diag([2.0, 2.0, 2.0]),
+        ANG_TO_BOHR,
+        8.0,
+    )
+    arguments = dict(
+        job=job,
+        exe=str(_fake_chargemol(tmp_path)),
+        atomic_densities=str(_atomic_densities(tmp_path / "atomic_densities")),
+    )
+    # Without a running log the FFT grid is unknown and has to be passed.
+    with pytest.raises(DdecError) as error:
+        analyze_ddec(workdir=tmp_path / "work", **arguments)
+    assert "FFT grid" in str(error.value)
+
+    analysis = analyze_ddec(workdir=tmp_path / "work", grid_shape=(32, 32, 32), **arguments)
+    assert analysis.density_source.startswith("restart")
+    assert [atom.element for atom in analysis.atoms] == ["Si", "Si"]
+
+
 def test_analyze_ddec_writes_the_spin_density(tmp_path: Path) -> None:
     job = _job(tmp_path, nspin=2)
     analysis = analyze_ddec(

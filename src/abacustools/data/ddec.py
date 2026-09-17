@@ -4,7 +4,11 @@ Chargemol (https://ddec.sourceforge.net) computes DDEC6/DDEC3 net atomic
 charges, atomic spin moments and bond orders from a valence electron density in
 Gaussian cube format. This module builds that cube from the charge density of
 an ABACUS job, writes the ``job_control.txt`` the program reads, runs it and
-parses its ``*.xyz`` output.
+parses its ``*.xyz`` output. The density itself comes from
+:func:`abacustools.data.charge.read_job_density`, the helper behind
+``postprocess chg``, so a job that only kept a ``*-CHARGE-DENSITY.restart``
+file is converted with the FFT grid of its running log and the
+``LATTICE_CONSTANT`` of its structure exactly as that command does.
 
 Two properties of the interface shape the code below:
 
@@ -39,18 +43,15 @@ from abacustools.core.config import CONFIG
 from abacustools.core.constant import ANG_TO_BOHR
 from abacustools.data.charge import (
     ChargeDensityError,
+    JobDensity,
     check_channel_count,
-    combine,
     find_density_source,
-    job_fft_grid,
     read_cube_charges,
-    read_restart_charges,
-    total_charge,
-    valence_electrons,
+    read_job_density,
+    select_spin,
 )
 from abacustools.data.grid import Charge
 from abacustools.io.abacus import ReadInput
-from abacustools.io.stru import AbacusSTRU
 
 
 #: Largest grid cell volume Chargemol accepts, in Bohr**3. This is
@@ -941,12 +942,19 @@ def assemble_density(
     cube: Optional[str] = None,
     grid_shape: Optional[Tuple[int, int, int]] = None,
     lat0: Optional[float] = None,
-) -> Tuple[Charge, Optional[Charge], str]:
-    """Build the total and spin densities that Chargemol reads.
+) -> JobDensity:
+    """Assemble the spin-resolved density that Chargemol partitions.
+
+    The routine is :func:`abacustools.data.charge.read_job_density`, the same
+    one that ``postprocess chg`` uses: it prefers the ``SPIN*_CHG.cube`` files of
+    a job and otherwise converts its ``*-CHARGE-DENSITY.restart`` file with the
+    FFT grid of the running log, the valence charges of the pseudopotentials and
+    the ``LATTICE_CONSTANT`` of the structure. An explicit ``cube`` overrides
+    the density of the job, which that helper does not express.
 
     Args:
         job: ABACUS job directory.
-        inputs: Parsed INPUT of the job.
+        inputs: Parsed INPUT of the job, used for the explicit cube.
         cube: Explicit charge-density cube or directory, relative to ``job``.
         grid_shape: FFT grid used to convert a ``*-CHARGE-DENSITY.restart``
             file, read from the running log when omitted.
@@ -954,47 +962,26 @@ def assemble_density(
             when omitted.
 
     Returns:
-        The total density, the magnetization density of an ``nspin 2`` job and
-        a description of the files the density came from.
+        The density of every spin channel together with the files it came from.
 
     Raises:
         DdecError: If the job has no usable charge density.
     """
     job_path = Path(job)
     try:
+        if cube is None:
+            return read_job_density(
+                job_path,
+                description="DDEC analysis",
+                grid_shape=grid_shape,
+                lat0=lat0,
+            )
         source = find_density_source(job_path, inputs, cube=cube)
-        if source.kind == "cube":
-            channels = read_cube_charges(source)
-        else:
-            structure_file = job_path / str(inputs.get("stru_file", "STRU"))
-            structure = AbacusSTRU.read(str(structure_file))
-            if structure is None:
-                raise DdecError(f"cannot read the structure of {job_path}")
-            constant = lat0
-            if constant is None:
-                constant = float(structure.metadata.get("lattice_constant", 1.0) or 1.0)
-            valences = valence_electrons(
-                structure, inputs.get("pseudo_dir"), job_path
-            )
-            shape = grid_shape or job_fft_grid(job_path, inputs)
-            if shape is None:
-                raise DdecError(
-                    "the restart file does not report the FFT grid; keep the "
-                    "running log or pass --grid NX NY NZ"
-                )
-            channels = read_restart_charges(
-                source,
-                structure=structure,
-                valences=valences,
-                grid_shape=shape,
-                lat0=constant,
-            )
+        channels = read_cube_charges(source)
         check_channel_count(source, len(channels))
     except (ChargeDensityError, ValueError) as error:
         raise DdecError(str(error)) from error
-    total = total_charge(channels)
-    spin = combine(channels[0], channels[1], -1.0) if len(channels) == 2 else None
-    return total, spin, source.describe()
+    return JobDensity(job_path, source, channels)
 
 
 def analyze_ddec(
@@ -1060,9 +1047,12 @@ def analyze_ddec(
             f"nspin={nspin} is not supported (only 1 and 2); ABACUS nspin 4 "
             "densities would have to be mapped onto spin_density_x/y/z.cube"
         )
-    total, magnetization, source = assemble_density(
+    density = assemble_density(
         job_path, inputs, cube=cube, grid_shape=grid_shape, lat0=lat0
     )
+    total = density.total()
+    magnetization = select_spin(density, "difference") if density.nspin == 2 else None
+    source = density.source.describe(grid=density.source.grid)
 
     entries = apply_core_electron_overrides(core_electron_counts(total), core_electrons)
     directory = atomic_densities_directory(atomic_densities)

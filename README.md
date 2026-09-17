@@ -797,11 +797,12 @@ before Chargemol runs and stops with an explanation when they disagree, which
 happens when the cube and INPUT belong to different calculations or when the
 density comes from another grid or another `--cube`.
 
-A job that kept no cube is read from its `*-CHARGE-DENSITY.restart` file. That
-conversion uses the finest FFT grid the running log reports and the
-`LATTICE_CONSTANT` of STRU, with `--grid` and `--lat0` as overrides, and it
-agrees with the cube route to about 1e-4 e, so a job whose `out_chg` was turned
-off can still be analysed.
+A job that kept no cube is read from its `*-CHARGE-DENSITY.restart` file with
+the same conversion that `postprocess chg` uses: the finest FFT grid the
+running log reports, the valence charges of the pseudopotentials and the
+`LATTICE_CONSTANT` of STRU, with `--grid` and `--lat0` as overrides. Both
+routes agree to about 1e-4 e, so a job whose `out_chg` was turned off can still
+be analysed.
 
 Bond orders and overlap populations are the expensive part of a Chargemol run:
 the time grows with the number of atoms times the number of grid points. On 16
