@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+from argparse import Namespace
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +13,7 @@ import pytest
 from abacustools.commands.workflow.phonon import (
     _born_charges,
     _dielectric_tensor,
+    _nac_direction,
     postprocess,
 )
 
@@ -363,6 +365,37 @@ def test_nac_rejects_a_zero_direction(tmp_path: Path) -> None:
                 nac_direction=[0.0, 0.0, 0.0],
             )
         )
+
+
+def test_nac_direction_is_fractional_in_the_lattice_vectors() -> None:
+    """The direction is combined with the cell, not with the reciprocal one.
+
+    A hexagonal cell separates the two readings: its first lattice vector runs
+    along x, while its first reciprocal vector runs at 30 degrees to it, so a
+    direction of "[1,0,0]" is only along x when the lattice vectors are the
+    basis.
+    """
+    from abacustools.io.stru import AbacusATOM, AbacusSTRU
+
+    structure = AbacusSTRU(
+        cell=[
+            [3.84, 0.0, 0.0],
+            [-1.92, 3.3256, 0.0],
+            [0.0, 0.0, 6.2744],
+        ],
+        atoms=[
+            AbacusATOM(label="Zn", element="Zn", coord=(0.0, 0.0, 0.0)),
+            AbacusATOM(label="S", element="S", coord=(0.0, 0.0, 2.0)),
+        ],
+        metadata={"atom_type": "cartesian"},
+    )
+
+    direction = _nac_direction(Namespace(nac_direction=[1.0, 0.0, 0.0]), structure)
+    np.testing.assert_allclose(direction, [3.84, 0.0, 0.0], atol=1e-9)
+    along_c = _nac_direction(Namespace(nac_direction=[0.0, 0.0, 1.0]), structure)
+    np.testing.assert_allclose(along_c, [0.0, 0.0, 6.2744], atol=1e-9)
+    default = _nac_direction(Namespace(nac_direction=None), structure)
+    np.testing.assert_allclose(default, structure.cell[0], atol=1e-9)
 
 
 def test_nac_changes_the_thermal_properties(tmp_path: Path) -> None:

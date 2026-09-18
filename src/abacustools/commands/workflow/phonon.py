@@ -213,10 +213,12 @@ def _register_postprocess_arguments(parser: argparse.ArgumentParser) -> None:
         type=_json_argument,
         default=None,
         metavar="JSON",
-        help="Direction, in fractional coordinates of the reciprocal basis, "
+        help="Direction, in fractional coordinates of the lattice vectors, "
         "along which the q to zero limit of the non-analytical correction is "
-        "taken for the Gamma point modes and the thermal properties. Defaults "
-        "to the first lattice vector.",
+        "taken for the Gamma point modes and the thermal properties, so that "
+        '"[0,0,1]" runs along the third lattice vector. Defaults to the first '
+        "lattice vector, and the direction is converted to Cartesian "
+        "coordinates before it is handed to phonopy.",
     )
 
 
@@ -793,6 +795,9 @@ def _nac_direction(args: argparse.Namespace, structure) -> np.ndarray:
         )
     if np.allclose(array, 0.0):
         raise ValueError("the non-analytical direction must not be zero")
+    # The coordinates are fractional in the lattice vectors, so they are
+    # combined with the cell rather than with the reciprocal lattice: for a
+    # hexagonal cell the two bases point along different directions.
     return np.asarray(array @ cell, dtype=float)
 
 
