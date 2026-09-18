@@ -185,7 +185,16 @@ def _register_postprocess_arguments(parser: argparse.ArgumentParser) -> None:
         metavar="JSON",
         help="Dielectric tensor for the non-analytical correction, either a "
         'scalar or a 3x3 matrix as JSON, for example "[2.34, 0, 0, 0, 2.34, 0, 0, 0, 2.34]" '
-        'or "2.34". Required together with --born.',
+        'or "2.34". Required together with --born unless the tensor is read '
+        "with --dielectric-results.",
+    )
+    parser.add_argument(
+        "--dielectric-results",
+        type=Path,
+        default=None,
+        help="dielectric_results.json written by 'workflow dielectric', which "
+        "supplies the dielectric tensor of the non-analytical correction and "
+        "avoids transcribing it by hand.",
     )
     parser.add_argument(
         "--born",
@@ -586,6 +595,31 @@ def _dielectric_tensor(value: Any) -> np.ndarray:
     return tensor
 
 
+def _dielectric_tensor_from_results(path: Path) -> Any:
+    """Return the dielectric tensor written by the dielectric workflow.
+
+    Args:
+        path: ``dielectric_results.json`` of the dielectric workflow.
+
+    Returns:
+        The tensor, in the layout :func:`_dielectric_tensor` accepts.
+
+    Raises:
+        FileNotFoundError: When the file does not exist.
+        ValueError: When it holds no dielectric tensor.
+    """
+    if not path.is_file():
+        raise FileNotFoundError(f"could not find the dielectric results: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ValueError(f"invalid dielectric results file: {path}") from error
+    tensor = payload.get("tensor") if isinstance(payload, dict) else None
+    if not isinstance(tensor, list) or len(tensor) != 3:
+        raise ValueError(f"the dielectric results hold no 3x3 tensor: {path}")
+    return tensor
+
+
 def _born_charges_from_bec_results(path: Path, structure) -> np.ndarray:
     """Return the Born effective charges written by the BEC workflow.
 
@@ -693,22 +727,36 @@ def _nac_parameters(
             an input cannot be read.
     """
     dielectric = getattr(args, "dielectric", None)
+    dielectric_results = getattr(args, "dielectric_results", None)
     born = getattr(args, "born", None)
     bec_results = getattr(args, "bec_results", None)
-    if dielectric is None and born is None and bec_results is None:
+    if (
+        dielectric is None
+        and dielectric_results is None
+        and born is None
+        and bec_results is None
+    ):
         return None
+    if dielectric is not None and dielectric_results is not None:
+        raise ValueError(
+            "give the dielectric tensor either with --dielectric or with "
+            "--dielectric-results, not both"
+        )
     if born is None and bec_results is None:
         raise ValueError(
             "the non-analytical correction needs the Born effective charges, "
             "given with --born or read with --bec-results"
         )
-    if dielectric is None:
+    if dielectric is None and dielectric_results is None:
         raise ValueError(
-            "the non-analytical correction needs --dielectric, together with "
+            "the non-analytical correction needs the dielectric tensor, given "
+            "with --dielectric or read with --dielectric-results, together with "
             "--born or --bec-results"
         )
     if born is None and bec_results is not None:
         born = _born_charges_from_bec_results(Path(bec_results), structure)
+    if dielectric is None:
+        dielectric = _dielectric_tensor_from_results(Path(dielectric_results))
     return {
         "born": _born_charges(born, structure.natoms),
         "dielectric": _dielectric_tensor(dielectric),

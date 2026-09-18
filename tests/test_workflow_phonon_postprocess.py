@@ -276,6 +276,7 @@ def _postprocess_args(job: Path, **overrides) -> Namespace:
         irreps_plot="phonon_gamma_irreps.png",
         symprec=1e-5,
         dielectric=None,
+        dielectric_results=None,
         born=None,
         bec_results=None,
         nac_direction=None,

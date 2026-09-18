@@ -81,10 +81,75 @@ def test_nac_needs_both_inputs(tmp_path: Path) -> None:
 
     # Each half of the correction is reported as missing when it is the one
     # that was left out.
-    with pytest.raises(ValueError, match="needs --dielectric"):
+    with pytest.raises(ValueError, match="needs the dielectric tensor"):
         postprocess(_postprocess_args(job, born=json.loads(_BORN)))
     with pytest.raises(ValueError, match="Born effective charges"):
         postprocess(_postprocess_args(job, dielectric=json.loads(_DIELECTRIC)))
+
+
+def test_nac_reads_the_dielectric_tensor_from_the_dielectric_workflow(
+    tmp_path: Path,
+) -> None:
+    """The tensor of `workflow dielectric` is accepted as it is written."""
+    job = _ionic_job(tmp_path)
+    results = tmp_path / "dielectric_results.json"
+    results.write_text(
+        json.dumps(
+            {
+                "workflow": "dielectric",
+                "tensor": [[2.34, 0.0, 0.0], [0.0, 2.34, 0.0], [0.0, 0.0, 2.34]],
+                "diagonal_mean": 2.34,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        postprocess(
+            _postprocess_args(
+                job,
+                born=json.loads(_BORN),
+                dielectric_results=results,
+                mesh=[2, 2, 2],
+            )
+        )
+        == 0
+    )
+
+    correction = _read_report(job)["non_analytical_correction"]
+    np.testing.assert_allclose(correction["dielectric"], np.eye(3) * 2.34)
+
+
+def test_nac_rejects_two_dielectric_sources(tmp_path: Path) -> None:
+    job = _ionic_job(tmp_path)
+    results = tmp_path / "dielectric_results.json"
+    results.write_text(
+        json.dumps({"tensor": [[2.34, 0.0, 0.0], [0.0, 2.34, 0.0], [0.0, 0.0, 2.34]]}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="not both"):
+        postprocess(
+            _postprocess_args(
+                job,
+                born=json.loads(_BORN),
+                dielectric=json.loads(_DIELECTRIC),
+                dielectric_results=results,
+            )
+        )
+
+
+def test_nac_reports_dielectric_results_without_a_tensor(tmp_path: Path) -> None:
+    job = _ionic_job(tmp_path)
+    results = tmp_path / "dielectric_results.json"
+    results.write_text(json.dumps({"workflow": "dielectric"}), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="no 3x3 tensor"):
+        postprocess(
+            _postprocess_args(
+                job, born=json.loads(_BORN), dielectric_results=results
+            )
+        )
 
 
 def test_postprocess_without_nac_keeps_the_optical_triplet_degenerate(

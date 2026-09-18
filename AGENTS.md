@@ -78,6 +78,32 @@ New commands appear in the interactive menu automatically: `abacustools/menu/`
 reflects the argparse tree, so keep argument definitions declarative and avoid
 menu-specific branching in command modules.
 
+## Workflows and manifests
+
+- A workflow records the decisions of its prepare stage in a
+  `workflow_<name>.json` manifest below the job directory, next to a `tasks`
+  list naming the generated calculations. Postprocessing reads that manifest
+  instead of inferring the setup from result files or from the order of a
+  directory listing.
+- A workflow that derives a tensor or a table writes it as JSON next to the
+  manifest — `bec_results.json`, `dielectric_results.json` — including the
+  units, the method and the parameters that produced it, so a later workflow can
+  consume it instead of a user transcribing numbers.
+
+## Optional dependencies
+
+- A feature that needs a package the project does not require declares it as an
+  extra in `pyproject.toml`, imports it lazily inside the function that runs it,
+  and keeps the module importable without it: only the call fails, with a
+  message naming the missing package and how to install it. `integrations/`
+  holds those adapters, `abacuslite` and `pyatb` among them.
+- `workflow dielectric` needs `pyatb`, whose compute core is C++ behind a
+  compiled extension and which parallelises through `mpi4py`. The extra
+  installs the Python package; the MPI runtime comes from the environment
+  (`conda install -c conda-forge mpich`). The step runs where the ABACUS
+  outputs are — locally, next to the `abacustools` environment — while the
+  cluster only runs ABACUS.
+
 ## Code style
 
 - Start modules with `from __future__ import annotations`.
@@ -102,6 +128,15 @@ menu-specific branching in command modules.
   result objects (`run_qpoints`, `thermal_properties`, `total_dos`,
   `band_structure`). Pin the matrix and read the objects, keeping a fallback
   only where an older phonopy has to keep working.
+- The `occupied bands` count ABACUS autosets and prints in its running log is
+  what pins the occupation of the `pyatb` Kubo-Greenwood sum that gives the
+  electronic dielectric tensor. ABACUS's `EFERMI` for an insulator is one
+  arbitrary level inside the gap; the sum is built from transition energies,
+  which are differences, so the energy reference does not enter the result.
+- A phonon non-analytical correction needs both the Born effective charges
+  (`workflow bec`) and the clamped-ion dielectric tensor (`workflow
+  dielectric`). The two results files are read by the phonon postprocessing
+  stage with `--bec-results` and `--dielectric-results`.
 
 ## Testing
 

@@ -43,6 +43,12 @@ dependencies = [
 # imported lazily so every other command works without it.
 mp = ["mp-api"]
 
+# Electronic dielectric tensor of `abacustools workflow dielectric`, which
+# evaluates a Kubo-Greenwood sum over the ABACUS LCAO matrices. pyatb is
+# imported lazily and parallelises through mpi4py, so an MPI runtime from the
+# environment is needed as well (`conda install -c conda-forge mpich`).
+pyatb = ["pyatb"]
+
 [project.scripts]
 abacustools = "abacustools.main:main"
 

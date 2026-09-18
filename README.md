@@ -925,8 +925,12 @@ cell in its atom order. The charges can also be read from the `bec_results.json`
 that `workflow bec` writes, with `--bec-results`, which avoids transcribing
 tensors by hand: that file already stores them with the rows as the displacement
 directions and the columns as the Cartesian polarization directions, which is
-the layout the correction expects. Born charges and dielectric tensor must both
-be given; either one alone is refused. The correction is applied to the dispersion, to the
+the layout the correction expects. In the same way `--dielectric-results` reads
+the dielectric tensor of the `dielectric_results.json` that `workflow
+dielectric` writes, and the two files together describe a polar material
+without transcribing a single number. Born charges and dielectric tensor must
+both be given; either one alone is refused, and so is a dielectric tensor that
+is given both as JSON and as a results file. The correction is applied to the dispersion, to the
 total and projected DOS and to the thermal properties, because the mesh takes
 the limit with the direction of each of its own q points. The Gamma point modes
 need an explicit direction, which `--nac-direction` sets and which defaults to
@@ -1114,6 +1118,54 @@ abacustools workflow bec postprocess -j JOB
 The BEC tensors and task diagnostics are written to `bec_results.json` under
 `JOB`. Missing or incomplete Berry-phase task output is retained as missing
 tensor entries so other completed displacement directions can still be reported.
+
+The clamped-ion (electronic) dielectric tensor `epsilon_inf` is the other half
+of a polar material's non-analytical correction, and ABACUS does not write it.
+It is obtained by a tight-binding Kubo-Greenwood sum over the Hamiltonian,
+overlap and position matrices of an LCAO calculation, which the `pyatb` package
+evaluates on a dense Brillouin zone grid. The prepare stage generates the one
+self consistent calculation that has to be rerun for those matrices to appear:
+
+```text
+abacustools workflow dielectric prepare -j JOB
+```
+
+The generated `dielectric` directory is the source job with `out_mat_hs2`,
+`out_mat_r` and `symmetry 0`, and `workflow_dielectric.json` records the task
+and the keywords that were switched on, as every other workflow manifest does.
+Run it, bring the `OUT.*` matrices back, and postprocess them:
+
+```text
+abacustools workflow dielectric postprocess -j JOB
+```
+
+The tensor is written to `dielectric_results.json` under `JOB` together with
+the dense grid, the photon energy window, the spin channels, the occupied band
+count and Fermi energy of the source calculation and the `pyatb` version, so
+the number can be traced back to what produced it. `--grid`, `--omega`,
+`--domega` and `--eta` set the sum, and `--workdir` moves the pyatb working
+directory that holds the copied matrices and its own output. The sum runs
+locally, on the machine that holds the matrices and the `abacustools`
+environment, which needs the optional `pyatb` package and an MPI runtime:
+`pip install 'abacustools[pyatb]'` and a conda MPI such as `mpich` provide both,
+and `--pyatb-command 'mpirun -np 4 pyatb'` runs the sum out of process on
+several ranks instead of in process.
+
+The occupation of the sum is pinned to the `occupied bands` count that ABACUS
+autosets and prints in its running log, not to a Fermi level. For an insulator
+any level inside the gap gives the same occupation, ABACUS places its `EFERMI`
+at one such value, and the transition energies the sum is built from are
+differences that do not depend on the energy reference at all; the Fermi energy
+is still written into the pyatb input, because pyatb asks for it, but it does
+not enter the result. The photon energy window has to start at zero, since its
+first row is the static limit, and to reach well above the band gap, since the
+sum covers every transition: a window that sits inside the gap captures no
+transition and leaves an empty spectrum, and for NaCl a 20 eV window gives a
+tensor about one percent low. `--omega 0 80` is the default and a window that
+starts above zero or ends below 40 eV is reported as a warning. The dense grid
+of the sum is what the tensor converges with; the k mesh of the source SCF only
+has to converge the density, and for NaCl 20x20x20 already agrees with
+50x50x50 to five digits.
 
 Piezoelectric stress tensors can be calculated from finite-strain changes in
 the Berry-phase polarization. The workflow generates the six independent

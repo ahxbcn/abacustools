@@ -4,6 +4,7 @@ from . import bsse as bsse_workflow
 from . import bec as bec_workflow
 from . import chgdiff as chgdiff_workflow
 from . import dftu as dftu_workflow
+from . import dielectric as dielectric_workflow
 from . import ecutwfc as ecutwfc_workflow
 from . import eos as eos_workflow
 from . import exchange as exchange_workflow
@@ -35,6 +36,7 @@ def register_parser(subparsers) -> None:
     bec_workflow.register_parser(workflow_subparsers)
     chgdiff_workflow.register_parser(workflow_subparsers)
     dftu_workflow.register_parser(workflow_subparsers)
+    dielectric_workflow.register_parser(workflow_subparsers)
     ecutwfc_workflow.register_parser(workflow_subparsers)
     eos_workflow.register_parser(workflow_subparsers)
     exchange_workflow.register_parser(workflow_subparsers)
