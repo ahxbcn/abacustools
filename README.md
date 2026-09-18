@@ -876,7 +876,11 @@ abacustools workflow phonon postprocess -j JOB --irreps
 ```
 
 `--debye` fits a Debye frequency to the total DOS and reports it in THz and as
-a temperature. `--pdos` reports the DOS projected onto every atom and
+a temperature. The Debye model is fitted below the quarter point of the
+spectrum and extrapolated to the `3 N` modes of the cell, so for a material
+whose optical branches carry much of the DOS the cut off can exceed the highest
+calculated frequency; the value is then a thermodynamic Debye temperature
+rather than the low temperature calorimetric one. `--pdos` reports the DOS projected onto every atom and
 Cartesian direction as one labelled record per projection, and plots the
 projections against the total DOS. `--irreps` resolves the space-group
 irreducible representation of each Gamma point mode by its Mulliken symbol,

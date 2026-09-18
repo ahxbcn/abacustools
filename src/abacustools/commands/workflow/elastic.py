@@ -300,8 +300,10 @@ def postprocess(args: argparse.Namespace) -> int:
     print("  elastic tensor (GPa):")
     for row in tensor:
         print("    " + " ".join(f"{value: .8f}" for value in row))
-    for name in ("bulk_modulus", "shear_modulus", "young_modulus", "poisson_ratio"):
-        print(f"  {name}: {result[name]:.8f}")
+    for name in ("bulk_modulus", "shear_modulus", "young_modulus"):
+        print(f"  {name}: {result[name]:.8f} GPa")
+    # The Poisson ratio is dimensionless, so it carries no unit.
+    print(f"  poisson_ratio: {result['poisson_ratio']:.8f}")
     print(f"  results: {output}")
     return 0
 

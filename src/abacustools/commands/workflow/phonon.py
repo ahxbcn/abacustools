@@ -804,10 +804,14 @@ def postprocess(args: argparse.Namespace) -> int:
     output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 
     print(f"  job: {job}")
-    print(f"  max frequency: {max_frequency:.8f} THz")
-    print(f"  entropy: {result['entropy']:.8f}")
-    print(f"  free energy: {result['free_energy']:.8f}")
-    print(f"  heat capacity: {result['heat_capacity']:.8f}")
+    # Phonopy reports the thermal properties in eV and eV/K.
+    print(
+        f"  max frequency: {max_frequency:.8f} THz "
+        f"({result['max_frequency_K']:.4f} K)"
+    )
+    print(f"  entropy: {result['entropy']:.8f} eV/K")
+    print(f"  free energy: {result['free_energy']:.8f} eV")
+    print(f"  heat capacity: {result['heat_capacity']:.8f} eV/K")
     if debye_frequency is not None:
         print(
             f"  Debye frequency: {result['debye']['frequency_thz']:.8f} THz "
