@@ -865,6 +865,14 @@ supercell is selected so each lattice vector is at least 10 Angstrom long.
 Custom paths can be passed as JSON with `--qpath` and
 `--high-symm-points`.
 
+The report carries the entropy, the free energy and the heat capacity at
+`--temperature`, which defaults to 298.15 K. They are written in eV and eV/K
+per cell of the reference structure, the unit the vibration workflow reports
+its thermochemistry in, and the `units` block of the JSON names them. Phonopy
+states its thermal properties per mole of cells, a free energy in kJ/mol and an
+entropy and heat capacity in J/(K mol), so they are converted on the way into
+the report rather than passed through with the wrong label.
+
 Every report carries the Gamma point modes with their degeneracy. Three
 optional analyses extend it, and each one is off by default because it either
 costs time or enlarges the report:

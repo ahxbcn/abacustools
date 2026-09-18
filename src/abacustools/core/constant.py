@@ -31,6 +31,18 @@ HBAR = PLANCK_CONSTANT / (2.0 * math.pi)
 BOLTZMANN_CONSTANT_EV_PER_K = BOLTZMANN_CONSTANT / ELEMENTARY_CHARGE
 THZ_TO_K = PLANCK_CONSTANT / BOLTZMANN_CONSTANT * 1.0e12
 
+#: Avogadro constant, in reciprocal mole.  Phonopy reports its thermal
+#: properties per mole of unit cells, which this turns into a value per cell.
+AVOGADRO_CONSTANT = 6.02214076e23
+
+#: Kilojoule per mole, the unit phonopy reports a harmonic free energy in, as
+#: electronvolt per cell.
+KILOJOULE_PER_MOL_TO_EV = 1000.0 / (ELEMENTARY_CHARGE * AVOGADRO_CONSTANT)
+
+#: Joule per kelvin per mole, the unit phonopy reports an entropy and a heat
+#: capacity in, as electronvolt per kelvin per cell.
+JOULE_PER_MOL_KELVIN_TO_EV_PER_KELVIN = KILOJOULE_PER_MOL_TO_EV * 1.0e-3
+
 #: Speed of light in vacuum, in metres per second.
 SPEED_OF_LIGHT = 299792458.0
 

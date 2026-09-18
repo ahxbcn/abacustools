@@ -22,7 +22,10 @@ from abacustools.commands.workflow.phonon import postprocess
 from abacustools.core.constant import (
     AMU_TO_KG,
     ANGSTROM_TO_METRE,
+    BOLTZMANN_CONSTANT_EV_PER_K,
     ELEMENTARY_CHARGE,
+    JOULE_PER_MOL_KELVIN_TO_EV_PER_KELVIN,
+    KILOJOULE_PER_MOL_TO_EV,
 )
 
 
@@ -383,9 +386,10 @@ def test_postprocess_heat_capacity_approaches_dulong_petit(tmp_path: Path) -> No
     """The high temperature heat capacity must approach 3 N k_B."""
     job = tmp_path / "job"
     _build_synthetic_phonon_job(job, cell=3.0, supercell=[2, 2, 2])
-    # The supercell holds eight atoms of three modes each, and phonopy
-    # reports its heat capacity in units of k_B.
-    limit = 3.0 * 8.0
+    # The reference cell holds one atom of three modes, and the heat capacity is
+    # reported per cell in eV/K, so the classical limit is 3 k_B with k_B in
+    # eV/K. A value left in J/(K mol) misses it by four orders of magnitude.
+    limit = 3.0 * BOLTZMANN_CONSTANT_EV_PER_K
 
     measured = []
     for temperature in (3000.0, 12000.0):
@@ -407,7 +411,7 @@ def test_postprocess_heat_capacity_freezes_out(tmp_path: Path) -> None:
     """Lowering the temperature must reduce the heat capacity to zero."""
     job = tmp_path / "job"
     _build_synthetic_phonon_job(job, cell=3.0, supercell=[2, 2, 2])
-    limit = 3.0 * 8.0
+    limit = 3.0 * BOLTZMANN_CONSTANT_EV_PER_K
     measured = []
     for temperature in (10.0, 300.0, 12000.0):
         assert (
@@ -433,6 +437,76 @@ def test_postprocess_free_energy_falls_with_temperature(tmp_path: Path) -> None:
 
     assert warm["free_energy"] < cold["free_energy"]
     assert warm["entropy"] > cold["entropy"]
+
+
+def test_postprocess_thermal_properties_follow_each_other(tmp_path: Path) -> None:
+    """The three thermal quantities must be derivatives of one another.
+
+    The entropy is ``S = -dF/dT`` and the heat capacity is ``C_v = T dS/dT``, so
+    the reported values are only consistent when all three carry the same unit
+    conversion. A free energy left in kJ/mol next to an entropy in J/(K mol)
+    fails this at once, which is what makes it a check of the units rather than
+    of the arithmetic.
+    """
+    job = tmp_path / "job"
+    _build_synthetic_phonon_job(job, cell=3.0, supercell=[2, 2, 2])
+
+    cold_temperature, warm_temperature = 400.0, 401.0
+    assert postprocess(
+        _postprocess_args(job, temperature=cold_temperature, mesh=[4, 4, 4])
+    ) == 0
+    cold = _read_report(job)
+    assert postprocess(
+        _postprocess_args(job, temperature=warm_temperature, mesh=[4, 4, 4])
+    ) == 0
+    warm = _read_report(job)
+
+    step = warm_temperature - cold_temperature
+    # A centred difference is compared against the mean of the two ends, since
+    # both estimate the same quantity at the middle of the step.
+    entropy = -(warm["free_energy"] - cold["free_energy"]) / step
+    assert entropy == pytest.approx(
+        0.5 * (cold["entropy"] + warm["entropy"]), rel=1e-3
+    )
+    midpoint = 0.5 * (cold_temperature + warm_temperature)
+    heat_capacity = midpoint * (warm["entropy"] - cold["entropy"]) / step
+    assert heat_capacity == pytest.approx(
+        0.5 * (cold["heat_capacity"] + warm["heat_capacity"]), rel=1e-3
+    )
+
+
+def test_postprocess_names_the_thermal_units(tmp_path: Path) -> None:
+    """Every thermal quantity of the report must name its unit."""
+    job = tmp_path / "job"
+    _build_synthetic_phonon_job(job, cell=3.0, supercell=[2, 2, 2])
+
+    assert postprocess(_postprocess_args(job, mesh=[4, 4, 4])) == 0
+    report = _read_report(job)
+
+    assert report["units"] == {
+        "temperature": "K",
+        "entropy": "eV/K per cell",
+        "free_energy": "eV per cell",
+        "heat_capacity": "eV/K per cell",
+    }
+    assert report["thermal_properties"]["units"]["heat_capacity"] == "eV/K per cell"
+
+
+def test_mole_to_cell_conversion_matches_phonopy() -> None:
+    """The conversion must agree with the constant phonopy itself uses.
+
+    Phonopy turns its internal eV into the kJ/mol it reports through
+    ``EvTokJmol`` (96.485 ...), which is the same thermochemical factor derived
+    here from the elementary charge and the Avogadro constant.
+    """
+    from phonopy.physical_units import get_physical_units
+
+    assert KILOJOULE_PER_MOL_TO_EV == pytest.approx(
+        1.0 / get_physical_units().EvTokJmol, rel=1e-6
+    )
+    assert JOULE_PER_MOL_KELVIN_TO_EV_PER_KELVIN == pytest.approx(
+        KILOJOULE_PER_MOL_TO_EV * 1.0e-3, rel=1e-12
+    )
 
 
 def test_postprocess_writes_the_full_report(tmp_path: Path) -> None:

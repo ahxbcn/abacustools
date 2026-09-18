@@ -10,7 +10,11 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from abacustools.core.constant import THZ_TO_K
+from abacustools.core.constant import (
+    JOULE_PER_MOL_KELVIN_TO_EV_PER_KELVIN,
+    KILOJOULE_PER_MOL_TO_EV,
+    THZ_TO_K,
+)
 from abacustools.data.phonon import (
     automatic_supercell,
     displacement_task,
@@ -442,15 +446,41 @@ def _thermal_properties_dict(phonon) -> Dict[str, Any]:
 
     Phonopy 3 exposes the result objects directly and deprecates the
     ``get_*_dict`` accessors, so those are preferred when present.
+
+    Phonopy reports the free energy in kJ/mol and the entropy and the heat
+    capacity in J/(K mol), that is per mole of unit cells.  Those are converted
+    to eV and eV/K per cell, the unit the vibration workflow reports its
+    thermochemistry in, so that the two can be compared directly.
     """
     properties = getattr(phonon, "thermal_properties", None)
     if properties is None:
-        return phonon.get_thermal_properties_dict()
+        raw = phonon.get_thermal_properties_dict()
+    else:
+        raw = {
+            "temperatures": properties.temperatures,
+            "free_energy": properties.free_energy,
+            "entropy": properties.entropy,
+            "heat_capacity": properties.heat_capacity,
+        }
     return {
-        "temperatures": properties.temperatures,
-        "free_energy": properties.free_energy,
-        "entropy": properties.entropy,
-        "heat_capacity": properties.heat_capacity,
+        "temperatures": jsonable(raw["temperatures"]),
+        "free_energy": jsonable(
+            np.asarray(raw["free_energy"], dtype=float) * KILOJOULE_PER_MOL_TO_EV
+        ),
+        "entropy": jsonable(
+            np.asarray(raw["entropy"], dtype=float)
+            * JOULE_PER_MOL_KELVIN_TO_EV_PER_KELVIN
+        ),
+        "heat_capacity": jsonable(
+            np.asarray(raw["heat_capacity"], dtype=float)
+            * JOULE_PER_MOL_KELVIN_TO_EV_PER_KELVIN
+        ),
+        "units": {
+            "temperature": "K",
+            "free_energy": "eV per cell",
+            "entropy": "eV/K per cell",
+            "heat_capacity": "eV/K per cell",
+        },
     }
 
 
@@ -1091,6 +1121,12 @@ def postprocess(args: argparse.Namespace) -> int:
         "band_structure": band_structure,
         "total_dos": jsonable(_total_dos_dict(phonon)),
         "band_dos_plot": str(plot_path),
+        "units": {
+            "temperature": "K",
+            "entropy": "eV/K per cell",
+            "free_energy": "eV per cell",
+            "heat_capacity": "eV/K per cell",
+        },
     }
     if debye_frequency is not None:
         result["debye"] = {
@@ -1124,7 +1160,7 @@ def postprocess(args: argparse.Namespace) -> int:
     output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 
     print(f"  job: {job}")
-    # Phonopy reports the thermal properties in eV and eV/K.
+    # The thermal properties are reported in eV and eV/K per cell.
     print(
         f"  max frequency: {max_frequency:.8f} THz "
         f"({result['max_frequency_K']:.4f} K)"
