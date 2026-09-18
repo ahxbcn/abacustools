@@ -16,12 +16,12 @@ from abacustools.data.versions import default_version
 from abacustools.io.abacus import WriteInput, WriteKpt
 from abacustools.io.stru import AbacusSTRU
 
-from .bec import (
-    _kpoint_mesh,
-    _read_task_polarization,
-    _task_metrics,
+from abacustools.data.polarization import (
+    kpoint_mesh,
     polarization_cartesian,
     polarization_delta,
+    read_task_polarization,
+    task_metrics,
 )
 from .common import (
     clear_generated_jobs,
@@ -272,7 +272,7 @@ def _prepare_one(
     strain_magnitude = _validate_strain(strain_magnitude)
 
     inputs, stru_filename, structure = read_job_structure(job)
-    kpoint, kpoint_model = _kpoint_mesh(job, inputs, structure)
+    kpoint, kpoint_model = kpoint_mesh(job, inputs, structure)
     task_names = _task_names(disp_type)
     existing = sorted(
         path.name
@@ -454,10 +454,10 @@ def _read_task_data(
 ) -> dict[str, Any]:
     """Collect SCF diagnostics and Berry phase data from one task."""
     data: dict[str, Any] = {
-        "metrics": _task_metrics(task, version),
+        "metrics": task_metrics(task, version),
         "polarization": None,
     }
-    polarization = _read_task_polarization(task, suffix)
+    polarization = read_task_polarization(task, suffix)
     if polarization is None:
         return data
     structure = AbacusSTRU.read(task / stru_filename)
@@ -497,7 +497,7 @@ def _read_full_polarization(
 ) -> tuple[np.ndarray, np.ndarray, Optional[float]]:
     """Read the legacy raw Cartesian polarization tuple for one task."""
     task = Path(folder)
-    polarization = _read_task_polarization(task, suffix)
+    polarization = read_task_polarization(task, suffix)
     if polarization is None:
         raise ValueError(f"complete Berry phase output was not found in {task}")
     structure = AbacusSTRU.read(task / stru_filename)

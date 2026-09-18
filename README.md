@@ -865,6 +865,15 @@ supercell is selected so each lattice vector is at least 10 Angstrom long.
 Custom paths can be passed as JSON with `--qpath` and
 `--high-symm-points`.
 
+The displaced calculations live in `disp-NNNN`, numbered by their index in the
+Phonopy displacement dataset, and `workflow_phonon.json` records both that
+index and the displaced atom of every task. Postprocessing therefore maps each
+force set onto its displacement through the manifest rather than through the
+order of the task list, and refuses a manifest whose task list and displacement
+entries disagree. A displaced supercell is written in the Phonopy atom order,
+because `AbacusSTRU.supercell` orders atoms by lattice point and mixing the two
+orders would attach every force to the wrong atom.
+
 Lattice thermal conductivities can be calculated with phono3py using third-order
 force constants. The prepare stage generates the displaced supercells below
 `fc3-*`, plus an optional independent `fc2-*` set, and writes the exact

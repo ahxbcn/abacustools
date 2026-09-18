@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import shlex
 from copy import deepcopy
 from pathlib import Path
@@ -12,9 +11,15 @@ from typing import Any, Iterable, Optional
 
 import numpy as np
 
-from abacustools.core.constant import ANG_TO_BOHR, BOHR_TO_ANG
+from abacustools.data.polarization import (
+    kpoint_mesh,
+    polarization_cartesian,
+    polarization_delta,
+    read_task_polarization,
+    task_metrics,
+)
 from abacustools.data.versions import default_version
-from abacustools.io.abacus import ReadKpt, WriteInput, WriteKpt, kspacing2kpt
+from abacustools.io.abacus import WriteInput, WriteKpt
 
 from .common import (
     clear_generated_jobs,
@@ -114,35 +119,6 @@ def _validate_directions(directions: Iterable[str]) -> list[str]:
     return result
 
 
-def _kpoint_mesh(job: Path, inputs: dict[str, Any], structure) -> tuple[list[float], str]:
-    """Read a regular Gamma/Monkhorst-Pack mesh for BEC calculations."""
-    try:
-        if float(inputs.get("gamma_only", 0)) > 0:
-            return [1, 1, 1, 0.0, 0.0, 0.0], "gamma"
-    except (TypeError, ValueError):
-        pass
-
-    kspacing = inputs.get("kspacing")
-    if kspacing not in (None, 0, "0", "0.0"):
-        cell_bohr = np.asarray(structure.cell, dtype=float) * ANG_TO_BOHR
-        mesh = kspacing2kpt(kspacing, cell_bohr)
-        return [*mesh, 0.0, 0.0, 0.0], "gamma"
-
-    filename = str(inputs.get("kpoint_file", "KPT"))
-    kpoint_path = job / filename
-    if not kpoint_path.is_file():
-        raise FileNotFoundError(f"could not find KPT file: {kpoint_path}")
-    try:
-        kpoint, model = ReadKpt(kpoint_path)
-    except SystemExit as error:
-        raise ValueError(f"could not read KPT file: {kpoint_path}") from error
-    if model not in {"gamma", "mp"} or len(kpoint) < 3:
-        raise ValueError("BEC requires a regular Gamma or Monkhorst-Pack KPT mesh")
-    mesh = [int(value) for value in kpoint[:3]]
-    if any(value <= 0 for value in mesh):
-        raise ValueError("KPT mesh dimensions must be positive")
-    shifts = [float(value) for value in (list(kpoint[3:6]) + [0.0, 0.0, 0.0])[:3]]
-    return [*mesh, *shifts], model
 
 
 def _write_runner(path: Path, abacus_command: str) -> None:
@@ -263,7 +239,7 @@ def prepare(args: argparse.Namespace) -> int:
     directions = _validate_directions(args.directions)
     if args.disp_type not in _DISP_TYPES:
         raise ValueError(f"invalid displacement type: {args.disp_type}")
-    kpoint, kpoint_model = _kpoint_mesh(job, inputs, structure)
+    kpoint, kpoint_model = kpoint_mesh(job, inputs, structure)
 
     task_names = _displacement_names(atom_indices, directions, args.disp_type)
     clear_generated_jobs(job, task_names, override=args.override)
@@ -335,108 +311,23 @@ def prepare(args: argparse.Namespace) -> int:
     return 0
 
 
-def _numbers(line: str) -> list[float]:
-    """Extract floating-point values from an ABACUS log line."""
-    return [float(value.replace("D", "E").replace("d", "e")) for value in re.findall(_NUMBER, line)]
 
 
-def read_berry_polarization(log_path: Path) -> dict[str, Any]:
-    """Read Berry phase polarization and its quantum from one ABACUS log."""
-    lines = Path(log_path).read_text(encoding="utf-8", errors="replace").splitlines()
-    p_vec: Optional[float] = None
-    modulus: Optional[float] = None
-    polarization_cm2: Optional[float] = None
-    volume: Optional[float] = None
-    direction: Optional[int] = None
-
-    for index, line in enumerate(lines):
-        if "Volume (A^3)" in line:
-            values = _numbers(line)
-            if values:
-                volume = values[-1]
-        if "The calculated polarization direction is" not in line:
-            continue
-
-        direction_values = re.findall(r"R\s*([123])", line)
-        if direction_values:
-            direction = int(direction_values[-1])
-        for following in lines[index + 1 : index + 8]:
-            values = _numbers(following)
-            if "(e/Omega).bohr" in following and len(values) >= 2:
-                p_vec = values[0] * BOHR_TO_ANG
-                modulus = values[1] * BOHR_TO_ANG
-            elif "C/m^2" in following and values:
-                polarization_cm2 = values[0]
-
-    if p_vec is None or modulus is None:
-        raise ValueError(f"Berry phase polarization was not found in {log_path}")
-    return {
-        "direction": direction,
-        "p_vec": p_vec,
-        "mod": modulus,
-        "polarization_cm2": polarization_cm2,
-        "volume": volume,
-    }
 
 
-def polarization_cartesian(p_vec: Iterable[float], cell: Iterable[Iterable[float]]) -> list[float]:
-    """Convert polarization components in lattice-vector basis to Cartesian axes."""
-    vectors = np.asarray(list(cell), dtype=float)
-    values = np.asarray(list(p_vec), dtype=float)
-    lengths = np.linalg.norm(vectors, axis=1)
-    if vectors.shape != (3, 3) or values.shape != (3,) or np.any(lengths <= 0):
-        raise ValueError("cell and polarization must contain three valid vectors")
-    return np.sum(values[:, None] * vectors / lengths[:, None], axis=0).tolist()
 
 
-def polarization_delta(
-    original: Iterable[float], displaced: Iterable[float], modulus: Iterable[float]
-) -> list[float]:
-    """Calculate the shortest polarization change across the Berry phase branch."""
-    delta = np.asarray(list(displaced), dtype=float) - np.asarray(list(original), dtype=float)
-    quantum = np.asarray(list(modulus), dtype=float)
-    if delta.shape != (3,) or quantum.shape != (3,):
-        raise ValueError("polarization vectors must contain three values")
-    valid = quantum > 0
-    delta[valid] -= np.rint(delta[valid] / quantum[valid]) * quantum[valid]
-    return delta.tolist()
 
 
-def _read_task_polarization(task: Path, suffix: str) -> Optional[dict[str, Any]]:
-    """Read all three Berry phase directions, returning None when incomplete."""
-    output = task / f"OUT.{suffix}"
-    try:
-        values = [read_berry_polarization(output / name) for name in _BERRY_LOGS]
-    except (FileNotFoundError, OSError, ValueError) as error:
-        print(f"  warning: skipping incomplete BEC task {task}: {error}")
-        return None
-    return {
-        "p_vec": [item["p_vec"] for item in values],
-        "mod": [item["mod"] for item in values],
-        "polarization_cm2": [item["polarization_cm2"] for item in values],
-        "volume": values[0]["volume"],
-    }
 
 
-def _task_metrics(task: Path, version: str) -> dict[str, Any]:
-    """Collect available SCF metrics without failing incomplete tasks."""
-    from abacustools.data.abacus_result import get_result_from_job
-
-    try:
-        return get_result_from_job(
-            task,
-            ["energy", "drho", "denergy", "scf_steps", "converged"],
-            version,
-        )
-    except (FileNotFoundError, OSError, ValueError) as error:
-        return {"error": str(error)}
 
 
 def _task_data(task: Path, version: str, suffix: str) -> dict[str, Any]:
     """Collect SCF and Berry phase information for one task."""
     return {
-        "metrics": _task_metrics(task, version),
-        "polarization": _read_task_polarization(task, suffix),
+        "metrics": task_metrics(task, version),
+        "polarization": read_task_polarization(task, suffix),
     }
 
 

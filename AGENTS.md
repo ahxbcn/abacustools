@@ -60,6 +60,11 @@ rendering only.
 ## Adding or changing a command
 
 1. Implement the logic in `data/` (or `io/`, `core/`), not in the command file.
+   Draw the module boundary along the computation, not along the commands: when
+   two command modules need the same helper — a phonopy object, a force reader,
+   a polarization conversion — give it a public home in `data/`. A command
+   module must never import a private name out of a sibling command module, and
+   shared helpers must not be copied into a second one.
 2. Create `commands/<family>/<name>.py` containing:
    - `register_parser(subparsers)` that adds the subparser and calls
      `parser.set_defaults(handler=<func>)`;
