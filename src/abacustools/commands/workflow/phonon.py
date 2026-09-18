@@ -11,6 +11,17 @@ from typing import Any
 import numpy as np
 
 from abacustools.core.constant import THZ_TO_K
+from abacustools.data.phonon import (
+    automatic_supercell,
+    displacement_task,
+    jsonable,
+    phonopy_atoms,
+    phonopy_supercell_structure,
+    read_forces,
+    validate_mesh,
+    validate_positive_float,
+    validate_supercell,
+)
 from abacustools.data.versions import default_version
 
 from .common import (
@@ -124,98 +135,54 @@ def _register_postprocess_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _validate_positive_float(value: float, name: str, *, allow_zero: bool = False) -> None:
-    """Validate a finite positive command parameter."""
-    if not np.isfinite(value) or (value < 0 if allow_zero else value <= 0):
-        qualifier = "non-negative" if allow_zero else "positive"
-        raise ValueError(f"{name} must be a {qualifier} finite number")
 
 
-def _validate_supercell(supercell: Any) -> list[int]:
-    """Validate and normalize a three-dimensional supercell."""
-    if supercell is None:
-        raise ValueError("supercell must be specified before validation")
-    values = list(supercell)
-    if len(values) != 3 or any(isinstance(value, bool) for value in values):
-        raise ValueError("supercell must contain three positive integers")
-    try:
-        normalized = [int(value) for value in values]
-    except (TypeError, ValueError) as error:
-        raise ValueError("supercell must contain three positive integers") from error
-    if any(value != original or value <= 0 for value, original in zip(normalized, values)):
-        raise ValueError("supercell must contain three positive integers")
-    return normalized
 
 
-def _automatic_supercell(structure, min_supercell_length: float) -> list[int]:
-    """Choose diagonal supercell repetitions from the lattice-vector lengths."""
-    _validate_positive_float(min_supercell_length, "min_supercell_length")
-    lengths = np.linalg.norm(np.asarray(structure.cell, dtype=float), axis=1)
-    if not np.all(np.isfinite(lengths)) or np.any(lengths <= 0):
-        raise ValueError("structure must have three finite, non-zero lattice vectors")
-    return [max(1, int(np.ceil(min_supercell_length / length))) for length in lengths]
 
 
-def _phonopy_atoms(structure):
-    """Convert an ABACUS structure to PhonopyAtoms in Angstrom units."""
-    from phonopy.structure.atoms import PhonopyAtoms
-
-    return PhonopyAtoms(
-        symbols=structure.elements,
-        cell=np.asarray(structure.cell, dtype=float),
-        scaled_positions=np.asarray(structure.coords_direct, dtype=float),
-    )
 
 
-def _phonopy_supercell_structure(structure, phonopy_supercell):
-    """Build an ABACUS supercell that follows the phonopy atom order.
-
-    :meth:`AbacusSTRU.supercell` orders atoms by lattice point, while phonopy
-    orders them by the atom of the reference cell.  Mixing the two orders
-    attaches the calculated forces to the wrong atoms, so supercells written
-    for displaced calculations are rebuilt from the phonopy object.
-    """
-    from abacustools.io.stru import AbacusSTRU
-
-    by_element = {}
-    for atom in structure.atoms:
-        if atom.element is not None:
-            by_element.setdefault(atom.element, atom)
-    if not by_element:
-        raise RuntimeError("structure does not define any element")
-
-    atoms = []
-    for symbol, position in zip(phonopy_supercell.symbols, phonopy_supercell.positions):
-        source = by_element.get(symbol)
-        if source is None:
-            raise RuntimeError(f"phonopy supercell contains an unknown element: {symbol}")
-        atom = deepcopy(source)
-        atom.coord = tuple(float(value) for value in position)
-        atoms.append(atom)
-    return AbacusSTRU(
-        cell=np.asarray(phonopy_supercell.cell, dtype=float).tolist(),
-        atoms=atoms,
-        dpks=structure.dpks,
-        metadata=deepcopy(structure.metadata),
-    )
 
 
 def _initialize_phonopy(structure, supercell: list[int]):
-    """Initialize Phonopy with a diagonal supercell matrix."""
+    """Initialize Phonopy with a diagonal supercell matrix.
+
+    ``primitive_matrix="P"`` pins the primitive cell to the reference cell.
+    Phonopy 4 resolves the ``"auto"`` default with a symmetry search, while
+    phonopy 3 used the identity, so leaving it unset would make the dynamical
+    matrix depend on the installed phonopy version.
+    """
     from phonopy import Phonopy
 
-    return Phonopy(_phonopy_atoms(structure), supercell_matrix=np.diag(supercell))
+    return Phonopy(
+        phonopy_atoms(structure),
+        supercell_matrix=np.diag(supercell),
+        primitive_matrix="P",
+    )
 
 
 def _displacement_metadata(phonon) -> list[dict[str, Any]]:
-    """Return the generated Phonopy displacement dataset in JSON form."""
+    """Return the generated Phonopy displacement dataset in JSON form.
+
+    The atom offset is recorded next to every displacement, so that
+    postprocessing can locate the displaced atom of a task without relying on
+    the order of the task list.
+    """
     dataset = phonon.dataset
     if not dataset or "first_atoms" not in dataset:
         raise RuntimeError("Phonopy did not generate a displacement dataset")
+    natom = int(dataset.get("natom") or len(phonon.supercell))
+    if natom != len(phonon.supercell):
+        raise RuntimeError(
+            f"Phonopy displacement dataset describes {natom} atoms, "
+            f"but the supercell holds {len(phonon.supercell)}"
+        )
     return [
         {
             "number": int(item["number"]),
             "displacement": np.asarray(item["displacement"], dtype=float).tolist(),
+            "atom_offset": int(item["number"]) * natom,
         }
         for item in dataset["first_atoms"]
     ]
@@ -235,14 +202,14 @@ def prepare(args: argparse.Namespace) -> int:
     job = Path(args.job).absolute()
     if not job.is_dir():
         raise RuntimeError(f"job directory does not exist: {job}")
-    _validate_positive_float(args.displacement_stepsize, "displacement_stepsize")
-    _validate_positive_float(args.min_supercell_length, "min_supercell_length")
+    validate_positive_float(args.displacement_stepsize, "displacement_stepsize")
+    validate_positive_float(args.min_supercell_length, "min_supercell_length")
 
     inputs, stru_filename, structure = read_job_structure(job)
     supercell = (
-        _validate_supercell(args.supercell)
+        validate_supercell(args.supercell)
         if args.supercell is not None
-        else _automatic_supercell(structure, args.min_supercell_length)
+        else automatic_supercell(structure, args.min_supercell_length)
     )
     phonon = _initialize_phonopy(structure, supercell)
     phonon.generate_displacements(distance=args.displacement_stepsize)
@@ -250,7 +217,20 @@ def prepare(args: argparse.Namespace) -> int:
     if not displaced_structures:
         raise RuntimeError("Phonopy generated no displaced structures")
 
-    names = [f"{_TASK_PREFIX}{index}" for index in range(1, len(displaced_structures) + 1)]
+    displacements = _displacement_metadata(phonon)
+    # The displaced supercells are indexed by displacement order, while
+    # ``number`` indexes the displaced atom.  Both are recorded, so the
+    # postprocessing stage can map every force set onto its dataset entry.
+    entries = [
+        {
+            "task": displacement_task(_TASK_PREFIX, index)["task"],
+            "index": index,
+            "atom": item["number"],
+            "displacement": item["displacement"],
+        }
+        for index, item in enumerate(displacements)
+    ]
+    names = [entry["task"] for entry in entries]
     clear_generated_jobs(
         job,
         sorted(set(names + _existing_displacement_names(job))),
@@ -267,7 +247,7 @@ def prepare(args: argparse.Namespace) -> int:
     if scf_thr > 1e-7:
         phonon_inputs["scf_thr"] = 1e-7
     kpoint_file = kpoint_filename(job, inputs)
-    supercell_structure = _phonopy_supercell_structure(structure, phonon.supercell)
+    supercell_structure = phonopy_supercell_structure(structure, phonon.supercell)
     if supercell_structure.natoms != len(displaced_structures[0]):
         raise RuntimeError("Phonopy and ABACUS generated supercells have different atom counts")
 
@@ -275,7 +255,8 @@ def prepare(args: argparse.Namespace) -> int:
     print(f"  supercell: {' '.join(str(value) for value in supercell)}")
     print(f"  displacement step: {args.displacement_stepsize} Angstrom")
     print(f"  generated displacements: {len(displaced_structures)}")
-    for name, displaced in zip(names, displaced_structures):
+    for entry, displaced in zip(entries, displaced_structures):
+        name = entry["task"]
         displaced_structure = deepcopy(supercell_structure)
         displaced_structure.cell = np.asarray(displaced.cell, dtype=float).tolist()
         displaced_structure.coords = np.asarray(displaced.positions, dtype=float).tolist()
@@ -293,20 +274,33 @@ def prepare(args: argparse.Namespace) -> int:
         job,
         "phonon",
         tasks=names,
+        displacements=entries,
         supercell=supercell,
         displacement_stepsize=float(args.displacement_stepsize),
         min_supercell_length=float(args.min_supercell_length),
-        displacements=_displacement_metadata(phonon),
+        dataset=displacements,
     )
     return 0
 
 
-def _manifest_displacements(phonon, manifest: dict[str, Any]) -> None:
-    """Restore the exact displacement dataset recorded during preparation."""
-    displacements = manifest.get("displacements")
+def _manifest_displacements(phonon, manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """Validate and return the displacement dataset recorded during preparation.
+
+    Args:
+        phonon: Phonopy object used to bound the displaced-atom index.
+        manifest: Preparation-time manifest of the workflow.
+
+    Returns:
+        The validated dataset entries.
+
+    Raises:
+        RuntimeError: When the dataset is missing, malformed, or inconsistent
+            with the supercell.
+    """
+    displacements = manifest.get("dataset")
     if not isinstance(displacements, list) or not displacements:
         raise RuntimeError("phonon workflow manifest has no displacement dataset")
-    first_atoms = []
+    validated = []
     for item in displacements:
         if not isinstance(item, dict) or "number" not in item or "displacement" not in item:
             raise RuntimeError("invalid displacement entry in phonon workflow manifest")
@@ -319,42 +313,10 @@ def _manifest_displacements(phonon, manifest: dict[str, Any]) -> None:
             raise RuntimeError("invalid displacement entry in phonon workflow manifest")
         if not np.all(np.isfinite(displacement)):
             raise RuntimeError("invalid displacement entry in phonon workflow manifest")
-        first_atoms.append({"number": number, "displacement": displacement.tolist()})
-    phonon.dataset = {"natom": len(phonon.supercell), "first_atoms": first_atoms}
-
-
-def _read_forces(job: Path, version: str, expected_natoms: int) -> np.ndarray:
-    """Read one converged ABACUS force set in eV/Angstrom."""
-    from abacustools.data.abacus_result import get_result_from_job
-
-    result = get_result_from_job(
-        job,
-        param_names=["force", "converged"],
-        version=version,
-    )
-    if not result["converged"]:
-        raise RuntimeError(f"SCF calculation did not converge: {job}")
-    if result["force"] is None:
-        raise RuntimeError(f"forces were not found in the output: {job}")
-    forces = np.asarray(result["force"], dtype=float)
-    expected_shape = (expected_natoms, 3)
-    if forces.shape != expected_shape or not np.all(np.isfinite(forces)):
-        raise RuntimeError(
-            f"invalid force array in the output: {job}; "
-            f"expected {expected_shape}, got {forces.shape}"
+        validated.append(
+            {"number": number, "displacement": displacement.tolist()}
         )
-    return forces
-
-
-def _validate_mesh(mesh: Any) -> list[int]:
-    """Validate the reciprocal-space mesh dimensions."""
-    values = list(mesh)
-    if len(values) != 3 or any(isinstance(value, bool) for value in values):
-        raise ValueError("mesh must contain three positive integers")
-    normalized = [int(value) for value in values]
-    if any(value != original or value <= 0 for value, original in zip(normalized, values)):
-        raise ValueError("mesh must contain three positive integers")
-    return normalized
+    return validated
 
 
 def _custom_band_path(qpath: Any, high_symm_points: Any, npoints: int):
@@ -396,17 +358,6 @@ def _custom_band_path(qpath: Any, high_symm_points: Any, npoints: int):
     return get_band_qpoints_and_path_connections(band_paths, npoints=npoints), labels
 
 
-def _jsonable(value: Any) -> Any:
-    """Convert NumPy values nested in Phonopy result dictionaries to JSON values."""
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if isinstance(value, np.generic):
-        return value.item()
-    if isinstance(value, dict):
-        return {key: _jsonable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_jsonable(item) for item in value]
-    return value
 
 
 def _resolve_output(job: Path, filename: str) -> Path:
@@ -420,8 +371,8 @@ def postprocess(args: argparse.Namespace) -> int:
     job = Path(args.job).absolute()
     if not job.is_dir():
         raise RuntimeError(f"job directory does not exist: {job}")
-    _validate_positive_float(args.temperature, "temperature", allow_zero=True)
-    mesh = _validate_mesh(args.mesh)
+    validate_positive_float(args.temperature, "temperature", allow_zero=True)
+    mesh = validate_mesh(args.mesh)
     if not isinstance(args.npoints, int) or args.npoints < 2:
         raise ValueError("npoints must be at least 2")
     if (args.qpath is None) != (args.high_symm_points is None):
@@ -430,7 +381,7 @@ def postprocess(args: argparse.Namespace) -> int:
     _, _, structure = read_job_structure(job)
     manifest = read_manifest(job, "phonon", [])
     try:
-        manifest_supercell = _validate_supercell(manifest.get("supercell"))
+        manifest_supercell = validate_supercell(manifest.get("supercell"))
     except ValueError as error:
         raise RuntimeError("phonon workflow manifest has an invalid supercell") from error
     try:
@@ -439,18 +390,48 @@ def postprocess(args: argparse.Namespace) -> int:
         raise RuntimeError(
             "phonon workflow manifest has an invalid displacement_stepsize"
         ) from error
-    _validate_positive_float(displacement_stepsize, "displacement_stepsize")
+    validate_positive_float(displacement_stepsize, "displacement_stepsize")
     tasks = manifest.get("tasks")
     if not isinstance(tasks, list) or not tasks or not all(isinstance(task, str) for task in tasks):
         raise RuntimeError("phonon workflow manifest has invalid tasks")
     read_manifest(job, "phonon", tasks)
 
     phonon = _initialize_phonopy(structure, manifest_supercell)
-    _manifest_displacements(phonon, manifest)
+    displacements = _manifest_displacements(phonon, manifest)
+    entries = [
+        {
+            "task": displacement_task(_TASK_PREFIX, index)["task"],
+            "index": index,
+            "atom": item["number"],
+            "displacement": item["displacement"],
+        }
+        for index, item in enumerate(displacements)
+    ]
+    if [entry["task"] for entry in entries] != tasks:
+        raise RuntimeError(
+            "phonon workflow manifest lists displacement tasks that do not match "
+            "its task list"
+        )
+
+    phonon.dataset = {
+        "natom": len(phonon.supercell),
+        "first_atoms": [
+            {"number": item["number"], "displacement": item["displacement"]}
+            for item in displacements
+        ],
+    }
     expected_natoms = len(phonon.supercell)
-    forces = [_read_forces(job / task, args.version, expected_natoms) for task in tasks]
-    if len(forces) != len(phonon.dataset["first_atoms"]):
-        raise RuntimeError("number of force sets does not match the displacement dataset")
+    if len(entries) != len(phonon.dataset["first_atoms"]):
+        raise RuntimeError(
+            "the number of displaced calculations does not match the displacement "
+            "dataset of the phonon workflow manifest"
+        )
+    # Map every force set onto its displacement through the recorded index, so
+    # the fit never depends on the order the tasks happen to be listed in.
+    forces = [
+        read_forces(job / str(entry["task"]), args.version, expected_natoms)
+        for entry in entries
+    ]
 
     phonon.forces = forces
     phonon.produce_force_constants()
@@ -469,7 +450,7 @@ def postprocess(args: argparse.Namespace) -> int:
     )
     if args.qpath is None:
         band_paths, labels, connections = get_band_qpoints_by_seekpath(
-            _phonopy_atoms(structure),
+            phonopy_atoms(structure),
             npoints=args.npoints,
             is_const_interval=True,
         )
@@ -496,11 +477,12 @@ def postprocess(args: argparse.Namespace) -> int:
     figure.savefig(plot_path, dpi=300)
     plt.close(figure)
 
-    thermal = _jsonable(phonon.get_thermal_properties_dict())
+    thermal = jsonable(phonon.get_thermal_properties_dict())
     max_frequency = float(np.max(frequencies))
     result = {
         "supercell": manifest_supercell,
         "displacement_stepsize": displacement_stepsize,
+        "displacements": entries,
         "temperature": float(args.temperature),
         "thermal_properties": thermal,
         "entropy": float(thermal["entropy"][0]),
@@ -509,8 +491,8 @@ def postprocess(args: argparse.Namespace) -> int:
         "commensurate_frequencies_thz": frequencies.tolist(),
         "max_frequency_thz": max_frequency,
         "max_frequency_K": max_frequency * THZ_TO_K,
-        "band_structure": _jsonable(phonon.get_band_structure_dict()),
-        "total_dos": _jsonable(phonon.get_total_dos_dict()),
+        "band_structure": jsonable(phonon.get_band_structure_dict()),
+        "total_dos": jsonable(phonon.get_total_dos_dict()),
         "band_dos_plot": str(plot_path),
     }
     output = _resolve_output(job, args.output)

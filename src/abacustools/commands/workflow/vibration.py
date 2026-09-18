@@ -19,6 +19,7 @@ from abacustools.core.constant import (
 )
 from abacustools.core.submission import generate_workflow_submission
 from abacustools.data.versions import default_version
+from abacustools.data.phonon import read_forces
 from abacustools.data.vibration import HarmonicVibration
 from abacustools.integrations.ase_vibration import AseVibrationData
 from abacustools.io.stru import write_poscar
@@ -356,26 +357,6 @@ def prepare(args: argparse.Namespace) -> int:
     return 0
 
 
-def _read_forces(job: Path, version: str, natoms: int) -> np.ndarray:
-    """Read one converged ABACUS force array."""
-    from abacustools.data.abacus_result import get_result_from_job
-
-    result = get_result_from_job(
-        job,
-        param_names=["force", "converged"],
-        version=version,
-    )
-    if not result["converged"]:
-        raise RuntimeError(f"SCF calculation did not converge: {job}")
-    if result["force"] is None:
-        raise RuntimeError(f"forces were not found in the output: {job}")
-    forces = np.asarray(result["force"], dtype=float)
-    if forces.shape != (natoms, 3) or not np.all(np.isfinite(forces)):
-        raise RuntimeError(
-            f"invalid force array in the output: {job}; "
-            f"expected {(natoms, 3)}, got {forces.shape}"
-        )
-    return forces
 
 
 def _hessian_from_forces(
@@ -799,7 +780,7 @@ def postprocess(args: argparse.Namespace) -> int:
     read_manifest(job, "vibration", task_names)
 
     force_sets = {
-        task: _read_forces(job / task, args.version, structure.natoms)
+        task: read_forces(job / task, args.version, structure.natoms)
         for task in task_names
     }
     hessian = _hessian_from_forces(

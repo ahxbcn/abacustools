@@ -9,9 +9,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from abacustools.data.phonon import displacement_tasks
 from abacustools.commands.workflow.thermal_conductivity import (
     _conductivity_components,
-    _displacement_tasks,
     _kappa_array,
     _mesh_setting,
     _scale_kpoints,
@@ -146,7 +146,7 @@ def test_mesh_setting() -> None:
 
 
 def test_displacement_tasks_keep_dataset_indices() -> None:
-    tasks = _displacement_tasks([object(), None, object()], "fc3-")
+    tasks = displacement_tasks([object(), None, object()], "fc3-")
     assert tasks == [
         {"task": "fc3-0000", "index": 0},
         {"task": "fc3-0002", "index": 2},

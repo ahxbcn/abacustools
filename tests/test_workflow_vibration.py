@@ -291,7 +291,7 @@ H
                 return force
 
             with patch(
-                "abacustools.commands.workflow.vibration._read_forces",
+                "abacustools.commands.workflow.vibration.read_forces",
                 side_effect=force_for,
             ):
                 frequencies = {}
@@ -368,7 +368,7 @@ H
                 return force
 
             with patch(
-                "abacustools.commands.workflow.vibration._read_forces",
+                "abacustools.commands.workflow.vibration.read_forces",
                 side_effect=force_for,
             ):
                 for backend in ("ase", "builtin"):
