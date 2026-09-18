@@ -6,7 +6,7 @@ import argparse
 import json
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict
 
 import numpy as np
 
@@ -366,6 +366,46 @@ def _resolve_output(job: Path, filename: str) -> Path:
     return output if output.is_absolute() else job / output
 
 
+def _thermal_properties_dict(phonon) -> Dict[str, Any]:
+    """Return the thermal properties as a JSON-compatible dictionary.
+
+    Phonopy 3 exposes the result objects directly and deprecates the
+    ``get_*_dict`` accessors, so those are preferred when present.
+    """
+    properties = getattr(phonon, "thermal_properties", None)
+    if properties is None:
+        return phonon.get_thermal_properties_dict()
+    return {
+        "temperatures": properties.temperatures,
+        "free_energy": properties.free_energy,
+        "entropy": properties.entropy,
+        "heat_capacity": properties.heat_capacity,
+    }
+
+
+def _total_dos_dict(phonon) -> Dict[str, Any]:
+    """Return the total DOS as a JSON-compatible dictionary."""
+    dos = getattr(phonon, "total_dos", None)
+    if dos is None:
+        return phonon.get_total_dos_dict()
+    return {
+        "frequency_points": dos.frequency_points,
+        "total_dos": dos.dos,
+    }
+
+
+def _band_structure_dict(phonon) -> Dict[str, Any]:
+    """Return the band structure as a JSON-compatible dictionary."""
+    structure = getattr(phonon, "band_structure", None)
+    if structure is None:
+        return phonon.get_band_structure_dict()
+    return {
+        "frequencies": structure.frequencies,
+        "distances": structure.distances,
+        "qpoints": structure.qpoints,
+    }
+
+
 def postprocess(args: argparse.Namespace) -> int:
     """Build force constants and calculate the phonon spectrum."""
     job = Path(args.job).absolute()
@@ -445,8 +485,7 @@ def postprocess(args: argparse.Namespace) -> int:
 
     commensurate_points = get_commensurate_points(phonon.supercell_matrix)
     frequencies = np.asarray(
-        [phonon.get_frequencies(point) for point in commensurate_points],
-        dtype=float,
+        phonon.run_qpoints(commensurate_points).frequencies, dtype=float
     )
     if args.qpath is None:
         band_paths, labels, connections = get_band_qpoints_by_seekpath(
@@ -477,7 +516,7 @@ def postprocess(args: argparse.Namespace) -> int:
     figure.savefig(plot_path, dpi=300)
     plt.close(figure)
 
-    thermal = jsonable(phonon.get_thermal_properties_dict())
+    thermal = jsonable(_thermal_properties_dict(phonon))
     max_frequency = float(np.max(frequencies))
     result = {
         "supercell": manifest_supercell,
@@ -491,8 +530,8 @@ def postprocess(args: argparse.Namespace) -> int:
         "commensurate_frequencies_thz": frequencies.tolist(),
         "max_frequency_thz": max_frequency,
         "max_frequency_K": max_frequency * THZ_TO_K,
-        "band_structure": jsonable(phonon.get_band_structure_dict()),
-        "total_dos": jsonable(phonon.get_total_dos_dict()),
+        "band_structure": jsonable(_band_structure_dict(phonon)),
+        "total_dos": jsonable(_total_dos_dict(phonon)),
         "band_dos_plot": str(plot_path),
     }
     output = _resolve_output(job, args.output)
