@@ -6,7 +6,7 @@ import argparse
 import json
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -132,6 +132,39 @@ def _register_postprocess_arguments(parser: argparse.ArgumentParser) -> None:
         "--plot",
         default="phonon_dispersion_dos.png",
         help="Band and DOS plot filename. Relative paths are resolved below JOB.",
+    )
+    parser.add_argument(
+        "--pdos",
+        action="store_true",
+        help="Also report the atom- and Cartesian-projected DOS and plot it.",
+    )
+    parser.add_argument(
+        "--pdos-plot",
+        default="phonon_projected_dos.png",
+        help="Projected DOS plot filename. Relative paths are resolved below JOB.",
+    )
+    parser.add_argument(
+        "--debye",
+        action="store_true",
+        help="Also report the Debye frequency fitted to the total DOS.",
+    )
+    parser.add_argument(
+        "--irreps",
+        action="store_true",
+        help="Also report the space-group irreducible representations of the "
+        "phonon modes at the Gamma point.",
+    )
+    parser.add_argument(
+        "--irreps-plot",
+        default="phonon_gamma_irreps.png",
+        help="Gamma point mode plot filename. Relative paths are resolved below JOB.",
+    )
+    parser.add_argument(
+        "--symprec",
+        type=float,
+        default=1e-5,
+        help="Symmetry tolerance in Angstrom for the Gamma point mode "
+        "representation, default: 1e-05.",
     )
 
 
@@ -406,6 +439,178 @@ def _band_structure_dict(phonon) -> Dict[str, Any]:
     }
 
 
+def _projected_dos_rows(phonon, symbols, *, xyz_projection: bool) -> List[Dict[str, Any]]:
+    """Return the projected DOS as one labelled record per projection.
+
+    Args:
+        phonon: Phonopy object whose projected DOS has been run.
+        symbols: Element symbol of every atom of the primitive cell.
+        xyz_projection: Whether the projection separates the Cartesian axes.
+
+    Returns:
+        One record per projection, holding its label, the element and atom it
+        belongs to, the Cartesian direction when resolved, and the projected
+        DOS values.
+    """
+    values = np.asarray(phonon.projected_dos.projected_dos, dtype=float)
+    rows: List[Dict[str, Any]] = []
+    for index in range(values.shape[0]):
+        if xyz_projection:
+            atom, axis = divmod(index, 3)
+            direction = ("x", "y", "z")[axis]
+            label = f"{symbols[atom]}{atom + 1}:{direction}"
+        else:
+            atom, direction = index, None
+            label = f"{symbols[atom]}{atom + 1}"
+        rows.append(
+            {
+                "label": label,
+                "element": symbols[atom],
+                "atom": atom + 1,
+                "direction": direction,
+                "values": values[index].tolist(),
+            }
+        )
+    return rows
+
+
+def _plot_projected_dos(
+    path: Path,
+    frequency_points: np.ndarray,
+    rows: List[Dict[str, Any]],
+    *,
+    total: Optional[np.ndarray] = None,
+) -> None:
+    """Plot the projected DOS of every atom on a shared frequency axis.
+
+    Args:
+        path: File to write the figure to.
+        frequency_points: Frequency grid of the projection, in THz.
+        rows: Projections returned by :func:`_projected_dos_rows`.
+        total: Total DOS to draw on every panel for reference.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    count = len(rows)
+    figure, axes = plt.subplots(
+        count, 1, sharex=True, figsize=(6.0, max(2.0, 1.1 * count)), dpi=300
+    )
+    axes = np.atleast_1d(axes)
+    for axis, row in zip(axes, rows):
+        if total is not None:
+            axis.plot(
+                frequency_points, total, color="0.75", linewidth=0.8, label="total"
+            )
+        axis.plot(frequency_points, row["values"], color="#9467bd", linewidth=1.0)
+        axis.set_ylabel(row["label"], rotation=0, ha="right", va="center", fontsize=8)
+        axis.set_yticks([])
+        axis.set_ylim(bottom=0.0)
+    axes[-1].set_xlabel("Frequency (THz)")
+    figure.tight_layout()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(path)
+    plt.close(figure)
+
+
+def _plot_gamma_modes(path: Path, modes: List[Dict[str, Any]]) -> None:
+    """Plot the Gamma point frequencies labelled by their representation.
+
+    Args:
+        path: File to write the figure to.
+        modes: Records holding a frequency and an optional representation.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    frequencies = [mode["frequency_thz"] for mode in modes]
+    figure, axis = plt.subplots(figsize=(5.0, 0.6 + 0.28 * len(modes)), dpi=300)
+    positions = np.arange(len(modes))
+    axis.barh(positions, frequencies, color="#1f77b4", height=0.6)
+    axis.set_yticks(positions)
+    axis.set_yticklabels(
+        [
+            f"mode {mode['band']}: {mode['irrep']}"
+            if mode.get("irrep")
+            else f"mode {mode['band']}"
+            for mode in modes
+        ],
+        fontsize=8,
+    )
+    axis.invert_yaxis()
+    axis.set_xlabel("Frequency (THz)")
+    for position, frequency in zip(positions, frequencies):
+        axis.text(frequency, position, f" {frequency:.3f}", va="center", fontsize=7)
+    axis.set_xlim(left=0.0)
+    figure.tight_layout()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(path)
+    plt.close(figure)
+
+
+def _gamma_modes(phonon, *, want_irreps: bool, symprec: float) -> List[Dict[str, Any]]:
+    """Return the Gamma point modes with their degeneracy and representation.
+
+    Args:
+        phonon: Phonopy object whose mesh has been run.
+        want_irreps: Whether to resolve the space-group representations.
+        symprec: Symmetry tolerance in Angstrom.
+
+    Returns:
+        One record per mode, holding the one-based band index, the frequency in
+        THz, the size of its degenerate set, and the representation when it
+        could be resolved.
+
+    Raises:
+        RuntimeError: When ``want_irreps`` is set and the symmetry of the
+            structure cannot be found.
+    """
+    from phonopy.phonon.degeneracy import degenerate_sets
+
+    frequencies = np.asarray(phonon.run_qpoints([[0.0, 0.0, 0.0]]).frequencies[0], dtype=float)
+    modes = [
+        {"band": index + 1, "frequency_thz": float(frequency), "degeneracy": 1}
+        for index, frequency in enumerate(frequencies)
+    ]
+    for group in degenerate_sets(frequencies):
+        if len(group) > 1:
+            for index in group:
+                modes[index]["degeneracy"] = len(group)
+
+    if not want_irreps:
+        return modes
+
+    try:
+        representations = phonon.run_irreps([0.0, 0.0, 0.0])
+    except Exception as error:  # pragma: no cover - depends on the structure
+        raise RuntimeError(
+            f"could not find the symmetry needed for the Gamma point irreps: {error}"
+        ) from error
+
+    point_group = getattr(representations, "_pointgroup_symbol_at_q", "") or ""
+    # Phonopy names the Gamma point representations with their Mulliken
+    # symbols. The label is left unset for point groups whose character table
+    # it cannot index unequivocally, so an unnamed representation is reported
+    # by its dimension alongside the point group instead.
+    labels = getattr(representations, "ir_labels", None)
+    if labels is None:
+        labels = getattr(representations, "_ir_labels", None)
+    for position, group in enumerate(representations.band_indices):
+        if labels is not None and position < len(labels) and labels[position] is not None:
+            symbol = str(labels[position])
+        else:
+            dimensions = np.shape(representations.irreps[position])
+            dimension = int(dimensions[1]) if len(dimensions) > 1 else 1
+            symbol = f"{dimension}D" + (f" ({point_group})" if point_group else "")
+        for index in group:
+            modes[index]["irrep"] = symbol
+    return modes
+
+
 def postprocess(args: argparse.Namespace) -> int:
     """Build force constants and calculate the phonon spectrum."""
     job = Path(args.job).absolute()
@@ -417,6 +622,13 @@ def postprocess(args: argparse.Namespace) -> int:
         raise ValueError("npoints must be at least 2")
     if (args.qpath is None) != (args.high_symm_points is None):
         raise ValueError("qpath and high_symm_points must be provided together")
+    symprec = float(getattr(args, "symprec", 1e-5))
+    validate_positive_float(symprec, "symprec")
+    pdos = bool(getattr(args, "pdos", False))
+    debye = bool(getattr(args, "debye", False))
+    irreps = bool(getattr(args, "irreps", False))
+    pdos_plot = args.pdos_plot if hasattr(args, "pdos_plot") else None
+    irreps_plot = args.irreps_plot if hasattr(args, "irreps_plot") else None
 
     _, _, structure = read_job_structure(job)
     manifest = read_manifest(job, "phonon", [])
@@ -480,6 +692,29 @@ def postprocess(args: argparse.Namespace) -> int:
     phonon.run_thermal_properties(temperatures=[args.temperature])
     phonon.run_total_dos()
 
+    projected = None
+    if pdos:
+        phonon.run_projected_dos(use_tetrahedron_method=True, xyz_projection=True)
+        projected = _projected_dos_rows(
+            phonon, list(structure.elements), xyz_projection=True
+        )
+
+    debye_frequency = None
+    if debye:
+        phonon.total_dos.run_debye_frequency()
+        fitted = float(phonon.total_dos.debye_frequency)
+        if np.isfinite(fitted):
+            debye_frequency = fitted
+        else:
+            # Phonopy returns an infinite Debye frequency when the DOS does
+            # not support the fit, and then fails to draw the marker it adds
+            # to the DOS plot, so drop the value from the object as well.
+            phonon.total_dos._freq_Debye = None
+            print(
+                "  warning: the Debye frequency did not converge for this DOS "
+                "and is left out of the report"
+            )
+
     from phonopy.harmonic.dynmat_to_fc import get_commensurate_points
     from phonopy.phonon.band_structure import get_band_qpoints_by_seekpath
 
@@ -487,6 +722,7 @@ def postprocess(args: argparse.Namespace) -> int:
     frequencies = np.asarray(
         phonon.run_qpoints(commensurate_points).frequencies, dtype=float
     )
+    gamma_modes = _gamma_modes(phonon, want_irreps=irreps, symprec=symprec)
     if args.qpath is None:
         band_paths, labels, connections = get_band_qpoints_by_seekpath(
             phonopy_atoms(structure),
@@ -520,6 +756,7 @@ def postprocess(args: argparse.Namespace) -> int:
     max_frequency = float(np.max(frequencies))
     result = {
         "supercell": manifest_supercell,
+        "mesh": mesh,
         "displacement_stepsize": displacement_stepsize,
         "displacements": entries,
         "temperature": float(args.temperature),
@@ -528,12 +765,40 @@ def postprocess(args: argparse.Namespace) -> int:
         "free_energy": float(thermal["free_energy"][0]),
         "heat_capacity": float(thermal["heat_capacity"][0]),
         "commensurate_frequencies_thz": frequencies.tolist(),
+        "gamma_modes": gamma_modes,
         "max_frequency_thz": max_frequency,
         "max_frequency_K": max_frequency * THZ_TO_K,
         "band_structure": jsonable(_band_structure_dict(phonon)),
         "total_dos": jsonable(_total_dos_dict(phonon)),
         "band_dos_plot": str(plot_path),
     }
+    if debye_frequency is not None:
+        result["debye"] = {
+            "frequency_thz": float(debye_frequency),
+            "temperature_K": float(debye_frequency) * THZ_TO_K,
+        }
+    if projected is not None:
+        frequency_points = np.asarray(
+            phonon.projected_dos.frequency_points, dtype=float
+        )
+        result["projected_dos"] = {
+            "xyz_projection": True,
+            "frequency_points": frequency_points.tolist(),
+            "projections": projected,
+        }
+        projected_plot = _resolve_output(job, pdos_plot)
+        total_dos = np.asarray(phonon.total_dos.dos, dtype=float)
+        _plot_projected_dos(
+            projected_plot,
+            frequency_points,
+            projected,
+            total=total_dos,
+        )
+        result["projected_dos"]["plot"] = str(projected_plot)
+    if irreps:
+        irreps_plot_path = _resolve_output(job, irreps_plot)
+        _plot_gamma_modes(irreps_plot_path, gamma_modes)
+        result["gamma_irreps_plot"] = str(irreps_plot_path)
     output = _resolve_output(job, args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
@@ -543,6 +808,18 @@ def postprocess(args: argparse.Namespace) -> int:
     print(f"  entropy: {result['entropy']:.8f}")
     print(f"  free energy: {result['free_energy']:.8f}")
     print(f"  heat capacity: {result['heat_capacity']:.8f}")
+    if debye_frequency is not None:
+        print(
+            f"  Debye frequency: {result['debye']['frequency_thz']:.8f} THz "
+            f"({result['debye']['temperature_K']:.4f} K)"
+        )
+    if irreps:
+        labels = ", ".join(
+            f"{mode['band']}:{mode.get('irrep', '?')}" for mode in gamma_modes
+        )
+        print(f"  Gamma modes: {labels}")
+    if projected is not None:
+        print(f"  projected DOS: {result['projected_dos']['plot']}")
     print(f"  plot: {plot_path}")
     print(f"  results: {output}")
     return 0

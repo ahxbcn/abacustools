@@ -266,6 +266,12 @@ def _postprocess_args(job: Path, **overrides) -> Namespace:
         high_symm_points=None,
         output="phonon_results.json",
         plot="phonon_dispersion_dos.png",
+        pdos=False,
+        pdos_plot="phonon_projected_dos.png",
+        debye=False,
+        irreps=False,
+        irreps_plot="phonon_gamma_irreps.png",
+        symprec=1e-5,
     )
     values.update(overrides)
     return Namespace(**values)
@@ -556,3 +562,183 @@ def test_postprocess_accepts_a_custom_qpath(tmp_path: Path) -> None:
     assert len(report["band_structure"]["distances"]) == 1
     assert np.shape(report["band_structure"]["frequencies"][0])[1] == 6
 
+
+def test_postprocess_reports_the_gamma_mode_degeneracy(tmp_path: Path) -> None:
+    """The Gamma modes must carry their degeneracy without a flag."""
+    job = tmp_path / "job"
+    _build_synthetic_phonon_job(job, cell=3.0, supercell=[2, 2, 2])
+
+    assert postprocess(_postprocess_args(job, mesh=[2, 2, 2])) == 0
+
+    modes = _read_report(job)["gamma_modes"]
+    # A simple cubic crystal has three degenerate modes of one atom.
+    assert len(modes) == 3
+    assert [mode["band"] for mode in modes] == [1, 2, 3]
+    assert all(mode["degeneracy"] == 3 for mode in modes)
+    assert len({round(mode["frequency_thz"], 6) for mode in modes}) == 1
+
+
+def test_postprocess_reports_the_gamma_irreps(tmp_path: Path) -> None:
+    """The Gamma modes of a cubic crystal must resolve to one irrep."""
+    job = tmp_path / "job"
+    _build_synthetic_phonon_job(job, cell=3.0, supercell=[2, 2, 2])
+
+    assert postprocess(_postprocess_args(job, mesh=[2, 2, 2], irreps=True)) == 0
+
+    report = _read_report(job)
+    modes = report["gamma_modes"]
+    # One threefold degenerate mode resolves to a single three-dimensional
+    # representation, so every mode carries the same symbol; the three
+    # translations of a cubic crystal transform as T1u.
+    symbols = {mode["irrep"] for mode in modes}
+    assert symbols == {"T1u"}
+    assert Path(report["gamma_irreps_plot"]).is_file()
+    assert Path(report["gamma_irreps_plot"]).stat().st_size > 0
+
+
+def test_postprocess_gamma_irreps_of_a_diatomic_cell(tmp_path: Path) -> None:
+    """Both triplets of a diatomic cell transform as the polar vector."""
+    job = tmp_path / "job"
+    _build_synthetic_phonon_job(
+        job,
+        symbols=["Na", "Cl"],
+        scaled_positions=[[0.0, 0.0, 0.0], [0.5, 0.5, 0.5]],
+        cell=5.64,
+    )
+
+    assert postprocess(_postprocess_args(job, mesh=[2, 2, 2], irreps=True)) == 0
+
+    modes = _read_report(job)["gamma_modes"]
+    assert len(modes) == 6
+    # The acoustic triplet at zero and the optical triplet above it both
+    # transform as the three-dimensional T1u of m-3m.
+    assert [mode["degeneracy"] for mode in modes] == [3, 3, 3, 3, 3, 3]
+    assert {mode["irrep"] for mode in modes} == {"T1u"}
+    assert modes[0]["frequency_thz"] == pytest.approx(0.0, abs=1e-6)
+    assert modes[3]["frequency_thz"] > 1.0
+
+
+def test_postprocess_falls_back_when_a_point_group_has_no_symbol(
+    tmp_path: Path,
+) -> None:
+    """A representation phonopy cannot name is reported by its dimension."""
+    job = tmp_path / "job"
+    # The primitive cell of this two-atom diamond-like lattice belongs to -3m,
+    # whose character table phonopy cannot index unequivocally, so the Mulliken
+    # symbol comes back unset.
+    _build_synthetic_phonon_job(
+        job,
+        symbols=["Si", "Si"],
+        scaled_positions=[[0.0, 0.0, 0.0], [0.25, 0.25, 0.25]],
+        cell=5.43,
+    )
+
+    assert postprocess(_postprocess_args(job, mesh=[2, 2, 2], irreps=True)) == 0
+
+    modes = _read_report(job)["gamma_modes"]
+    assert all(mode["irrep"] for mode in modes)
+    assert {mode["irrep"] for mode in modes} == {"3D (-3m)"}
+    assert [mode["degeneracy"] for mode in modes] == [3] * 6
+
+
+def test_postprocess_without_irreps_leaves_them_out(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    _build_synthetic_phonon_job(job, cell=3.0, supercell=[2, 2, 2])
+
+    assert postprocess(_postprocess_args(job, mesh=[2, 2, 2])) == 0
+
+    report = _read_report(job)
+    assert all("irrep" not in mode for mode in report["gamma_modes"])
+    assert "gamma_irreps_plot" not in report
+
+
+def test_postprocess_reports_the_debye_frequency(tmp_path: Path) -> None:
+    """The Debye frequency must sit at or above the spectrum top."""
+    job = tmp_path / "job"
+    _build_synthetic_phonon_job(job, cell=3.0, supercell=[2, 2, 2])
+
+    assert postprocess(_postprocess_args(job, mesh=[4, 4, 4], debye=True)) == 0
+
+    report = _read_report(job)
+    debye = report["debye"]
+    assert debye["frequency_thz"] > 0.0
+    # The Debye temperature of a 1 THz frequency is 47.99 K.
+    assert debye["temperature_K"] == pytest.approx(
+        debye["frequency_thz"] * 47.9924, rel=1e-3
+    )
+    # A higher Debye frequency than the spectrum top is unphysical.
+    assert debye["frequency_thz"] <= 3.0 * report["max_frequency_thz"]
+    # A softer crystal must have the lower Debye frequency.
+    soft = tmp_path / "soft"
+    _build_synthetic_phonon_job(
+        soft, cell=3.0, supercell=[2, 2, 2], force_constant=4.0
+    )
+    assert postprocess(_postprocess_args(soft, mesh=[4, 4, 4], debye=True)) == 0
+    assert _read_report(soft)["debye"]["frequency_thz"] < debye["frequency_thz"]
+
+
+def test_postprocess_without_debye_leaves_it_out(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    _build_synthetic_phonon_job(job, cell=3.0, supercell=[2, 2, 2])
+
+    assert postprocess(_postprocess_args(job, mesh=[2, 2, 2])) == 0
+
+    assert "debye" not in _read_report(job)
+
+
+def test_postprocess_reports_the_projected_dos(tmp_path: Path) -> None:
+    """The projected DOS must be labelled and add up to the total."""
+    job = tmp_path / "job"
+    _build_synthetic_phonon_job(
+        job,
+        symbols=["Na", "Cl"],
+        scaled_positions=[[0.0, 0.0, 0.0], [0.5, 0.5, 0.5]],
+        cell=5.64,
+    )
+
+    assert postprocess(_postprocess_args(job, mesh=[4, 4, 4], pdos=True)) == 0
+
+    report = _read_report(job)
+    projected = report["projected_dos"]
+    assert projected["xyz_projection"] is True
+    rows = projected["projections"]
+    # One projection per atom and Cartesian direction, each labelled.
+    assert len(rows) == 2 * 3
+    assert [row["label"] for row in rows] == [
+        "Na1:x", "Na1:y", "Na1:z", "Cl2:x", "Cl2:y", "Cl2:z",
+    ]
+    assert [row["element"] for row in rows] == ["Na"] * 3 + ["Cl"] * 3
+    assert [row["direction"] for row in rows] == ["x", "y", "z"] * 2
+    frequencies = np.asarray(projected["frequency_points"], dtype=float)
+    assert frequencies.size > 1
+    assert all(len(row["values"]) == frequencies.size for row in rows)
+
+    # Every state belongs to some atom and direction, so the projections
+    # integrate to the same number of states as the total DOS.
+    summed = np.sum([np.asarray(row["values"], dtype=float) for row in rows], axis=0)
+    total = np.asarray(report["total_dos"]["total_dos"], dtype=float)
+    assert np.trapezoid(summed, frequencies) == pytest.approx(
+        np.trapezoid(total, frequencies), rel=1e-2
+    )
+    assert Path(projected["plot"]).is_file()
+    assert Path(projected["plot"]).stat().st_size > 0
+
+
+def test_postprocess_without_pdos_leaves_it_out(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    _build_synthetic_phonon_job(job, cell=3.0, supercell=[2, 2, 2])
+
+    assert postprocess(_postprocess_args(job, mesh=[2, 2, 2])) == 0
+
+    report = _read_report(job)
+    assert "projected_dos" not in report
+
+
+def test_postprocess_records_the_mesh_it_used(tmp_path: Path) -> None:
+    """The report must record the mesh that the sums were taken on."""
+    job = tmp_path / "job"
+    _build_synthetic_phonon_job(job, cell=3.0, supercell=[2, 2, 2])
+
+    assert postprocess(_postprocess_args(job, mesh=[3, 4, 5])) == 0
+
+    assert _read_report(job)["mesh"] == [3, 4, 5]

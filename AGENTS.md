@@ -96,6 +96,12 @@ menu-specific branching in command modules.
   cell vectors in Angstrom.
 - When writing cube files, keep grid geometry at full precision — low-precision
   cell vectors corrupt the cell volume and make integrated charges non-integer.
+- Phonopy 4 changed two defaults away from phonopy 3: `primitive_matrix`
+  resolves `"auto"` with a symmetry search instead of the identity, and the
+  `get_frequencies`/`get_*_dict` accessors are deprecated in favour of the
+  result objects (`run_qpoints`, `thermal_properties`, `total_dos`,
+  `band_structure`). Pin the matrix and read the objects, keeping a fallback
+  only where an older phonopy has to keep working.
 
 ## Testing
 

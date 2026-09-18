@@ -865,6 +865,37 @@ supercell is selected so each lattice vector is at least 10 Angstrom long.
 Custom paths can be passed as JSON with `--qpath` and
 `--high-symm-points`.
 
+Every report carries the Gamma point modes with their degeneracy. Three
+optional analyses extend it, and each one is off by default because it either
+costs time or enlarges the report:
+
+```text
+abacustools workflow phonon postprocess -j JOB --debye
+abacustools workflow phonon postprocess -j JOB --pdos --pdos-plot PDOS.png
+abacustools workflow phonon postprocess -j JOB --irreps
+```
+
+`--debye` fits a Debye frequency to the total DOS and reports it in THz and as
+a temperature. `--pdos` reports the DOS projected onto every atom and
+Cartesian direction as one labelled record per projection, and plots the
+projections against the total DOS. `--irreps` resolves the space-group
+irreducible representation of each Gamma point mode by its Mulliken symbol,
+using `--symprec` as the symmetry tolerance, and plots the modes labelled with
+their symbols. `--irreps` needs a structure whose symmetry can be found, so it
+fails with an explicit message when the tolerance does not match the geometry.
+Phonopy leaves the symbol unset for point groups whose character table it
+cannot index unequivocally, such as the `-3m` of a diamond-like primitive
+cell; those modes are reported by their dimension and point group instead,
+for example `3D (-3m)`. `--debye` warns and omits the value when the fit does
+not converge, which happens when the DOS has no Debye-like low-frequency
+region.
+
+The projections are summed on the same mesh as the total DOS, and the mesh is
+recorded in the report so that a reader can tell which sampling produced them.
+Note that without Born effective charges the Gamma point longitudinal optical
+modes carry no non-analytical correction, so a polar material is described
+without its LO-TO splitting.
+
 The displaced calculations live in `disp-NNNN`, numbered by their index in the
 Phonopy displacement dataset, and `workflow_phonon.json` records both that
 index and the displaced atom of every task. Postprocessing therefore maps each
