@@ -274,6 +274,7 @@ def _postprocess_args(job: Path, **overrides) -> Namespace:
         symprec=1e-5,
         dielectric=None,
         born=None,
+        bec_results=None,
         nac_direction=None,
     )
     values.update(overrides)

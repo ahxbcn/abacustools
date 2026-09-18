@@ -913,7 +913,12 @@ abacustools workflow phonon postprocess -j JOB --irreps \
 
 `--dielectric` accepts a scalar, three diagonal values, a flat nine value matrix
 or a 3x3 matrix, and `--born` holds one 3x3 tensor per atom of the reference
-cell in its atom order. The correction is applied to the dispersion, to the
+cell in its atom order. The charges can also be read from the `bec_results.json`
+that `workflow bec` writes, with `--bec-results`, which avoids transcribing
+tensors by hand: that file already stores them with the rows as the displacement
+directions and the columns as the Cartesian polarization directions, which is
+the layout the correction expects. Born charges and dielectric tensor must both
+be given; either one alone is refused. The correction is applied to the dispersion, to the
 total and projected DOS and to the thermal properties, because the mesh takes
 the limit with the direction of each of its own q points. The Gamma point modes
 need an explicit direction, which `--nac-direction` sets and which defaults to

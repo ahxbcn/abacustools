@@ -79,10 +79,12 @@ def test_born_charges_accept_a_lone_tensor_for_one_atom() -> None:
 def test_nac_needs_both_inputs(tmp_path: Path) -> None:
     job = _ionic_job(tmp_path)
 
-    with pytest.raises(ValueError, match="both --dielectric and --born"):
-        postprocess(_postprocess_args(job, dielectric=json.loads(_DIELECTRIC)))
-    with pytest.raises(ValueError, match="both --dielectric and --born"):
+    # Each half of the correction is reported as missing when it is the one
+    # that was left out.
+    with pytest.raises(ValueError, match="needs --dielectric"):
         postprocess(_postprocess_args(job, born=json.loads(_BORN)))
+    with pytest.raises(ValueError, match="Born effective charges"):
+        postprocess(_postprocess_args(job, dielectric=json.loads(_DIELECTRIC)))
 
 
 def test_postprocess_without_nac_keeps_the_optical_triplet_degenerate(
@@ -330,3 +332,151 @@ def test_nac_changes_the_thermal_properties(tmp_path: Path) -> None:
         plain_report["heat_capacity"], rel=1e-9
     )
     assert corrected_report["max_frequency_thz"] > plain_report["max_frequency_thz"]
+
+
+def _bec_results(path: Path, *, charge: float = 1.1, drop_row: bool = False) -> Path:
+    """Write a minimal ``bec_results.json`` of the BEC workflow."""
+    tensor = [[charge, 0.0, 0.0], [0.0, charge, 0.0], [0.0, 0.0, charge]]
+    if drop_row:
+        tensor = [[charge, 0.0, 0.0], None, [0.0, 0.0, charge]]
+    payload = {
+        "workflow": "bec",
+        "atoms": [
+            {"index": 1, "label": "Na", "bec_tensor": tensor},
+            {
+                "index": 2,
+                "label": "Cl",
+                "bec_tensor": [[-v for v in row] for row in tensor if row is not None]
+                if not drop_row
+                else [[-charge, 0.0, 0.0], None, [0.0, 0.0, -charge]],
+            },
+        ],
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_born_charges_can_be_read_from_the_bec_workflow(tmp_path: Path) -> None:
+    """The BEC workflow output must be usable without hand transcription."""
+    job = _ionic_job(tmp_path)
+    results = _bec_results(tmp_path / "bec_results.json")
+
+    assert (
+        postprocess(
+            _postprocess_args(
+                job,
+                mesh=[2, 2, 2],
+                dielectric=json.loads(_DIELECTRIC),
+                bec_results=results,
+            )
+        )
+        == 0
+    )
+
+    report = _read_report(job)
+    assert report["non_analytical_correction"]["born"][0][0][0] == pytest.approx(1.1)
+    assert [mode["character"] for mode in report["gamma_modes"][3:]] == [
+        "TO",
+        "TO",
+        "LO",
+    ]
+
+
+def test_bec_results_give_the_same_spectrum_as_an_explicit_tensor(
+    tmp_path: Path,
+) -> None:
+    """Reading the file must equal passing the same numbers by hand."""
+    explicit = tmp_path / "explicit"
+    from_file = tmp_path / "fromfile"
+    for job in (explicit, from_file):
+        _build_synthetic_phonon_job(
+            job,
+            symbols=["Na", "Cl"],
+            scaled_positions=[[0.0, 0.0, 0.0], [0.5, 0.5, 0.5]],
+            cell=5.64,
+        )
+    results = _bec_results(tmp_path / "bec.json")
+
+    assert (
+        postprocess(
+            _postprocess_args(
+                explicit,
+                mesh=[2, 2, 2],
+                dielectric=json.loads(_DIELECTRIC),
+                born=json.loads(_BORN),
+            )
+        )
+        == 0
+    )
+    assert (
+        postprocess(
+            _postprocess_args(
+                from_file,
+                mesh=[2, 2, 2],
+                dielectric=json.loads(_DIELECTRIC),
+                bec_results=results,
+            )
+        )
+        == 0
+    )
+
+    assert _read_report(from_file)["gamma_modes"] == _read_report(explicit)["gamma_modes"]
+
+
+def test_bec_results_must_hold_every_direction(tmp_path: Path) -> None:
+    job = _ionic_job(tmp_path)
+    results = _bec_results(tmp_path / "bec.json", drop_row=True)
+
+    with pytest.raises(ValueError, match="missing the displacement"):
+        postprocess(
+            _postprocess_args(
+                job,
+                mesh=[2, 2, 2],
+                dielectric=json.loads(_DIELECTRIC),
+                bec_results=results,
+            )
+        )
+
+
+def test_bec_results_must_hold_every_atom(tmp_path: Path) -> None:
+    job = _ionic_job(tmp_path)
+    results = tmp_path / "bec.json"
+    results.write_text(
+        json.dumps(
+            {
+                "workflow": "bec",
+                "atoms": [
+                    {
+                        "index": 1,
+                        "label": "Na",
+                        "bec_tensor": [[1.1, 0, 0], [0, 1.1, 0], [0, 0, 1.1]],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="every atom"):
+        postprocess(
+            _postprocess_args(
+                job,
+                mesh=[2, 2, 2],
+                dielectric=json.loads(_DIELECTRIC),
+                bec_results=results,
+            )
+        )
+
+
+def test_bec_results_file_must_exist(tmp_path: Path) -> None:
+    job = _ionic_job(tmp_path)
+
+    with pytest.raises(FileNotFoundError, match="could not find the BEC results"):
+        postprocess(
+            _postprocess_args(
+                job,
+                mesh=[2, 2, 2],
+                dielectric=json.loads(_DIELECTRIC),
+                bec_results=tmp_path / "absent.json",
+            )
+        )

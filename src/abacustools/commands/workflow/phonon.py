@@ -167,6 +167,14 @@ def _register_postprocess_arguments(parser: argparse.ArgumentParser) -> None:
         "representation, default: 1e-05.",
     )
     parser.add_argument(
+        "--bec-results",
+        type=Path,
+        default=None,
+        help="bec_results.json written by 'workflow bec', used for the Born "
+        "effective charges of the non-analytical correction. The dielectric "
+        "tensor still has to be given with --dielectric.",
+    )
+    parser.add_argument(
         "--dielectric",
         type=_json_argument,
         default=None,
@@ -548,6 +556,68 @@ def _dielectric_tensor(value: Any) -> np.ndarray:
     return tensor
 
 
+def _born_charges_from_bec_results(path: Path, structure) -> np.ndarray:
+    """Return the Born effective charges written by the BEC workflow.
+
+    The BEC workflow stores a tensor per displaced atom whose rows are the
+    displacement directions and whose columns are the Cartesian polarization
+    directions, which is the layout the non-analytical correction expects, so
+    the tensors are passed on as they are.
+
+    Args:
+        path: ``bec_results.json`` of the BEC workflow.
+        structure: Reference cell the charges are needed for.
+
+    Returns:
+        The ``(natoms, 3, 3)`` array.
+
+    Raises:
+        FileNotFoundError: When the file does not exist.
+        ValueError: When the file does not describe every atom of the cell, or
+            when one of its tensors is incomplete.
+    """
+    if not path.is_file():
+        raise FileNotFoundError(f"could not find the BEC results: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ValueError(f"invalid BEC results file: {path}") from error
+
+    atoms = payload.get("atoms") if isinstance(payload, dict) else None
+    if not isinstance(atoms, list) or not atoms:
+        raise ValueError(f"the BEC results hold no atoms: {path}")
+
+    charges = np.full((structure.natoms, 3, 3), np.nan, dtype=float)
+    for atom in atoms:
+        if not isinstance(atom, dict):
+            raise ValueError(f"invalid atom entry in the BEC results: {path}")
+        try:
+            index = int(atom["index"]) - 1
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(f"invalid atom index in the BEC results: {path}") from error
+        if index < 0 or index >= structure.natoms:
+            raise ValueError(
+                f"the BEC results describe atom {index + 1}, which the reference "
+                f"cell of {structure.natoms} atoms does not hold"
+            )
+        tensor = atom.get("bec_tensor")
+        if not isinstance(tensor, list) or len(tensor) != 3:
+            raise ValueError(f"atom {index + 1} of the BEC results has no tensor")
+        for row, values in enumerate(tensor):
+            if values is None:
+                raise ValueError(
+                    f"atom {index + 1} of the BEC results is missing the displacement "
+                    f"along {'xyz'[row]}; compute every direction of every atom"
+                )
+            charges[index, row] = np.asarray(values, dtype=float)
+
+    if not np.all(np.isfinite(charges)):
+        raise ValueError(
+            f"the BEC results do not describe every atom of the reference cell: {path}"
+        )
+    return charges
+
+
 def _born_charges(value: Any, natoms: int) -> np.ndarray:
     """Return the Born effective charges from a CLI value.
 
@@ -594,12 +664,21 @@ def _nac_parameters(
     """
     dielectric = getattr(args, "dielectric", None)
     born = getattr(args, "born", None)
-    if dielectric is None and born is None:
+    bec_results = getattr(args, "bec_results", None)
+    if dielectric is None and born is None and bec_results is None:
         return None
-    if dielectric is None or born is None:
+    if born is None and bec_results is None:
         raise ValueError(
-            "the non-analytical correction needs both --dielectric and --born"
+            "the non-analytical correction needs the Born effective charges, "
+            "given with --born or read with --bec-results"
         )
+    if dielectric is None:
+        raise ValueError(
+            "the non-analytical correction needs --dielectric, together with "
+            "--born or --bec-results"
+        )
+    if born is None and bec_results is not None:
+        born = _born_charges_from_bec_results(Path(bec_results), structure)
     return {
         "born": _born_charges(born, structure.natoms),
         "dielectric": _dielectric_tensor(dielectric),
