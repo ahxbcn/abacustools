@@ -170,6 +170,54 @@ def phonopy_supercell_structure(structure: AbacusSTRU, phonopy_supercell) -> Aba
     )
 
 
+def moved_mode_indices(
+    frequencies: Sequence[float],
+    reference: Sequence[float],
+    *,
+    tolerance: float = 1.0e-6,
+) -> List[int]:
+    """Return the modes that a correction shifted off the reference spectrum.
+
+    A non-analytical correction is a rank one perturbation of the dynamical
+    matrix, so it moves the modes that couple to it and leaves every other
+    frequency where it was.  Finding those modes by matching the two frequency
+    sets is what survives the reordering the shift causes: a mode that climbs
+    above its neighbours changes the band index of everything above it, so
+    comparing the two spectra band by band reports the modes it displaced as
+    moved as well.  Matching the values instead finds only the mode that has no
+    partner in the reference spectrum.
+
+    Args:
+        frequencies: Frequencies of the corrected calculation, in THz.
+        reference: Frequencies of the same calculation with the correction off,
+            in the same order.
+        tolerance: Largest difference, in THz, at which two frequencies count
+            as the same mode.
+
+    Returns:
+        The zero-based indices of the corrected modes with no partner.
+
+    Raises:
+        ValueError: When the two spectra hold a different number of modes.
+    """
+    values = np.asarray(frequencies, dtype=float)
+    if values.shape != np.asarray(reference, dtype=float).shape:
+        raise ValueError(
+            "the corrected and the reference spectra must hold the same number "
+            "of modes"
+        )
+    unmatched = list(np.asarray(reference, dtype=float))
+    moved = []
+    for index, frequency in enumerate(values):
+        for position, candidate in enumerate(unmatched):
+            if abs(frequency - candidate) <= tolerance:
+                unmatched.pop(position)
+                break
+        else:
+            moved.append(index)
+    return moved
+
+
 def read_forces(job: Path, version: str, expected_natoms: int) -> np.ndarray:
     """Read one converged ABACUS force array in eV/Angstrom.
 

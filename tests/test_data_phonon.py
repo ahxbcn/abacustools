@@ -13,6 +13,7 @@ from abacustools.data.phonon import (
     displacement_task,
     displacement_tasks,
     jsonable,
+    moved_mode_indices,
     read_forces,
     validate_displacement_entries,
     validate_mesh,
@@ -242,3 +243,51 @@ def test_jsonable_converts_nested_numpy() -> None:
         "nested": [2, {"inner": [[0.0, 0.0], [0.0, 0.0]]}],
         "plain": "text",
     }
+
+
+def test_moved_mode_indices_finds_nothing_in_an_unchanged_spectrum() -> None:
+    reference = [0.0, 0.0, 0.0, 8.0, 8.26138, 8.39169]
+
+    assert moved_mode_indices(reference, reference) == []
+
+
+def test_moved_mode_indices_finds_the_mode_a_correction_raised() -> None:
+    reference = [0.0, 0.0, 0.0, 8.0, 8.26138, 8.39169]
+    corrected = [0.0, 0.0, 0.0, 8.26138, 8.39169, 10.24492]
+
+    # Band by band this looks as if three modes had moved; as sets only the one
+    # that has no partner in the reference spectrum did.
+    assert moved_mode_indices(corrected, reference) == [5]
+
+
+def test_moved_mode_indices_survives_degenerate_pairs() -> None:
+    """A doubly degenerate mode splits into one that moves and one that stays."""
+    reference = [0.0, 0.0, 0.0, 8.00148, 8.26138, 8.26138, 8.39169, 8.39169]
+    corrected = [0.0, 0.0, 0.0, 8.00148, 8.26138, 8.39169, 8.39169, 10.26734]
+
+    assert moved_mode_indices(corrected, reference) == [7]
+
+
+def test_moved_mode_indices_reproduce_the_wurtzite_gamma_point() -> None:
+    """The hexagonal ZnS case that exposed the band by band comparison.
+
+    A self consistent calculation along the c axis raises the A1 mode from
+    8.00148 THz to 10.24492 THz.  Comparing the two spectra band by band marks
+    the two E1 modes, the two E2 modes and the B1 mode as longitudinal as well,
+    because the raised mode climbs above all of them.
+    """
+    reference = [
+        0.0, 0.0, 0.0, 2.06995, 2.06995, 5.87288, 8.00148, 8.26138, 8.26138,
+        8.39169, 8.39169, 9.77211,
+    ]
+    corrected = [
+        0.0, 0.0, 0.0, 2.06995, 2.06995, 5.87288, 8.26138, 8.26138, 8.39169,
+        8.39169, 9.77211, 10.24492,
+    ]
+
+    assert moved_mode_indices(corrected, reference) == [11]
+
+
+def test_moved_mode_indices_rejects_spectra_of_different_size() -> None:
+    with pytest.raises(ValueError, match="same number of modes"):
+        moved_mode_indices([0.0, 1.0], [0.0])

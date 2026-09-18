@@ -19,6 +19,7 @@ from abacustools.data.phonon import (
     automatic_supercell,
     displacement_task,
     jsonable,
+    moved_mode_indices,
     phonopy_atoms,
     phonopy_supercell_structure,
     read_forces,
@@ -558,8 +559,9 @@ _COULOMB_EV_ANGSTROM = 14.399645
 #: Frequencies below this, in THz, count as the translations of a free cell.
 _ACOUSTIC_TOLERANCE = 1e-4
 
-#: Frequency shift, in THz, above which the non-analytical correction is taken
-#: to have moved a mode and the mode is therefore longitudinal.
+#: Difference, in THz, below which the frequency of a corrected mode counts as
+#: the one of a mode of the uncorrected spectrum.  A mode with no such partner
+#: is one the non-analytical correction moved, so it is longitudinal.
 _LONGITUDINAL_TOLERANCE = 1e-6
 
 
@@ -931,10 +933,19 @@ def _gamma_modes(
         for index, frequency in enumerate(frequencies)
     ]
     if plain is not None:
+        # Match the two spectra as sets rather than band by band: the mode the
+        # correction raises can climb past its neighbours, which shifts the
+        # band index of every mode above it and would make a plain comparison
+        # report those as moved as well.
+        moved = set(
+            moved_mode_indices(
+                frequencies, plain, tolerance=_LONGITUDINAL_TOLERANCE
+            )
+        )
         for index, mode in enumerate(modes):
             if abs(mode["frequency_thz"]) < _ACOUSTIC_TOLERANCE:
                 mode["character"] = "acoustic"
-            elif abs(frequencies[index] - plain[index]) > _LONGITUDINAL_TOLERANCE:
+            elif index in moved:
                 mode["character"] = "LO"
             else:
                 mode["character"] = "TO"
