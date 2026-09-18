@@ -272,6 +272,9 @@ def _postprocess_args(job: Path, **overrides) -> Namespace:
         irreps=False,
         irreps_plot="phonon_gamma_irreps.png",
         symprec=1e-5,
+        dielectric=None,
+        born=None,
+        nac_direction=None,
     )
     values.update(overrides)
     return Namespace(**values)

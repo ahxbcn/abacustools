@@ -166,6 +166,36 @@ def _register_postprocess_arguments(parser: argparse.ArgumentParser) -> None:
         help="Symmetry tolerance in Angstrom for the Gamma point mode "
         "representation, default: 1e-05.",
     )
+    parser.add_argument(
+        "--dielectric",
+        type=_json_argument,
+        default=None,
+        metavar="JSON",
+        help="Dielectric tensor for the non-analytical correction, either a "
+        'scalar or a 3x3 matrix as JSON, for example "[2.34, 0, 0, 0, 2.34, 0, 0, 0, 2.34]" '
+        'or "2.34". Required together with --born.',
+    )
+    parser.add_argument(
+        "--born",
+        type=_json_argument,
+        default=None,
+        metavar="JSON",
+        help="Born effective charges for the non-analytical correction, as a "
+        "list holding one 3x3 tensor per atom of the reference cell, in the "
+        "atom order of the structure, collinear with its lattice vectors. "
+        'For example "[[[1.1,0,0],[0,1.1,0],[0,0,1.1]],'
+        '[[-1.1,0,0],[0,-1.1,0],[0,0,-1.1]]]". Required together with --dielectric.',
+    )
+    parser.add_argument(
+        "--nac-direction",
+        type=_json_argument,
+        default=None,
+        metavar="JSON",
+        help="Direction, in fractional coordinates of the reciprocal basis, "
+        "along which the q to zero limit of the non-analytical correction is "
+        "taken for the Gamma point modes and the thermal properties. Defaults "
+        "to the first lattice vector.",
+    )
 
 
 
@@ -474,6 +504,139 @@ def _projected_dos_rows(phonon, symbols, *, xyz_projection: bool) -> List[Dict[s
     return rows
 
 
+#: Coulomb constant ``e^2 / (4 pi eps0)`` in eV Angstrom, the unit phonopy
+#: expects for the non-analytical term of a force-constant calculation.
+_COULOMB_EV_ANGSTROM = 14.399645
+
+#: Frequencies below this, in THz, count as the translations of a free cell.
+_ACOUSTIC_TOLERANCE = 1e-4
+
+#: Frequency shift, in THz, above which the non-analytical correction is taken
+#: to have moved a mode and the mode is therefore longitudinal.
+_LONGITUDINAL_TOLERANCE = 1e-6
+
+
+def _dielectric_tensor(value: Any) -> np.ndarray:
+    """Return a 3x3 dielectric tensor from a CLI value.
+
+    Args:
+        value: Scalar, three diagonal values, or a row-major 3x3 matrix.
+
+    Returns:
+        The tensor.
+
+    Raises:
+        ValueError: When the value cannot be read as a tensor.
+    """
+    array = np.asarray(value, dtype=float)
+    if array.ndim == 0 or array.shape == (1,):
+        tensor = np.eye(3) * float(array.reshape(()))
+    elif array.shape == (3,):
+        tensor = np.diag(array)
+    elif array.shape == (9,):
+        # A row-major matrix typed as one flat list.
+        tensor = array.reshape(3, 3)
+    elif array.shape == (3, 3):
+        tensor = array
+    else:
+        raise ValueError(
+            "the dielectric tensor must be a scalar, three diagonal values, a flat "
+            f"nine value matrix or a 3x3 matrix, got shape {array.shape}"
+        )
+    if not np.all(np.isfinite(tensor)):
+        raise ValueError("the dielectric tensor holds non-finite values")
+    return tensor
+
+
+def _born_charges(value: Any, natoms: int) -> np.ndarray:
+    """Return the Born effective charges from a CLI value.
+
+    Args:
+        value: One 3x3 tensor per atom of the reference cell.
+        natoms: Number of atoms of the reference cell.
+
+    Returns:
+        The ``(natoms, 3, 3)`` array.
+
+    Raises:
+        ValueError: When the shape does not match the reference cell.
+    """
+    array = np.asarray(value, dtype=float)
+    if array.shape == (3, 3) and natoms == 1:
+        array = array[None, :, :]
+    if array.shape != (natoms, 3, 3):
+        raise ValueError(
+            f"the Born effective charges must hold one 3x3 tensor per atom of the "
+            f"reference cell, expected {(natoms, 3, 3)}, got {array.shape}"
+        )
+    if not np.all(np.isfinite(array)):
+        raise ValueError("the Born effective charges hold non-finite values")
+    return array
+
+
+def _nac_parameters(
+    args: argparse.Namespace,
+    structure,
+) -> Optional[Dict[str, Any]]:
+    """Assemble the non-analytical correction parameters of the workflow.
+
+    Args:
+        args: Postprocessing arguments.
+        structure: Reference cell the Born charges are given for.
+
+    Returns:
+        The payload for ``phonopy.nac_params``, or ``None`` when the correction
+        was not requested.
+
+    Raises:
+        ValueError: When only one of the two required inputs is given, or when
+            an input cannot be read.
+    """
+    dielectric = getattr(args, "dielectric", None)
+    born = getattr(args, "born", None)
+    if dielectric is None and born is None:
+        return None
+    if dielectric is None or born is None:
+        raise ValueError(
+            "the non-analytical correction needs both --dielectric and --born"
+        )
+    return {
+        "born": _born_charges(born, structure.natoms),
+        "dielectric": _dielectric_tensor(dielectric),
+        "factor": _COULOMB_EV_ANGSTROM,
+    }
+
+
+def _nac_direction(args: argparse.Namespace, structure) -> np.ndarray:
+    """Return the direction of the q to zero limit, in Cartesian coordinates.
+
+    Args:
+        args: Postprocessing arguments.
+        structure: Reference cell whose basis the direction is given in.
+
+    Returns:
+        A Cartesian direction vector.
+
+    Raises:
+        ValueError: When the direction cannot be read or is zero.
+    """
+    value = getattr(args, "nac_direction", None)
+    cell = np.asarray(structure.cell, dtype=float)
+    if value is None:
+        # The first lattice vector is a natural longitudinal direction and
+        # differs between the sublattices of an ionic crystal, so the limit is
+        # not degenerate along it.
+        return np.array(cell[0], dtype=float)
+    array = np.asarray(value, dtype=float)
+    if array.shape != (3,) or not np.all(np.isfinite(array)):
+        raise ValueError(
+            "the non-analytical direction must hold three finite coordinates"
+        )
+    if np.allclose(array, 0.0):
+        raise ValueError("the non-analytical direction must not be zero")
+    return np.asarray(array @ cell, dtype=float)
+
+
 def _plot_projected_dos(
     path: Path,
     frequency_points: np.ndarray,
@@ -552,13 +715,21 @@ def _plot_gamma_modes(path: Path, modes: List[Dict[str, Any]]) -> None:
     plt.close(figure)
 
 
-def _gamma_modes(phonon, *, want_irreps: bool, symprec: float) -> List[Dict[str, Any]]:
+def _gamma_modes(
+    phonon,
+    *,
+    want_irreps: bool,
+    symprec: float,
+    nac_direction: Optional[np.ndarray] = None,
+) -> List[Dict[str, Any]]:
     """Return the Gamma point modes with their degeneracy and representation.
 
     Args:
         phonon: Phonopy object whose mesh has been run.
         want_irreps: Whether to resolve the space-group representations.
         symprec: Symmetry tolerance in Angstrom.
+        nac_direction: Cartesian direction of the q to zero limit of the
+            non-analytical correction; omitted when the correction is off.
 
     Returns:
         One record per mode, holding the one-based band index, the frequency in
@@ -571,11 +742,45 @@ def _gamma_modes(phonon, *, want_irreps: bool, symprec: float) -> List[Dict[str,
     """
     from phonopy.phonon.degeneracy import degenerate_sets
 
-    frequencies = np.asarray(phonon.run_qpoints([[0.0, 0.0, 0.0]]).frequencies[0], dtype=float)
+    # With the correction on, the q to zero limit has to be taken along a
+    # direction, otherwise the longitudinal optical mode keeps the transverse
+    # frequency and the two remain degenerate.
+    points = phonon.run_qpoints([[0.0, 0.0, 0.0]], nac_q_direction=nac_direction)
+    frequencies = np.asarray(points.frequencies[0], dtype=float)
+    if nac_direction is not None:
+        # A mode is longitudinal when the correction moves it.  Comparing with
+        # the uncorrected limit is what separates a longitudinal mode from an
+        # optical mode that is simply non-degenerate in a low symmetry crystal.
+        # A zero direction only means "no preferred direction", which still
+        # applies the correction with the direction of the q point itself, so
+        # the correction has to be switched off on a separate object that is
+        # thrown away: clearing it on this one would invalidate the mesh, the
+        # DOS and the thermal properties that have already been computed.
+        from phonopy import Phonopy
+
+        plain_object = Phonopy(
+            phonon.unitcell,
+            supercell_matrix=phonon.supercell_matrix,
+            primitive_matrix=phonon.primitive_matrix,
+        )
+        plain_object.force_constants = phonon.force_constants
+        plain = np.asarray(
+            plain_object.run_qpoints([[0.0, 0.0, 0.0]]).frequencies[0], dtype=float
+        )
+    else:
+        plain = None
     modes = [
         {"band": index + 1, "frequency_thz": float(frequency), "degeneracy": 1}
         for index, frequency in enumerate(frequencies)
     ]
+    if plain is not None:
+        for index, mode in enumerate(modes):
+            if abs(mode["frequency_thz"]) < _ACOUSTIC_TOLERANCE:
+                mode["character"] = "acoustic"
+            elif abs(frequencies[index] - plain[index]) > _LONGITUDINAL_TOLERANCE:
+                mode["character"] = "LO"
+            else:
+                mode["character"] = "TO"
     for group in degenerate_sets(frequencies):
         if len(group) > 1:
             for index in group:
@@ -585,7 +790,9 @@ def _gamma_modes(phonon, *, want_irreps: bool, symprec: float) -> List[Dict[str,
         return modes
 
     try:
-        representations = phonon.run_irreps([0.0, 0.0, 0.0])
+        representations = phonon.run_irreps(
+            [0.0, 0.0, 0.0], nac_q_direction=nac_direction
+        )
     except Exception as error:  # pragma: no cover - depends on the structure
         raise RuntimeError(
             f"could not find the symmetry needed for the Gamma point irreps: {error}"
@@ -688,7 +895,30 @@ def postprocess(args: argparse.Namespace) -> int:
     phonon.forces = forces
     phonon.produce_force_constants()
     phonon.symmetrize_force_constants()
+    nac = _nac_parameters(args, structure)
+    nac_direction = None
+    if nac is not None:
+        phonon.nac_params = nac
+        nac_direction = _nac_direction(args, structure)
+        result_nac = {
+            "dielectric": np.asarray(nac["dielectric"], dtype=float).tolist(),
+            "born": np.asarray(nac["born"], dtype=float).tolist(),
+            "direction_cartesian": nac_direction.tolist(),
+        }
+    else:
+        result_nac = None
     phonon.run_mesh(mesh, with_eigenvectors=True, is_mesh_symmetry=False)
+    # The Gamma point modes are resolved before the DOS, because the
+    # longitudinal character is found by comparing against the limit with the
+    # correction switched off, which resets the mesh and the DOS.
+    gamma_modes = _gamma_modes(
+        phonon,
+        want_irreps=irreps,
+        symprec=symprec,
+        nac_direction=nac_direction,
+    )
+    # The mesh applies the correction with the direction of each q point of its
+    # own, so the mesh, the DOS and the thermal properties need no direction.
     phonon.run_thermal_properties(temperatures=[args.temperature])
     phonon.run_total_dos()
 
@@ -722,7 +952,6 @@ def postprocess(args: argparse.Namespace) -> int:
     frequencies = np.asarray(
         phonon.run_qpoints(commensurate_points).frequencies, dtype=float
     )
-    gamma_modes = _gamma_modes(phonon, want_irreps=irreps, symprec=symprec)
     if args.qpath is None:
         band_paths, labels, connections = get_band_qpoints_by_seekpath(
             phonopy_atoms(structure),
@@ -753,12 +982,24 @@ def postprocess(args: argparse.Namespace) -> int:
     plt.close(figure)
 
     thermal = jsonable(_thermal_properties_dict(phonon))
-    max_frequency = float(np.max(frequencies))
+    # The maximum has to be taken over the dispersion rather than over the
+    # commensurate points of the supercell: a polar material reaches its
+    # highest frequency in the longitudinal optical mode at Gamma, which the
+    # supercell does not carry.
+    band_structure = jsonable(_band_structure_dict(phonon))
+    max_frequency = float(
+        np.max(
+            np.concatenate(
+                [np.asarray(segment, dtype=float) for segment in band_structure["frequencies"]]
+            )
+        )
+    )
     result = {
         "supercell": manifest_supercell,
         "mesh": mesh,
         "displacement_stepsize": displacement_stepsize,
         "displacements": entries,
+        "non_analytical_correction": result_nac,
         "temperature": float(args.temperature),
         "thermal_properties": thermal,
         "entropy": float(thermal["entropy"][0]),
@@ -768,7 +1009,7 @@ def postprocess(args: argparse.Namespace) -> int:
         "gamma_modes": gamma_modes,
         "max_frequency_thz": max_frequency,
         "max_frequency_K": max_frequency * THZ_TO_K,
-        "band_structure": jsonable(_band_structure_dict(phonon)),
+        "band_structure": band_structure,
         "total_dos": jsonable(_total_dos_dict(phonon)),
         "band_dos_plot": str(plot_path),
     }
@@ -822,6 +1063,12 @@ def postprocess(args: argparse.Namespace) -> int:
             f"{mode['band']}:{mode.get('irrep', '?')}" for mode in gamma_modes
         )
         print(f"  Gamma modes: {labels}")
+    if nac is not None:
+        for mode in gamma_modes:
+            if mode.get("character") == "LO":
+                print(
+                    f"  Gamma longitudinal mode: {mode['frequency_thz']:.8f} THz"
+                )
     if projected is not None:
         print(f"  projected DOS: {result['projected_dos']['plot']}")
     print(f"  plot: {plot_path}")

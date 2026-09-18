@@ -900,6 +900,34 @@ Note that without Born effective charges the Gamma point longitudinal optical
 modes carry no non-analytical correction, so a polar material is described
 without its LO-TO splitting.
 
+Polar materials need the non-analytical correction, which the long range
+Coulomb field of a longitudinal optical vibration adds. Pass the Born effective
+charges and the dielectric tensor, both as JSON, and the limit of the q to zero
+is taken along a direction:
+
+```text
+abacustools workflow phonon postprocess -j JOB --irreps \
+  --dielectric "[2.34,0,0,0,2.34,0,0,0,2.34]" \
+  --born "[[[1.12,0,0],[0,1.12,0],[0,0,1.12]],[[-1.12,0,0],[0,-1.12,0],[0,0,-1.12]]]"
+```
+
+`--dielectric` accepts a scalar, three diagonal values, a flat nine value matrix
+or a 3x3 matrix, and `--born` holds one 3x3 tensor per atom of the reference
+cell in its atom order. The correction is applied to the dispersion, to the
+total and projected DOS and to the thermal properties, because the mesh takes
+the limit with the direction of each of its own q points. The Gamma point modes
+need an explicit direction, which `--nac-direction` sets and which defaults to
+the first lattice vector; without it the longitudinal mode keeps the transverse
+frequency and the two stay degenerate, so the correction would be reported but
+invisible. The report records the tensors and the direction that was used.
+
+The largest frequency of the spectrum is taken over the dispersion rather than
+over the commensurate points of the supercell, because a polar material reaches
+it in the longitudinal optical mode at Gamma, which the supercell does not
+carry. Each Gamma point mode is labelled `LO`, `TO` or `acoustic`: the
+longitudinal one is the mode the correction moves, which distinguishes it from
+an optical mode that is merely non-degenerate in a low symmetry crystal.
+
 The displaced calculations live in `disp-NNNN`, numbered by their index in the
 Phonopy displacement dataset, and `workflow_phonon.json` records both that
 index and the displaced atom of every task. Postprocessing therefore maps each
