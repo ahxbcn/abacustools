@@ -68,14 +68,19 @@ Zn
 
 class TestPiezoelectricWorkflow(unittest.TestCase):
     @staticmethod
-    def _write_berry_task(task: Path, values: list[float], volume: float = 64.0) -> None:
+    def _write_berry_task(
+        task: Path,
+        values: list[float],
+        volume: float = 64.0,
+        modulus: float = 100.0,
+    ) -> None:
         output = task / "OUT.ABACUS"
         output.mkdir(parents=True, exist_ok=True)
         for index, value in enumerate(values, start=1):
             (output / f"running_nscf{index}.log").write_text(
                 f"Volume (A^3) = {volume}\n"
                 f"The calculated polarization direction is in R{index} direction\n"
-                f"P = {value} (mod 100.0) (0.0 0.0 0.0) (e/Omega).bohr\n"
+                f"P = {value} (mod {modulus}) (0.0 0.0 0.0) (e/Omega).bohr\n"
                 "P = 0.0 (mod 1.0) (0.0 0.0 0.0) C/m^2\n",
                 encoding="utf-8",
             )
@@ -153,17 +158,68 @@ class TestPiezoelectricWorkflow(unittest.TestCase):
             )["tasks"]:
                 self._write_berry_task(job / name, [0.0, 0.0, 0.0])
 
-            # For xx, choose a dipole change that corresponds to 1 C/m^2
-            # after a central difference of 2 * 0.1.
-            dipole = 1.0 * 0.2 * 64.0 / _ELECTRON_ANGSTROM_SQUARED_TO_CM2
+            # For xx, choose a phase change that corresponds to 1 C/m^2 after a
+            # central difference of 2 * 0.1: the response is the phase change
+            # times the quantum of the reference cell, turned into a density
+            # with the reference volume.
+            phase = 1.0 * 0.2 * 64.0 / (100.0 * BOHR_TO_ANG * _ELECTRON_ANGSTROM_SQUARED_TO_CM2)
             self._write_berry_task(
-                job / "piezoelectric_xx", [dipole / BOHR_TO_ANG, 0.0, 0.0]
+                job / "piezoelectric_xx", [phase * 100.0, 0.0, 0.0]
             )
             status = postprocess(Namespace(job=job, version="LTS3.10.1", output="result.json"))
 
             self.assertEqual(status, 0)
             result = json.loads((job / "result.json").read_text())
             self.assertAlmostEqual(result["piezoelectric_tensor"][0][0], 1.0)
+
+    def test_postprocess_ignores_the_branch_point_of_a_centrosymmetric_crystal(
+        self,
+    ) -> None:
+        """A polarization on the branch point must give a vanishing tensor.
+
+        A centrosymmetric crystal has its polarization exactly on the branch
+        point, where ABACUS prints either sign of half the quantum.  The two
+        signs are the same physical state -- they differ by one period -- so
+        the response has to come out as zero and not as half the quantum, which
+        is what comparing the printed values directly would give.
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            job = Path(temporary)
+            self._write_job(job)
+            prepare(
+                Namespace(
+                    job=job,
+                    strain=0.01,
+                    disp_type="c",
+                    relax=False,
+                    abacus_command="abacus",
+                    override=False,
+                )
+            )
+            for name in json.loads(
+                (job / "workflow_piezoelectric.json").read_text()
+            )["tasks"]:
+                self._write_berry_task(job / name, [0.0, 0.0, 0.0])
+
+            # Both strained cells sit on the branch point, printed with
+            # opposite signs and in cells whose quantum differs slightly.
+            self._write_berry_task(
+                job / "piezoelectric_xx_back", [50.0, 50.0, 50.0], modulus=100.0
+            )
+            self._write_berry_task(
+                job / "piezoelectric_xx",
+                [-49.5, -49.5, -49.5],
+                modulus=99.0,
+                volume=63.5,
+            )
+            status = postprocess(Namespace(job=job, version="LTS3.10.1", output="result.json"))
+
+            self.assertEqual(status, 0)
+            tensor = np.asarray(
+                json.loads((job / "result.json").read_text())["piezoelectric_tensor"],
+                dtype=float,
+            )
+            np.testing.assert_allclose(tensor, 0.0, atol=1e-9)
 
     def test_prepare_relax_adds_relaxation_step(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

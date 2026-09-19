@@ -19,7 +19,6 @@ from abacustools.io.stru import AbacusSTRU
 from abacustools.data.polarization import (
     kpoint_mesh,
     polarization_cartesian,
-    polarization_delta,
     read_task_polarization,
     task_metrics,
 )
@@ -562,7 +561,25 @@ def _mode_difference(
     disp_type: str,
     strain: float,
 ) -> Optional[list[float]]:
-    """Calculate one Cartesian polarization response by finite difference."""
+    """Calculate one Cartesian polarization response by finite difference.
+
+    ABACUS prints the polarization of each Berry phase direction as a dipole
+    per cell referred to the lattice vectors, that is modulo the quantum of a
+    lattice translation, and the quantum itself depends on the cell the value
+    was computed in.  Comparing the printed values of two differently strained
+    cells therefore mixes that geometry into the response: a centrosymmetric
+    crystal, whose polarization sits exactly on the branch point, acquires a
+    tensor of order of the quantum even though symmetry forces it to vanish,
+    and every other crystal acquires symmetry forbidden components of the same
+    order.
+
+    The printed value divided by its own quantum is a phase in units of the
+    quantum, and that ratio carries no geometry: the branch point is the same
+    number in every cell.  The response is therefore taken as the phase
+    difference, wrapped to the period of the printed polarization, converted
+    back to a dipole with the quantum and the lattice of the *reference* cell
+    alone, and only then turned into a Cartesian polarization density.
+    """
     positive = task_data.get(f"piezoelectric_{label}")
     negative = task_data.get(f"piezoelectric_{label}_back")
     original = task_data.get("piezoelectric_org")
@@ -583,27 +600,50 @@ def _mode_difference(
 
     reference_p = reference["polarization"]
     displaced_p = displaced["polarization"]
-    delta_lattice = polarization_delta(
-        reference_p["components_cm2"],
-        displaced_p["components_cm2"],
-        displaced_p["modulus_cm2"],
-    )
-    # Unwrap the displaced polarization before transforming both states. This
-    # retains the small change in lattice-vector directions for shear modes.
-    displaced_unwrapped = (
-        np.asarray(reference_p["components_cm2"], dtype=float)
-        + np.asarray(delta_lattice, dtype=float)
-    )
-    reference_cartesian = np.asarray(
-        polarization_cartesian(reference_p["components_cm2"], reference_p["cell"]),
+    delta_phase = np.asarray(_phase_difference(reference_p, displaced_p), dtype=float)
+    factor = _ELECTRON_ANGSTROM_SQUARED_TO_CM2 / float(reference_p["volume"])
+    delta_cartesian = np.asarray(
+        polarization_cartesian(
+            delta_phase * np.asarray(reference_p["mod"], dtype=float) * factor,
+            reference_p["cell"],
+        ),
         dtype=float,
     )
-    displaced_cartesian = np.asarray(
-        polarization_cartesian(displaced_unwrapped, displaced_p["cell"]),
-        dtype=float,
-    )
-    delta_cartesian = displaced_cartesian - reference_cartesian
     return [float(value) / denominator for value in delta_cartesian]
+
+
+def _phase_difference(
+    reference: dict[str, Any], displaced: dict[str, Any]
+) -> np.ndarray:
+    """Return the change of the polarization phase between two cells.
+
+    ABACUS prints polarizations modulo twice the lattice translation quantum,
+    so the printed value divided by the printed modulus runs over one period of
+    one, independently of the cell.
+
+    Args:
+        reference: Polarization of the reference task.
+        displaced: Polarization of the strained task.
+
+    Returns:
+        The phase difference of each of the three directions, wrapped to the
+        period of the printed polarization.
+
+    Raises:
+        ValueError: When the two polarizations do not hold three directions or
+            a quantum cannot be read.
+    """
+    reference_values = np.asarray(reference["p_vec"], dtype=float)
+    displaced_values = np.asarray(displaced["p_vec"], dtype=float)
+    reference_quantum = np.asarray(reference["mod"], dtype=float)
+    displaced_quantum = np.asarray(displaced["mod"], dtype=float)
+    for values in (reference_values, displaced_values, reference_quantum, displaced_quantum):
+        if values.shape != (3,):
+            raise ValueError("polarization vectors must contain three values")
+    if np.any(reference_quantum <= 0.0) or np.any(displaced_quantum <= 0.0):
+        raise ValueError("polarization quantum must be positive")
+    delta = displaced_values / displaced_quantum - reference_values / reference_quantum
+    return delta - np.rint(delta)
 
 
 def _postprocess_one(
@@ -696,8 +736,9 @@ def _summary(tensor: list[list[float]]) -> str:
         [
             "",
             "The tensor is computed by finite differences of the Berry-phase",
-            "polarization, with the polarization quantum resolved by the shortest",
-            "branch change.",
+            "polarization, taken as a phase so that the branch of each cell",
+            "cancels; a centrosymmetric crystal therefore gives a vanishing",
+            "tensor instead of one of the order of the polarization quantum.",
             "",
         ]
     )
