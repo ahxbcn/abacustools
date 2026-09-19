@@ -11,6 +11,7 @@ from . import exchange as exchange_workflow
 from . import elastic as elastic_workflow
 from . import fdforce as fdforce_workflow
 from . import fdstress as fdstress_workflow
+from . import gruneisen as gruneisen_workflow
 from . import kspacing as kspacing_workflow
 from . import phonon as phonon_workflow
 from . import piezoelectric as piezoelectric_workflow
@@ -44,6 +45,7 @@ def register_parser(subparsers) -> None:
     elastic_workflow.register_parser(workflow_subparsers)
     fdforce_workflow.register_parser(workflow_subparsers)
     fdstress_workflow.register_parser(workflow_subparsers)
+    gruneisen_workflow.register_parser(workflow_subparsers)
     phonon_workflow.register_parser(workflow_subparsers)
     piezoelectric_workflow.register_parser(workflow_subparsers)
     thermal_conductivity_workflow.register_parser(workflow_subparsers)

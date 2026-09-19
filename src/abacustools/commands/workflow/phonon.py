@@ -6,7 +6,7 @@ import argparse
 import json
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
@@ -33,6 +33,7 @@ from abacustools.data.versions import default_version
 
 from .common import (
     clear_generated_jobs,
+    resolve_output,
     kpoint_filename,
     read_manifest,
     read_job_structure,
@@ -269,22 +270,51 @@ def _existing_displacement_names(job: Path) -> list[str]:
     )
 
 
-def prepare(args: argparse.Namespace) -> int:
-    """Prepare displaced supercell calculations for a finite-difference phonon spectrum."""
-    job = Path(args.job).absolute()
+def prepare_phonon_jobs(
+    job: Path,
+    *,
+    supercell: Optional[Sequence[int]] = None,
+    displacement_stepsize: float = 0.01,
+    min_supercell_length: float = 10.0,
+    override: bool = False,
+) -> List[str]:
+    """Write the displaced supercell calculations of one reference cell.
+
+    The supercell, the displacement dataset and the self consistent input of
+    the displaced cells are decided here and recorded in the workflow
+    manifest, so the postprocessing stage never has to infer them.
+
+    Args:
+        job: ABACUS input directory holding the reference cell.
+        supercell: Diagonal supercell repetitions; an automatic supercell that
+            keeps every lattice vector at least ``min_supercell_length`` long
+            when omitted.
+        displacement_stepsize: Finite displacement in Angstrom.
+        min_supercell_length: Minimum lattice-vector length of an automatic
+            supercell, in Angstrom.
+        override: Whether to replace existing displacement directories.
+
+    Returns:
+        The generated displacement task names, in dataset order.
+
+    Raises:
+        RuntimeError: When the job directory is missing or phonopy generates no
+            displaced structure.
+    """
+    job = Path(job).absolute()
     if not job.is_dir():
         raise RuntimeError(f"job directory does not exist: {job}")
-    validate_positive_float(args.displacement_stepsize, "displacement_stepsize")
-    validate_positive_float(args.min_supercell_length, "min_supercell_length")
+    validate_positive_float(displacement_stepsize, "displacement_stepsize")
+    validate_positive_float(min_supercell_length, "min_supercell_length")
 
     inputs, stru_filename, structure = read_job_structure(job)
     supercell = (
-        validate_supercell(args.supercell)
-        if args.supercell is not None
-        else automatic_supercell(structure, args.min_supercell_length)
+        validate_supercell(supercell)
+        if supercell is not None
+        else automatic_supercell(structure, min_supercell_length)
     )
     phonon = initialize_phonopy(structure, supercell)
-    phonon.generate_displacements(distance=args.displacement_stepsize)
+    phonon.generate_displacements(distance=displacement_stepsize)
     displaced_structures = phonon.supercells_with_displacements
     if not displaced_structures:
         raise RuntimeError("Phonopy generated no displaced structures")
@@ -306,7 +336,7 @@ def prepare(args: argparse.Namespace) -> int:
     clear_generated_jobs(
         job,
         sorted(set(names + _existing_displacement_names(job))),
-        override=args.override,
+        override=override,
     )
 
     phonon_inputs = deepcopy(inputs)
@@ -325,7 +355,7 @@ def prepare(args: argparse.Namespace) -> int:
 
     print(f"  job: {job}")
     print(f"  supercell: {' '.join(str(value) for value in supercell)}")
-    print(f"  displacement step: {args.displacement_stepsize} Angstrom")
+    print(f"  displacement step: {displacement_stepsize} Angstrom")
     print(f"  generated displacements: {len(displaced_structures)}")
     for entry, displaced in zip(entries, displaced_structures):
         name = entry["task"]
@@ -348,17 +378,23 @@ def prepare(args: argparse.Namespace) -> int:
         tasks=names,
         displacements=entries,
         supercell=supercell,
-        displacement_stepsize=float(args.displacement_stepsize),
-        min_supercell_length=float(args.min_supercell_length),
+        displacement_stepsize=float(displacement_stepsize),
+        min_supercell_length=float(min_supercell_length),
         dataset=displacements,
     )
+    return names
+
+
+def prepare(args: argparse.Namespace) -> int:
+    """Prepare displaced supercell calculations for a finite-difference phonon spectrum."""
+    prepare_phonon_jobs(
+        Path(args.job),
+        supercell=args.supercell,
+        displacement_stepsize=args.displacement_stepsize,
+        min_supercell_length=args.min_supercell_length,
+        override=args.override,
+    )
     return 0
-
-
-def _resolve_output(job: Path, filename: str) -> Path:
-    """Resolve a workflow output filename against its job directory."""
-    output = Path(filename)
-    return output if output.is_absolute() else job / output
 
 
 def _thermal_properties_dict(phonon) -> Dict[str, Any]:
@@ -1045,7 +1081,7 @@ def postprocess(args: argparse.Namespace) -> int:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    plot_path = _resolve_output(job, args.plot)
+    plot_path = resolve_output(job, args.plot)
     plot_path.parent.mkdir(parents=True, exist_ok=True)
     plot = phonon.plot_band_structure_and_dos()
     figure = plot.gcf()
@@ -1107,7 +1143,7 @@ def postprocess(args: argparse.Namespace) -> int:
             "frequency_points": frequency_points.tolist(),
             "projections": projected,
         }
-        projected_plot = _resolve_output(job, pdos_plot)
+        projected_plot = resolve_output(job, pdos_plot)
         total_dos = np.asarray(phonon.total_dos.dos, dtype=float)
         _plot_projected_dos(
             projected_plot,
@@ -1117,10 +1153,10 @@ def postprocess(args: argparse.Namespace) -> int:
         )
         result["projected_dos"]["plot"] = str(projected_plot)
     if irreps:
-        irreps_plot_path = _resolve_output(job, irreps_plot)
+        irreps_plot_path = resolve_output(job, irreps_plot)
         _plot_gamma_modes(irreps_plot_path, gamma_modes)
         result["gamma_irreps_plot"] = str(irreps_plot_path)
-    output = _resolve_output(job, args.output)
+    output = resolve_output(job, args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 

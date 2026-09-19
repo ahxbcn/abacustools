@@ -13,6 +13,20 @@ def workflow_manifest_path(job: Path, workflow: str) -> Path:
     return job / f"workflow_{workflow}.json"
 
 
+def resolve_output(job: Path, value: str) -> Path:
+    """Resolve an output filename against a job directory.
+
+    Args:
+        job: Directory the output belongs to.
+        value: Filename, absolute or relative to ``job``.
+
+    Returns:
+        The path to write.
+    """
+    path = Path(value)
+    return path if path.is_absolute() else job / path
+
+
 def register_stages(
     subparsers,
     command: str,

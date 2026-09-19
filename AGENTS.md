@@ -137,6 +137,14 @@ menu-specific branching in command modules.
   (`workflow bec`) and the clamped-ion dielectric tensor (`workflow
   dielectric`). The two results files are read by the phonon postprocessing
   stage with `--bec-results` and `--dielectric-results`.
+- The Grueneisen workflow (`workflow gruneisen`) is three phonon workflows of
+  the same crystal whose volumes differ by an isotropic strain, because the
+  mode parameter is `-d ln omega / d ln V`. Its prepare stage therefore calls
+  `prepare_phonon_jobs` of the phonon command, and its postprocessing stage
+  rebuilds each volume with `load_workflow_phonon`. The three volumes have to
+  share the supercell, the k mesh and the displacement step: the force
+  constant fits are compared with each other, so anything that differs between
+  them shows up as a spurious parameter.
 
 ## Testing
 

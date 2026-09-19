@@ -954,6 +954,37 @@ entries disagree. A displaced supercell is written in the Phonopy atom order,
 because `AbacusSTRU.supercell` orders atoms by lattice point and mixing the two
 orders would attach every force to the wrong atom.
 
+The mode Grueneisen parameters, which measure how the frequency of each mode
+follows the volume, come from the same displaced calculations at three volumes.
+The prepare stage writes three ordinary phonon workflows, one per volume, whose
+lattice vectors are scaled by `(1 ± strain) ** (1/3)` so that their volume
+differs from the reference one by `±strain`:
+
+```text
+abacustools workflow gruneisen prepare -j JOB --strain 0.01 --supercell 4 4 4
+```
+
+Submit and postprocess the displaced calculations of the three volumes exactly
+like a plain phonon workflow, then average them:
+
+```text
+abacustools workflow gruneisen postprocess -j JOB
+```
+
+`gruneisen_mesh.yaml` and `gruneisen_band.yaml` hold the phonopy mesh and band
+results with their plots, and `gruneisen_results.json` adds the q weighted mean,
+range and count of the mode parameters and the thermodynamic parameter
+`gamma(T) = sum(C_v gamma) / sum(C_v)` at `--temperature`, together with a curve
+over `--tmin/--tmax/--tstep`. Every volume has to be computed with the same
+supercell, k mesh and displacement step, because the three force constant fits
+are compared with each other, and the strain has to stay where the central
+difference of the frequencies is meaningful, which is why `--strain` is limited
+to 0.1 to 5 percent. The zero frequency translations at Gamma carry no parameter
+at all; modes whose parameter comes out as a non-finite number are left out of
+the averages and counted in the report. The non-analytical correction is not
+applied, since its parameters would have to be computed for every volume as
+well, and it only affects the longitudinal optical mode at Gamma.
+
 Lattice thermal conductivities can be calculated with phono3py using third-order
 force constants. The prepare stage generates the displaced supercells below
 `fc3-*`, plus an optional independent `fc2-*` set, and writes the exact
