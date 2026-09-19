@@ -63,13 +63,17 @@ def _register_prepare_arguments(parser: argparse.ArgumentParser) -> None:
     continuity = parser.add_mutually_exclusive_group()
     continuity.add_argument(
         "--use-k-continuity", dest="use_k_continuity", action="store_true",
-        help="Enable ABACUS k-point continuity for Berry phase calculations.",
+        help="Enable ABACUS k-point continuity. ABACUS only accepts it for "
+        "plane wave calculations and refuses it for the non self consistent "
+        "Berry phase steps this workflow runs, so enabling it makes every "
+        "generated calculation stop; it is available for future versions that "
+        "lift the restriction.",
     )
     continuity.add_argument(
         "--no-k-continuity", dest="use_k_continuity", action="store_false",
-        help="Do not enable ABACUS k-point continuity.",
+        help="Do not enable ABACUS k-point continuity, the default.",
     )
-    parser.set_defaults(use_k_continuity=True)
+    parser.set_defaults(use_k_continuity=False)
     parser.add_argument(
         "--relax", action="store_true",
         help="Relax ionic positions under each strain before the Berry calculation.",
@@ -110,10 +114,23 @@ def _validate_strain(value: float) -> float:
 
 
 def _strain_matrix(index: int, other_index: int, magnitude: float) -> np.ndarray:
-    """Build one normal or symmetric shear strain matrix."""
+    """Build one normal or shear strain matrix in the Voigt convention.
+
+    A normal mode is the strain tensor component itself, ``eps_xx`` for the
+    ``xx`` mode.  A shear mode gets half of the requested magnitude in each
+    off-diagonal element, so that the *engineering* shear of the IEEE
+    convention, ``S_4 = 2 eps_yz`` and so on, equals the requested magnitude.
+    Dividing the polarization change by that magnitude then gives the
+    piezoelectric tensor the literature and DFPT codes report, and a request
+    for a one percent shear means a one percent shear in the same sense the
+    elastic workflow uses.
+    """
     matrix = np.zeros((3, 3), dtype=float)
-    matrix[index, other_index] = magnitude
-    matrix[other_index, index] = magnitude
+    if index == other_index:
+        matrix[index, other_index] = magnitude
+    else:
+        matrix[index, other_index] = 0.5 * magnitude
+        matrix[other_index, index] = 0.5 * magnitude
     return matrix
 
 
@@ -245,11 +262,19 @@ def _write_piezo_inputs(
 
 
 def _deformed_structure(structure, strain: np.ndarray):
-    """Apply a finite strain to the cell while preserving fractional positions."""
+    """Apply a finite strain to the cell while preserving fractional positions.
+
+    ``structure.cell`` holds the lattice vectors as its rows, and a homogeneous
+    deformation maps every lattice vector by the deformation gradient
+    ``F = I + strain``, so the deformed cell is ``C @ F.T``: the strain acts on
+    the Cartesian components of each lattice vector.  Multiplying on the left
+    instead would combine the lattice vectors with each other, which is a
+    different deformation for every cell that is not diagonal.
+    """
     result = deepcopy(structure)
     fractional = np.asarray(structure.coords_direct, dtype=float)
-    cell = (np.eye(3) + strain) @ np.asarray(structure.cell, dtype=float)
-    result.cell = cell.tolist()
+    cell = np.asarray(structure.cell, dtype=float)
+    result.cell = (cell @ (np.eye(3) + strain).T).tolist()
     result.coords_direct = fractional.tolist()
     return result
 
@@ -394,7 +419,7 @@ def prepare_piezoelectric_jobs(
     jobs: Iterable[str | Path],
     strain: float,
     disp_type: str = "f",
-    k_continuity: bool = True,
+    k_continuity: bool = False,
     relax: bool = False,
     *,
     abacus_command: str = "abacus",
@@ -427,9 +452,7 @@ def prepare(args: argparse.Namespace) -> int:
     """Prepare equilibrium and finite-strained Berry phase calculations."""
     job = Path(args.job).absolute()
     disp_type = getattr(args, "disp_type", getattr(args, "type", "f"))
-    use_k_continuity = getattr(
-        args, "use_k_continuity", not bool(getattr(args, "no_k_continuity", False))
-    )
+    use_k_continuity = getattr(args, "use_k_continuity", False)
     _prepare_one(
         job,
         args.strain,

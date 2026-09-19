@@ -1184,6 +1184,25 @@ calculation. The tensor and per-task diagnostics are written under `JOB`:
 abacustools workflow piezoelectric postprocess -j JOB
 ```
 
+The strain is a Cartesian deformation of the lattice vectors with the
+fractional coordinates held fixed, so the six modes are the strain tensor
+components of the IEEE convention: a shear of nominal size `s` puts `s/2` in
+each off-diagonal element, and `S_4 = 2 eps_yz` equals `s`. The reported shear
+columns are therefore `dP/dS` with the same meaning as in the literature and in
+DFPT codes, and a requested one percent shear is a one percent shear in the
+same sense the elastic workflow uses. `--relax` adds one self consistent
+relaxation of the ionic positions at each strained cell, which is what turns
+the clamped-ion tensor into the relaxed-ion one; it respects the `force_thr_ev`
+of the source `INPUT`, and tightening that value (the ABACUS default is 0.01
+eV/Angstrom) matters because the internal strain it produces is exactly the
+difference between the two.
+
+ABACUS accepts `use_k_continuity` only for plane wave calculations that are not
+a non self consistent run, and the Berry-phase steps of this workflow are
+exactly such a run, so the option is off by default. `--use-k-continuity` is
+kept for versions that lift the restriction; on LTSv3.10.1 it makes every
+generated calculation stop with `use_k_continuity only works for PW basis`.
+
 Hubbard `U` parameters can be derived from first principles with the linear
 response method, which screens the occupation of the correlated orbitals
 against a small applied `U`. The prepare stage writes one SCF calculation per

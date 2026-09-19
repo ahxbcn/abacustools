@@ -13,6 +13,9 @@ import numpy as np
 from abacustools.core.constant import BOHR_TO_ANG
 from abacustools.commands.workflow.piezoelectric import (
     _ELECTRON_ANGSTROM_SQUARED_TO_CM2,
+    _VOIGT_MODES,
+    _deformed_structure,
+    _strain_matrix,
     postprocess,
     prepare,
 )
@@ -36,6 +39,30 @@ H
 0.0
 1
 0 0 0
+"""
+
+
+#: A face centred primitive cell, whose lattice vectors are not orthogonal and
+#: not aligned with the Cartesian axes, so that a strain has to be applied to
+#: the Cartesian components of every lattice vector.
+NON_ORTHOGONAL_STRU = """ATOMIC_SPECIES
+Zn 65.38 Zn.upf
+
+LATTICE_CONSTANT
+1.0
+
+LATTICE_VECTORS
+0.0 5.1323 5.1323
+5.1323 0.0 5.1323
+5.1323 5.1323 0.0
+
+ATOMIC_POSITIONS
+Direct
+
+Zn
+0.0
+1
+0.0 0.0 0.0
 """
 
 
@@ -158,6 +185,110 @@ class TestPiezoelectricWorkflow(unittest.TestCase):
             runner = (task / "run.sh").read_text()
             self.assertIn("cp INPUT.relax INPUT", runner)
             self.assertIn("cp OUT.ABACUS/STRU_ION_D STRU", runner)
+
+    @staticmethod
+    def _non_orthogonal_structure(job: Path):
+        """Return a face centred primitive cell read from a written STRU."""
+        from abacustools.io.stru import AbacusSTRU
+
+        job.mkdir(parents=True, exist_ok=True)
+        (job / "STRU").write_text(NON_ORTHOGONAL_STRU, encoding="utf-8")
+        return AbacusSTRU.read(job / "STRU")
+
+    def test_deformed_cell_follows_the_cartesian_deformation_gradient(self) -> None:
+        """Every mode must deform the lattice vectors by ``I + strain``."""
+        with tempfile.TemporaryDirectory() as temporary:
+            structure = self._non_orthogonal_structure(Path(temporary))
+            cell = np.asarray(structure.cell, dtype=float)
+            for label, index, other_index in _VOIGT_MODES:
+                with self.subTest(mode=label):
+                    strain = _strain_matrix(index, other_index, 0.01)
+                    deformed = np.asarray(
+                        _deformed_structure(structure, strain).cell, dtype=float
+                    )
+                    np.testing.assert_allclose(
+                        deformed, cell @ (np.eye(3) + strain).T, atol=1e-12
+                    )
+
+    def test_normal_strain_scales_the_cartesian_components(self) -> None:
+        """A normal strain must act on every lattice vector's x components.
+
+        The first lattice vector of the face centred cell has no x component,
+        so its length is unchanged, while the other two are stretched; applying
+        the strain by multiplying on the left would stretch the first vector
+        instead, which is a different deformation.
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            structure = self._non_orthogonal_structure(Path(temporary))
+            cell = np.asarray(structure.cell, dtype=float)
+            strain = _strain_matrix(0, 0, 0.01)
+            deformed = np.asarray(
+                _deformed_structure(structure, strain).cell, dtype=float
+            )
+
+            np.testing.assert_allclose(deformed[:, 0], 1.01 * cell[:, 0], atol=1e-12)
+            np.testing.assert_allclose(deformed[:, 1:], cell[:, 1:], atol=1e-12)
+            self.assertAlmostEqual(
+                float(np.linalg.norm(deformed[0])), float(np.linalg.norm(cell[0]))
+            )
+            self.assertGreater(
+                float(np.linalg.norm(deformed[1])), float(np.linalg.norm(cell[1]))
+            )
+
+    def test_shear_modes_use_the_engineering_strain(self) -> None:
+        """A requested shear must be the Voigt engineering shear.
+
+        The strain tensor holds half of the requested magnitude in each off
+        diagonal element, so that ``S_4 = 2 eps_yz`` and the polarization
+        change divided by the requested magnitude is the piezoelectric tensor
+        DFPT codes report.
+        """
+        strain = _strain_matrix(1, 2, 0.01)
+
+        np.testing.assert_allclose(
+            strain, [[0.0, 0.0, 0.0], [0.0, 0.0, 0.005], [0.0, 0.005, 0.0]]
+        )
+        self.assertAlmostEqual(2.0 * strain[1, 2], 0.01)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            structure = self._non_orthogonal_structure(Path(temporary))
+            cell = np.asarray(structure.cell, dtype=float)
+            deformed = np.asarray(
+                _deformed_structure(structure, strain).cell, dtype=float
+            )
+            # A shear in the yz plane stretches the lattice vector that lies
+            # along [011] by the strain tensor component, and leaves the one
+            # along [110] untouched to first order.
+            self.assertAlmostEqual(
+                float(np.linalg.norm(deformed[0]) / np.linalg.norm(cell[0])),
+                1.005,
+                places=6,
+            )
+            self.assertAlmostEqual(
+                float(np.linalg.norm(deformed[2]) / np.linalg.norm(cell[2])), 1.0, places=4
+            )
+
+    def test_prepare_defaults_to_no_k_continuity(self) -> None:
+        """ABACUS refuses k continuity for the Berry phase steps."""
+        with tempfile.TemporaryDirectory() as temporary:
+            job = Path(temporary)
+            self._write_job(job)
+            prepare(
+                Namespace(
+                    job=job,
+                    strain=0.01,
+                    disp_type="f",
+                    relax=False,
+                    abacus_command="abacus",
+                    override=False,
+                )
+            )
+            manifest = json.loads((job / "workflow_piezoelectric.json").read_text())
+
+            self.assertFalse(manifest["use_k_continuity"])
+            self.assertNotIn(
+                "use_k_continuity", (job / "piezoelectric_xx" / "INPUT.nscf1").read_text()
+            )
 
 
 if __name__ == "__main__":
