@@ -8,16 +8,15 @@ import unittest
 from argparse import Namespace
 from pathlib import Path
 
-from abacustools.commands.workflow.phonon import (
-    _custom_band_path,
-    _initialize_phonopy,
-    prepare,
-)
+from abacustools.commands.workflow.phonon import prepare
 from abacustools.data.phonon import (
     automatic_supercell,
+    band_path,
+    initialize_phonopy,
     phonopy_supercell_structure,
     validate_mesh,
     validate_supercell,
+    workflow_displacements,
 )
 
 
@@ -44,7 +43,7 @@ class TestPhononWorkflow(unittest.TestCase):
             atoms=[AbacusATOM(label="H", element="H", coord=(0.0, 0.0, 0.0))],
             metadata={"atom_type": "cartesian"},
         )
-        phonon = _initialize_phonopy(structure, [1, 1, 1])
+        phonon = initialize_phonopy(structure, [1, 1, 1])
         phonon.generate_displacements(distance=0.01)
         self.assertEqual(len(phonon.supercells_with_displacements), 1)
         self.assertEqual(phonon.dataset["first_atoms"][0]["number"], 0)
@@ -103,7 +102,6 @@ H
             self.assertIn("scf_thr             1e-07", (job / "disp-0000" / "INPUT").read_text())
 
     def test_manifest_displacement_validation(self) -> None:
-        from abacustools.commands.workflow.phonon import _manifest_displacements
         from abacustools.io.stru import AbacusATOM, AbacusSTRU
 
         structure = AbacusSTRU(
@@ -114,10 +112,10 @@ H
             ],
             metadata={"atom_type": "cartesian"},
         )
-        phonon = _initialize_phonopy(structure, [1, 1, 1])
+        phonon = initialize_phonopy(structure, [1, 1, 1])
 
         # A well-formed dataset round-trips.
-        dataset = _manifest_displacements(
+        dataset = workflow_displacements(
             phonon,
             {"dataset": [{"number": 1, "displacement": [0.0, 0.01, 0.0]}]},
         )
@@ -133,13 +131,17 @@ H
             {},
         ):
             with self.assertRaises(RuntimeError):
-                _manifest_displacements(phonon, bad)
+                workflow_displacements(phonon, bad)
 
     def test_custom_band_path(self) -> None:
-        (paths, connections), labels = _custom_band_path(
-            ["G", "X", "G"],
-            {"G": [0, 0, 0], "X": [0.5, 0, 0]},
-            5,
+        structure = type(
+            "Structure", (), {"cell": [[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]]}
+        )()
+        paths, labels, connections = band_path(
+            structure,
+            qpath=["G", "X", "G"],
+            high_symm_points={"G": [0, 0, 0], "X": [0.5, 0, 0]},
+            npoints=5,
         )
         self.assertEqual(len(paths), 2)
         self.assertTrue(all(len(path) == 5 for path in paths))

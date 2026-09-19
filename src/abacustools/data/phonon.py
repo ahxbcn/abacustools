@@ -132,6 +132,30 @@ def phonopy_atoms(structure: AbacusSTRU):
     )
 
 
+def initialize_phonopy(structure: AbacusSTRU, supercell: Sequence[int]):
+    """Return a Phonopy object for a diagonal supercell.
+
+    ``primitive_matrix="P"`` pins the primitive cell to the reference cell.
+    Phonopy 4 resolves the ``"auto"`` default with a symmetry search while
+    phonopy 3 used the identity, so leaving it unset would make the dynamical
+    matrix depend on the installed phonopy version.
+
+    Args:
+        structure: Reference cell of the calculation.
+        supercell: Diagonal supercell repetitions.
+
+    Returns:
+        The Phonopy object, without force constants.
+    """
+    from phonopy import Phonopy
+
+    return Phonopy(
+        phonopy_atoms(structure),
+        supercell_matrix=np.diag([int(value) for value in supercell]),
+        primitive_matrix="P",
+    )
+
+
 def phonopy_supercell_structure(structure: AbacusSTRU, phonopy_supercell) -> AbacusSTRU:
     """Build an ABACUS supercell that follows the phonopy atom order.
 
@@ -396,3 +420,183 @@ def collect_forces(
             + ", ".join(str(index) for index in missing)
         )
     return forces
+
+
+def workflow_displacements(phonon, manifest: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Validate and return the displacement dataset recorded during preparation.
+
+    Args:
+        phonon: Phonopy object used to bound the displaced-atom index.
+        manifest: Preparation-time manifest of a phonon workflow.
+
+    Returns:
+        The validated dataset entries, each with a displaced atom and a
+        displacement in Angstrom.
+
+    Raises:
+        RuntimeError: When the dataset is missing, malformed, or inconsistent
+            with the supercell.
+    """
+    displacements = manifest.get("dataset")
+    if not isinstance(displacements, list) or not displacements:
+        raise RuntimeError("phonon workflow manifest has no displacement dataset")
+    validated = []
+    for item in displacements:
+        if not isinstance(item, dict) or "number" not in item or "displacement" not in item:
+            raise RuntimeError("invalid displacement entry in phonon workflow manifest")
+        try:
+            number = int(item["number"])
+            displacement = np.asarray(item["displacement"], dtype=float)
+        except (TypeError, ValueError) as error:
+            raise RuntimeError("invalid displacement entry in phonon workflow manifest") from error
+        if number < 0 or number >= len(phonon.supercell) or displacement.shape != (3,):
+            raise RuntimeError("invalid displacement entry in phonon workflow manifest")
+        if not np.all(np.isfinite(displacement)):
+            raise RuntimeError("invalid displacement entry in phonon workflow manifest")
+        validated.append({"number": number, "displacement": displacement.tolist()})
+    return validated
+
+
+def band_path(
+    structure: AbacusSTRU,
+    *,
+    qpath: Any = None,
+    high_symm_points: Any = None,
+    npoints: int = 101,
+):
+    """Return the band path of a structure as phonopy band q-points.
+
+    Without a ``qpath`` the path is the seekpath band path of the structure;
+    with one it is read from the label sequence and the label coordinates.
+
+    Args:
+        structure: Reference cell the path is built for.
+        qpath: Path of labels, or a list of paths of labels.
+        high_symm_points: Mapping from label to fractional coordinates, needed
+            together with ``qpath``.
+        npoints: Number of points of every segment.
+
+    Returns:
+        The tuple ``(qpoints, labels, connections)`` phonopy's band structure
+        takes, with ``qpoints`` a list of arrays.
+
+    Raises:
+        ValueError: When a custom path is incomplete or malformed.
+    """
+    if qpath is None:
+        from phonopy.phonon.band_structure import get_band_qpoints_by_seekpath
+
+        return get_band_qpoints_by_seekpath(
+            phonopy_atoms(structure), npoints=npoints, is_const_interval=True
+        )
+    if not isinstance(qpath, list) or not qpath:
+        raise ValueError("qpath must be a non-empty list")
+    if not isinstance(high_symm_points, dict) or not high_symm_points:
+        raise ValueError("high_symm_points must be a non-empty object")
+    if not isinstance(npoints, int) or npoints < 2:
+        raise ValueError("npoints must be at least 2")
+
+    if all(isinstance(item, str) for item in qpath):
+        paths = [qpath]
+    elif all(
+        isinstance(item, list) and item and all(isinstance(point, str) for point in item)
+        for item in qpath
+    ):
+        paths = qpath
+    else:
+        raise ValueError("qpath must be a list of labels or a list of label lists")
+
+    points = {}
+    for label, coordinates in high_symm_points.items():
+        values = np.asarray(coordinates, dtype=float)
+        if values.shape != (3,) or not np.all(np.isfinite(values)):
+            raise ValueError(
+                f"high-symmetry point {label!r} must contain three finite coordinates"
+            )
+        points[label] = values.tolist()
+
+    band_paths = []
+    labels = []
+    for path in paths:
+        converted = []
+        for label in path:
+            if label not in points:
+                raise ValueError(f"qpath label {label!r} is missing from high_symm_points")
+            converted.append(points[label])
+            labels.append(r"$\Gamma$" if label.lower() in {"g", "gamma"} else label)
+        band_paths.append(converted)
+
+    from phonopy.phonon.band_structure import get_band_qpoints_and_path_connections
+
+    qpoints, connections = get_band_qpoints_and_path_connections(
+        band_paths, npoints=npoints
+    )
+    return qpoints, labels, connections
+
+
+def load_workflow_phonon(
+    job: Path,
+    *,
+    version: str = "",
+    symmetrize: bool = True,
+    nac_params: Optional[Dict[str, Any]] = None,
+    manifest_name: str = "workflow_phonon.json",
+):
+    """Rebuild the phonopy object of a finished phonon workflow.
+
+    The displaced supercells and the force sets they produced are put back
+    together exactly as the workflow's own postprocessing stage does, so a
+    caller can use phonopy features the workflow does not expose — the
+    Grueneisen parameters, for instance — on the same force constants.
+
+    Args:
+        job: Directory of a phonon workflow whose displacements are finished.
+        version: ABACUS version hint for the running-log profiler.
+        symmetrize: Whether to symmetrize the force constants.
+        nac_params: Non-analytical correction parameters for the dynamical
+            matrix, in phonopy's format.
+        manifest_name: Name of the preparation manifest to read.
+
+    Returns:
+        The Phonopy object with force constants (and ``nac_params`` when given).
+
+    Raises:
+        FileNotFoundError: When the job or its manifest is missing.
+        RuntimeError: When the manifest does not describe this job.
+    """
+    import json
+
+    job = Path(job)
+    manifest_file = job / manifest_name
+    if not manifest_file.is_file():
+        raise FileNotFoundError(
+            f"could not find the phonon workflow manifest: {manifest_file}"
+        )
+    manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+    stru_filename = str(manifest.get("stru_filename", "STRU"))
+    structure = AbacusSTRU.read(job / stru_filename)
+    if structure is None:
+        raise RuntimeError(f"failed to read structure: {job / stru_filename}")
+    supercell = manifest.get("supercell")
+    if not isinstance(supercell, list) or len(supercell) != 3:
+        raise RuntimeError(f"invalid supercell in {manifest_file}")
+
+    phonon = initialize_phonopy(structure, supercell)
+    displacements = workflow_displacements(phonon, manifest)
+    phonon.dataset = {
+        "natom": len(phonon.supercell),
+        "first_atoms": [
+            {"number": item["number"], "displacement": item["displacement"]}
+            for item in displacements
+        ],
+    }
+    phonon.forces = [
+        read_forces(job / displacement_task("disp-", index)["task"], version, len(phonon.supercell))
+        for index in range(len(displacements))
+    ]
+    phonon.produce_force_constants()
+    if symmetrize:
+        phonon.symmetrize_force_constants()
+    if nac_params is not None:
+        phonon.nac_params = nac_params
+    return phonon

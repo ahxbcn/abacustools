@@ -17,15 +17,17 @@ from abacustools.core.constant import (
 )
 from abacustools.data.phonon import (
     automatic_supercell,
+    band_path,
     displacement_task,
+    initialize_phonopy,
     jsonable,
     moved_mode_indices,
-    phonopy_atoms,
     phonopy_supercell_structure,
     read_forces,
     validate_mesh,
     validate_positive_float,
     validate_supercell,
+    workflow_displacements,
 )
 from abacustools.data.versions import default_version
 
@@ -232,23 +234,6 @@ def _register_postprocess_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 
-def _initialize_phonopy(structure, supercell: list[int]):
-    """Initialize Phonopy with a diagonal supercell matrix.
-
-    ``primitive_matrix="P"`` pins the primitive cell to the reference cell.
-    Phonopy 4 resolves the ``"auto"`` default with a symmetry search, while
-    phonopy 3 used the identity, so leaving it unset would make the dynamical
-    matrix depend on the installed phonopy version.
-    """
-    from phonopy import Phonopy
-
-    return Phonopy(
-        phonopy_atoms(structure),
-        supercell_matrix=np.diag(supercell),
-        primitive_matrix="P",
-    )
-
-
 def _displacement_metadata(phonon) -> list[dict[str, Any]]:
     """Return the generated Phonopy displacement dataset in JSON form.
 
@@ -298,7 +283,7 @@ def prepare(args: argparse.Namespace) -> int:
         if args.supercell is not None
         else automatic_supercell(structure, args.min_supercell_length)
     )
-    phonon = _initialize_phonopy(structure, supercell)
+    phonon = initialize_phonopy(structure, supercell)
     phonon.generate_displacements(distance=args.displacement_stepsize)
     displaced_structures = phonon.supercells_with_displacements
     if not displaced_structures:
@@ -368,83 +353,6 @@ def prepare(args: argparse.Namespace) -> int:
         dataset=displacements,
     )
     return 0
-
-
-def _manifest_displacements(phonon, manifest: dict[str, Any]) -> list[dict[str, Any]]:
-    """Validate and return the displacement dataset recorded during preparation.
-
-    Args:
-        phonon: Phonopy object used to bound the displaced-atom index.
-        manifest: Preparation-time manifest of the workflow.
-
-    Returns:
-        The validated dataset entries.
-
-    Raises:
-        RuntimeError: When the dataset is missing, malformed, or inconsistent
-            with the supercell.
-    """
-    displacements = manifest.get("dataset")
-    if not isinstance(displacements, list) or not displacements:
-        raise RuntimeError("phonon workflow manifest has no displacement dataset")
-    validated = []
-    for item in displacements:
-        if not isinstance(item, dict) or "number" not in item or "displacement" not in item:
-            raise RuntimeError("invalid displacement entry in phonon workflow manifest")
-        try:
-            number = int(item["number"])
-            displacement = np.asarray(item["displacement"], dtype=float)
-        except (TypeError, ValueError) as error:
-            raise RuntimeError("invalid displacement entry in phonon workflow manifest") from error
-        if number < 0 or number >= len(phonon.supercell) or displacement.shape != (3,):
-            raise RuntimeError("invalid displacement entry in phonon workflow manifest")
-        if not np.all(np.isfinite(displacement)):
-            raise RuntimeError("invalid displacement entry in phonon workflow manifest")
-        validated.append(
-            {"number": number, "displacement": displacement.tolist()}
-        )
-    return validated
-
-
-def _custom_band_path(qpath: Any, high_symm_points: Any, npoints: int):
-    """Convert a JSON q-path and point dictionary to Phonopy band paths."""
-    if not isinstance(qpath, list) or not qpath:
-        raise ValueError("qpath must be a non-empty list")
-    if not isinstance(high_symm_points, dict) or not high_symm_points:
-        raise ValueError("high_symm_points must be a non-empty object")
-    if not isinstance(npoints, int) or npoints < 2:
-        raise ValueError("npoints must be at least 2")
-
-    if all(isinstance(item, str) for item in qpath):
-        paths = [qpath]
-    elif all(isinstance(item, list) and item and all(isinstance(point, str) for point in item) for item in qpath):
-        paths = qpath
-    else:
-        raise ValueError("qpath must be a list of labels or a list of label lists")
-
-    points = {}
-    for label, coordinates in high_symm_points.items():
-        values = np.asarray(coordinates, dtype=float)
-        if values.shape != (3,) or not np.all(np.isfinite(values)):
-            raise ValueError(f"high-symmetry point {label!r} must contain three finite coordinates")
-        points[label] = values.tolist()
-
-    band_paths = []
-    labels = []
-    for path in paths:
-        converted = []
-        for label in path:
-            if label not in points:
-                raise ValueError(f"qpath label {label!r} is missing from high_symm_points")
-            converted.append(points[label])
-            labels.append(r"$\Gamma$" if label.lower() in {"g", "gamma"} else label)
-        band_paths.append(converted)
-
-    from phonopy.phonon.band_structure import get_band_qpoints_and_path_connections
-
-    return get_band_qpoints_and_path_connections(band_paths, npoints=npoints), labels
-
-
 
 
 def _resolve_output(job: Path, filename: str) -> Path:
@@ -1028,8 +936,8 @@ def postprocess(args: argparse.Namespace) -> int:
         raise RuntimeError("phonon workflow manifest has invalid tasks")
     read_manifest(job, "phonon", tasks)
 
-    phonon = _initialize_phonopy(structure, manifest_supercell)
-    displacements = _manifest_displacements(phonon, manifest)
+    phonon = initialize_phonopy(structure, manifest_supercell)
+    displacements = workflow_displacements(phonon, manifest)
     entries = [
         {
             "task": displacement_task(_TASK_PREFIX, index)["task"],
@@ -1119,24 +1027,17 @@ def postprocess(args: argparse.Namespace) -> int:
             )
 
     from phonopy.harmonic.dynmat_to_fc import get_commensurate_points
-    from phonopy.phonon.band_structure import get_band_qpoints_by_seekpath
 
     commensurate_points = get_commensurate_points(phonon.supercell_matrix)
     frequencies = np.asarray(
         phonon.run_qpoints(commensurate_points).frequencies, dtype=float
     )
-    if args.qpath is None:
-        band_paths, labels, connections = get_band_qpoints_by_seekpath(
-            phonopy_atoms(structure),
-            npoints=args.npoints,
-            is_const_interval=True,
-        )
-    else:
-        (band_paths, connections), labels = _custom_band_path(
-            args.qpath,
-            args.high_symm_points,
-            args.npoints,
-        )
+    band_paths, labels, connections = band_path(
+        structure,
+        qpath=args.qpath,
+        high_symm_points=args.high_symm_points,
+        npoints=args.npoints,
+    )
     phonon.run_band_structure(band_paths, path_connections=connections, labels=labels)
 
     import matplotlib
