@@ -847,8 +847,66 @@ sbatch runabacus.sh  # submit from each generated job directory
 abacustools workflow elastic postprocess -j JOB
 ```
 
-The fitted elastic tensor and Voigt moduli are written to
-`elastic_results.json` under `JOB`.
+The preparation stage analyses the reference cell and records its point group,
+space group and the number of independent elastic constants in
+`workflow_elastic.json`. The postprocessing stage fits the unconstrained 6x6
+tensor from the stresses and then projects it onto the subspace the crystal
+symmetry allows, so the numerical noise of the stresses no longer shows up as
+components the symmetry forbids or as a tensor that is not symmetric in its
+two index pairs. Both tensors, the largest change the projection made, the
+independent constants and the Voigt moduli are written to
+`elastic_results.json` under `JOB`:
+
+```text
+symmetrization residual: <largest component the projection changed>, in GPa
+independent constants (GPa): C11 = <...>, C12 = <...>, C44 = <...>
+```
+
+Use `--no-symmetrize` to keep the raw fit; `--symprec` sets the tolerance of
+the symmetry analysis, which defaults to 0.01 Angstrom so that a relaxed cell
+is still recognised as symmetric.
+
+For a crystal with symmetry there is a second, cheaper route: strain only one
+representative of every symmetry orbit of strain directions and fit the
+independent constants directly, instead of straining all six directions and
+fitting the full tensor:
+
+```text
+abacustools workflow elastic prepare -j JOB --strains independent
+abacustools workflow elastic postprocess -j JOB --fit independent
+```
+
+The preparation stage picks the directions whose information raises the rank
+of the fit, so a cubic crystal needs two of them (`xx` and `yz`, nine jobs
+instead of twenty five), a hexagonal or trigonal one three, and a tetragonal
+one four; when no symmetry relates the directions all six are kept. The
+postprocessing stage then writes the stiffness matrix as a combination of the
+symmetry allowed basis tensors and fits its coefficients in one least squares,
+which reports the independent constants without a separate symmetrisation
+step.
+
+Elastic constants can also be obtained from the curvature of the total energy
+instead of from the stresses. The `energy-strain` workflow strains the cell
+along a set of patterns and fits
+
+```text
+E(e) = E0 + (V0 / 2) sum_k a_k (e B_k e)
+```
+
+```text
+abacustools workflow energy-strain prepare -j JOB
+sbatch runabacus.sh  # submit from each generated job directory
+abacustools workflow energy-strain postprocess -j JOB
+```
+
+The patterns are picked so that their curvature covers every independent
+constant: three for a cubic crystal (`xx`, `yz` and `xx + yy`, twelve strained
+calculations), and one per constant in the lower symmetry classes. Every
+pattern is strained with amplitudes that are symmetric about zero, which keeps
+the stress of the reference cell out of the curvature; that stress is reported
+separately, projected on the patterns, as a check of the reference. The fit,
+the independent constants, the moduli and the root mean square energy residual
+are written to `energy_strain_results.json` under `JOB`.
 
 Phonon spectra can be calculated with finite differences using Phonopy. The
 prepare stage generates displaced supercell SCF jobs, and the postprocess

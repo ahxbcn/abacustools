@@ -10,6 +10,19 @@ from typing import Any, Iterable
 
 import numpy as np
 
+from abacustools.data.elastic import (
+    elastic_moduli,
+    fit_stress_strain,
+    fit_independent_stress_strain,
+    independent_component_count,
+    independent_components,
+    independent_strain_modes,
+    point_group_operations,
+    stress_voigt,
+    symmetrize_elastic_tensor,
+    symmetrization_residual,
+)
+from abacustools.data.symmetry import crystallographic_symmetry
 from abacustools.data.versions import default_version
 
 from .common import (
@@ -24,6 +37,20 @@ from .common import (
 
 
 _ELASTIC_TASKS = ("org",) + tuple(f"deformed_{index:02d}" for index in range(24))
+
+#: Names of the six Voigt strain directions.
+_VOIGT_LABELS = ("xx", "yy", "zz", "yz", "xz", "xy")
+
+#: Symmetry tolerance used to decide which components the elastic tensor may
+#: have, in Angstrom.  A relaxed cell is only symmetric up to the tolerance of
+#: the relaxation that produced it, which is several 1e-3 Angstrom, so the
+#: default follows the tolerance pymatgen uses for a structure analysis.
+DEFAULT_SYMPREC = 1.0e-2
+
+
+def _voigt_labels(modes: Iterable[int]) -> list[str]:
+    """Return the names of a list of Voigt strain directions."""
+    return [_VOIGT_LABELS[int(mode)] for mode in modes]
 
 
 def _register_prepare_arguments(parser: argparse.ArgumentParser) -> None:
@@ -52,6 +79,17 @@ def _register_prepare_arguments(parser: argparse.ArgumentParser) -> None:
         help="Use fixed-ion SCF calculations instead of ionic relaxation.",
     )
     parser.add_argument(
+        "--strains",
+        choices=("full", "independent"),
+        default="full",
+        help=(
+            "Strain set of the generated jobs. 'full' applies all six Voigt "
+            "strain directions, 'independent' applies one representative per "
+            "symmetry orbit of strain directions, which is enough to "
+            "determine the independent constants, default: full."
+        ),
+    )
+    parser.add_argument(
         "--override",
         action="store_true",
         help="Replace existing generated workflow directories.",
@@ -76,6 +114,36 @@ def _register_postprocess_arguments(parser: argparse.ArgumentParser) -> None:
         default="elastic_results.json",
         help="Output JSON filename. Relative paths are resolved below JOB.",
     )
+    parser.add_argument(
+        "--symprec",
+        type=float,
+        default=DEFAULT_SYMPREC,
+        help=f"Symmetry tolerance of the reference cell, default: {DEFAULT_SYMPREC}.",
+    )
+    parser.add_argument(
+        "--symmetrize",
+        dest="symmetrize",
+        action="store_true",
+        default=True,
+        help="Symmetrize the fitted tensor with the crystal symmetry, the default.",
+    )
+    parser.add_argument(
+        "--no-symmetrize",
+        dest="symmetrize",
+        action="store_false",
+        help="Keep the unconstrained fit of the 36 components.",
+    )
+    parser.add_argument(
+        "--fit",
+        choices=("full", "independent"),
+        default="full",
+        help=(
+            "Fit every component and symmetrize afterwards ('full'), or fit "
+            "only the independent constants ('independent'). A job prepared "
+            "with --strains independent always uses the independent fit, "
+            "default: full."
+        ),
+    )
 
 
 def _validate_strain_amounts(norm: float, shear: float) -> None:
@@ -87,8 +155,19 @@ def _validate_strain_amounts(norm: float, shear: float) -> None:
         raise ValueError("shear strain must be smaller than 0.5")
 
 
-def _pymatgen_deformations(structure, norm: float, shear: float):
-    """Generate independent deformations with pymatgen's elasticity API."""
+def _pymatgen_deformations(structure, norm: float, shear: float, modes=None):
+    """Generate single-component deformations with pymatgen's elasticity API.
+
+    Args:
+        structure: Structure to deform.
+        norm: Largest normal strain.
+        shear: Largest shear strain.
+        modes: Voigt indices of the strain directions to keep.  ``None`` keeps
+            all six, the order of the returned states follows the Voigt index.
+
+    Returns:
+        List of ``(deformed structure, strain)`` pairs.
+    """
     from pymatgen.analysis.elasticity.strain import DeformedStructureSet, Strain
 
     structure = structure.to("pymatgen")
@@ -98,12 +177,17 @@ def _pymatgen_deformations(structure, norm: float, shear: float):
         shear_strains=(-shear, -0.5 * shear, 0.5 * shear, shear),
         symmetry=False,
     )
-    return [
-        (deformed, Strain.from_deformation(deformation))
-        for deformed, deformation in zip(
-            deformed_set, deformed_set.deformations
-        )
-    ]
+    wanted = None if modes is None else {int(mode) for mode in modes}
+    states = []
+    for index, (deformed, deformation) in enumerate(
+        zip(deformed_set, deformed_set.deformations)
+    ):
+        # DeformedStructureSet walks the three normal directions and then the
+        # three shear directions, four amplitudes each.
+        if wanted is not None and index // 4 not in wanted:
+            continue
+        states.append((deformed, Strain.from_deformation(deformation)))
+    return states
 
 
 def _deformed_structure(structure, pymatgen_structure):
@@ -112,6 +196,29 @@ def _deformed_structure(structure, pymatgen_structure):
     deformed.cell = pymatgen_structure.lattice.matrix.tolist()
     deformed.coords_direct = pymatgen_structure.frac_coords.tolist()
     return deformed
+
+
+def _structure_symmetry(structure, symprec: float) -> dict[str, Any]:
+    """Return the symmetry block recorded for a reference structure."""
+    analysis = crystallographic_symmetry(structure, symprec=symprec)
+    if not analysis.get("available"):
+        raise RuntimeError(
+            "the symmetry of the reference cell could not be determined: "
+            f"{analysis.get('error', 'unknown reason')}"
+        )
+    rotations = point_group_operations(structure, symprec=symprec)
+    return {
+        "point_group": analysis["point_group"],
+        "schoenflies": analysis.get("schoenflies"),
+        "space_group_symbol": analysis["space_group_symbol"],
+        "space_group_number": analysis["space_group_number"],
+        "crystal_system": analysis["crystal_system"],
+        "lattice_type": analysis.get("lattice_type"),
+        "inversion_symmetry": analysis.get("inversion_symmetry"),
+        "operations": int(len(rotations)),
+        "independent_constants": independent_component_count(rotations),
+        "symprec": float(symprec),
+    }
 
 
 def prepare(args: argparse.Namespace) -> int:
@@ -128,12 +235,34 @@ def prepare(args: argparse.Namespace) -> int:
     elastic_inputs["cal_stress"] = 1
     kpoint_file = kpoint_filename(job, inputs)
 
-    generated = _pymatgen_deformations(structure, args.norm, args.shear)
-    clear_generated_jobs(job, _ELASTIC_TASKS, override=args.override)
+    symmetry = _structure_symmetry(structure, DEFAULT_SYMPREC)
+    rotations = point_group_operations(structure, symprec=DEFAULT_SYMPREC)
+    if args.strains == "independent":
+        strain_modes = independent_strain_modes(rotations)
+    else:
+        strain_modes = list(range(6))
+    generated = _pymatgen_deformations(
+        structure, args.norm, args.shear, modes=strain_modes
+    )
+    task_names = ["org"] + [
+        f"deformed_{index:02d}" for index in range(len(generated))
+    ]
+    clear_generated_jobs(job, task_names, override=args.override)
     print(f"  job: {job}")
     print(f"  normal strain: {args.norm}")
     print(f"  shear strain: {args.shear}")
     print(f"  calculation: {elastic_inputs['calculation']}")
+    print(
+        f"  strain modes: {len(strain_modes)} of 6 "
+        f"({', '.join(_voigt_labels(strain_modes))})"
+    )
+    print(f"  strained jobs: {len(generated)}")
+    print(
+        f"  point group: {symmetry['point_group']} "
+        f"({symmetry['space_group_symbol']}, "
+        f"space group {symmetry['space_group_number']})"
+    )
+    print(f"  independent elastic constants: {symmetry['independent_constants']}")
 
     write_abacus_job(
         elastic_inputs,
@@ -164,9 +293,12 @@ def prepare(args: argparse.Namespace) -> int:
     write_manifest(
         job,
         "elastic",
-        tasks=list(_ELASTIC_TASKS),
+        tasks=task_names,
         deformed_paths=deformed_paths,
         strains=strain_metadata,
+        strain_modes=strain_modes,
+        strains_mode=args.strains,
+        symmetry=symmetry,
         norm=float(args.norm),
         shear=float(args.shear),
         norelax=bool(args.norelax),
@@ -197,71 +329,57 @@ def _read_stress(job: Path, version: str, require_relaxation: bool) -> np.ndarra
     return -0.1 * stress
 
 
-def _fit_elastic_tensor(
+def _fit_tensor(
     strains: Iterable[dict[str, Any]],
     stresses: Iterable[np.ndarray],
     equilibrium_stress: np.ndarray,
 ) -> np.ndarray:
-    """Fit the 6x6 stress-strain tensor in GPa."""
+    """Fit the unconstrained 6x6 stress-strain tensor in GPa."""
+    strain_values, stress_values = _strain_stress_values(
+        strains, stresses, equilibrium_stress
+    )
+    if strain_values.shape[0] < 24:
+        raise ValueError(
+            "the unconstrained fit needs the full strain set; prepare the job "
+            "with --strains full or postprocess it with --fit independent"
+        )
+    return fit_stress_strain(strain_values, stress_values)
+
+
+def _strain_stress_values(
+    strains: Iterable[dict[str, Any]],
+    stresses: Iterable[np.ndarray],
+    equilibrium_stress: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the six-component strain and stress values of the workflow."""
     from pymatgen.analysis.elasticity.strain import Strain
 
     strain_values = np.asarray(
         [Strain.from_dict(item).voigt for item in strains], dtype=float
     )
     stress_values = np.asarray(
-        [_stress_voigt(stress - equilibrium_stress) for stress in stresses],
+        [stress_voigt(stress - equilibrium_stress) for stress in stresses],
         dtype=float,
     )
-    if strain_values.shape != (24, 6) or stress_values.shape != (24, 6):
-        raise ValueError("elastic fitting requires 24 six-component strain/stress values")
-
-    tensor = np.zeros((6, 6), dtype=float)
-    for component in range(6):
-        mask = np.abs(strain_values[:, component]) > 0
-        if np.count_nonzero(mask) < 2:
-            raise ValueError(f"insufficient strain data for component {component}")
-        design = np.column_stack((strain_values[mask, component], np.ones(np.count_nonzero(mask))))
-        for stress_component in range(6):
-            tensor[component, stress_component] = np.linalg.lstsq(
-                design,
-                stress_values[mask, stress_component],
-                rcond=None,
-            )[0][0]
-    return tensor
+    if strain_values.ndim != 2 or strain_values.shape[1] != 6:
+        raise ValueError("the manifest holds invalid strain states")
+    if stress_values.shape != strain_values.shape:
+        raise ValueError("the number of stresses does not match the strains")
+    return strain_values, stress_values
 
 
-def _stress_voigt(stress: np.ndarray) -> list[float]:
-    """Convert a symmetric stress matrix to Voigt notation."""
-    return [
-        float(stress[0, 0]),
-        float(stress[1, 1]),
-        float(stress[2, 2]),
-        float(stress[1, 2]),
-        float(stress[0, 2]),
-        float(stress[0, 1]),
-    ]
+def _symmetry_block(job: Path, manifest: dict[str, Any], symprec: float) -> dict[str, Any]:
+    """Return the symmetry of the reference cell.
 
-
-def _elastic_moduli(tensor: np.ndarray) -> dict[str, float]:
-    """Calculate Voigt bulk, shear, Young's and Poisson moduli in GPa."""
-    diagonal = np.trace(tensor[:3, :3])
-    off_diagonal = tensor[0, 1] + tensor[0, 2] + tensor[1, 2]
-    shear = tensor[3, 3] + tensor[4, 4] + tensor[5, 5]
-    bulk_modulus = (diagonal + 2.0 * off_diagonal) / 9.0
-    shear_modulus = (diagonal - off_diagonal + 3.0 * shear) / 15.0
-    denominator = 3.0 * bulk_modulus + shear_modulus
-    if denominator == 0:
-        raise ValueError("cannot calculate Young's modulus from the fitted tensor")
-    young_modulus = 9.0 * bulk_modulus * shear_modulus / denominator
-    poisson_ratio = (3.0 * bulk_modulus - 2.0 * shear_modulus) / (
-        2.0 * denominator
-    )
-    return {
-        "bulk_modulus": float(bulk_modulus),
-        "shear_modulus": float(shear_modulus),
-        "young_modulus": float(young_modulus),
-        "poisson_ratio": float(poisson_ratio),
-    }
+    The preparation stage records it in the manifest; a manifest written
+    before that information existed is completed here from the reference
+    structure.
+    """
+    recorded = manifest.get("symmetry")
+    if isinstance(recorded, dict) and recorded.get("point_group"):
+        return dict(recorded)
+    _, _, structure = read_job_structure(job)
+    return _structure_symmetry(structure, symprec)
 
 
 def postprocess(args: argparse.Namespace) -> int:
@@ -269,25 +387,81 @@ def postprocess(args: argparse.Namespace) -> int:
     job = Path(args.job).absolute()
     if not job.is_dir():
         raise RuntimeError(f"job directory does not exist: {job}")
-    manifest = read_manifest(job, "elastic", _ELASTIC_TASKS)
+    # The strained jobs depend on the strain set the preparation stage chose,
+    # so only the unstrained cell is required by name.
+    manifest = read_manifest(job, "elastic", ("org",))
     strains = manifest.get("strains")
     deformed_paths = manifest.get("deformed_paths")
-    if not isinstance(strains, list) or len(strains) != 24:
-        raise RuntimeError("elastic workflow manifest must contain 24 strain states")
-    if deformed_paths != list(_ELASTIC_TASKS[1:]):
+    if not isinstance(strains, list) or not strains:
+        raise RuntimeError("elastic workflow manifest must contain strain states")
+    if not isinstance(deformed_paths, list) or len(deformed_paths) != len(strains):
         raise RuntimeError("elastic workflow manifest has invalid deformed paths")
+    strain_modes = manifest.get("strain_modes")
+    if not isinstance(strain_modes, list) or not strain_modes:
+        # Manifests written before the strain selection existed hold all six.
+        strain_modes = list(range(6))
 
     require_relaxation = not bool(manifest.get("norelax", False))
+    symmetry = _symmetry_block(job, manifest, args.symprec)
     print(f"  job: {job}")
+    print(
+        f"  point group: {symmetry['point_group']} "
+        f"({symmetry.get('space_group_symbol')}, "
+        f"space group {symmetry.get('space_group_number')})"
+    )
+    print(f"  independent elastic constants: {symmetry['independent_constants']}")
+    print(
+        f"  strain modes: {len(strain_modes)} of 6 "
+        f"({', '.join(_voigt_labels(strain_modes))}), "
+        f"{len(strains)} strained jobs"
+    )
     equilibrium_stress = _read_stress(job / "org", args.version, require_relaxation)
-    deformed_stresses = [
+    deformed_stresses: list[np.ndarray] = [
         _read_stress(job / name, args.version, require_relaxation)
         for name in deformed_paths
     ]
-    tensor = _fit_elastic_tensor(strains, deformed_stresses, equilibrium_stress)
+    _, _, structure = read_job_structure(job)
+    rotations = point_group_operations(structure, symprec=args.symprec)
+
+    method = args.fit
+    if len(strain_modes) < 6 and method == "full":
+        print(
+            "  the strain set covers the independent directions only; "
+            "fitting the independent constants"
+        )
+        method = "independent"
+    if method == "independent":
+        strain_values, stress_values = _strain_stress_values(
+            strains, deformed_stresses, equilibrium_stress
+        )
+        tensor = fit_independent_stress_strain(
+            strain_values, stress_values, rotations
+        )
+        raw = tensor
+        residual = 0.0
+        print("  fit: independent constants")
+    else:
+        raw = _fit_tensor(strains, deformed_stresses, equilibrium_stress)
+        if args.symmetrize:
+            tensor = symmetrize_elastic_tensor(raw, rotations)
+        else:
+            tensor = raw
+        residual = symmetrization_residual(raw, tensor)
     result = {
         "elastic_tensor": tensor.tolist(),
-        **_elastic_moduli(tensor),
+        "elastic_tensor_raw": raw.tolist(),
+        "symmetrization_residual": residual,
+        "independent_constants": independent_components(tensor, rotations),
+        "symmetry": symmetry,
+        "fit": {
+            "method": method,
+            "strain_modes": [int(mode) for mode in strain_modes],
+            "strained_jobs": len(strains),
+            "independent_constants": len(
+                independent_components(tensor, rotations)
+            ),
+        },
+        **elastic_moduli(tensor),
         "stress_unit": "GPa",
     }
 
@@ -297,9 +471,22 @@ def postprocess(args: argparse.Namespace) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 
-    print("  elastic tensor (GPa):")
-    for row in tensor:
+    components = result["independent_constants"]
+    heading = "fitted tensor (raw, GPa)" if method == "full" else "fitted tensor (GPa)"
+    print(f"  {heading}:")
+    for row in raw:
         print("    " + " ".join(f"{value: .8f}" for value in row))
+    if method == "full" and args.symmetrize:
+        print("  symmetrized tensor (GPa):")
+        for row in tensor:
+            print("    " + " ".join(f"{value: .8f}" for value in row))
+        print(f"  symmetrization residual: {residual:.8f} GPa")
+    if method == "full" and not args.symmetrize:
+        print("  the tensor is kept as fitted; no symmetrization was applied")
+    print(
+        "  independent constants (GPa): "
+        + ", ".join(f"{name} = {value:.6f}" for name, value in components.items())
+    )
     for name in ("bulk_modulus", "shear_modulus", "young_modulus"):
         print(f"  {name}: {result[name]:.8f} GPa")
     # The Poisson ratio is dimensionless, so it carries no unit.
