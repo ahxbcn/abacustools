@@ -30,6 +30,11 @@ from .files import (
     structure_path,
     write_structure,
 )
+from .c2db import (
+    C2DBDatabase,
+    keys_source as c2db_keys_source,
+    load_keys as c2db_keys,
+)
 from .optimade import (
     PROVIDERS_INDEX_URL,
     OptimadeHttpError,
@@ -49,11 +54,13 @@ from .registry import (
     unregister_database,
 )
 
+from . import c2db as _c2db_provider
 from . import materials_project as _materials_project_provider
 from . import optimade as _optimade_provider
 
 _materials_project_provider.register()
 _optimade_provider.register()
+_c2db_provider.register()
 
 
 def default_database(environ: Optional[Mapping[str, str]] = None) -> StructureDatabase:
@@ -99,6 +106,7 @@ __all__ = [
     "DatabaseRequestError",
     "DatabaseStructure",
     "DatabaseSummary",
+    "C2DBDatabase",
     "DatabaseUnavailableError",
     "OptimadeHttpError",
     "OptimadeProvider",
@@ -108,6 +116,8 @@ __all__ = [
     "StructureDatabase",
     "api_key_from_environment",
     "available_databases",
+    "c2db_keys",
+    "c2db_keys_source",
     "database_names",
     "databases",
     "default_database",

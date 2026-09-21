@@ -43,6 +43,7 @@ def query_from_args(args: argparse.Namespace) -> DatabaseQuery:
         theoretical=True if getattr(args, "theoretical", False) else None,
         limit=args.limit,
         fields=tuple(split_fields(args.fields)) if getattr(args, "fields", None) else None,
+        where=tuple(getattr(args, "where", None) or ()) or None,
     )
 
 
@@ -58,6 +59,16 @@ def split_fields(value: Optional[str]) -> list[str]:
     return fields
 
 
+def split_columns(value: Optional[Sequence[str]]) -> Optional[list[str]]:
+    """Split repeated comma-separated ``--show`` values into column keys."""
+    columns = []
+    for item in value or ():
+        for key in str(item).split(","):
+            if key.strip():
+                columns.append(key.strip())
+    return columns or None
+
+
 def provider_options(
     args: argparse.Namespace,
     database: StructureDatabase,
@@ -70,6 +81,7 @@ def provider_options(
     options = {
         "provider": getattr(args, "provider", None),
         "base_url": getattr(args, "base_url", None),
+        "show": split_columns(getattr(args, "show", None)),
     }
     options = {name: value for name, value in options.items() if value}
     database.check_options(**options)
@@ -86,8 +98,11 @@ def flag(value: Optional[bool]) -> str:
     return "-" if value is None else ("yes" if value else "no")
 
 
-def summary_table(summaries: Sequence[DatabaseSummary]) -> Table:
-    """Build the search result table."""
+def summary_table(
+    summaries: Sequence[DatabaseSummary],
+    columns: Sequence[str] = (),
+) -> Table:
+    """Build the search result table, with extra property columns."""
     table = Table(header_style="bold")
     table.add_column("database", style="magenta", no_wrap=True)
     table.add_column("id", style="cyan", no_wrap=True)
@@ -96,10 +111,12 @@ def summary_table(summaries: Sequence[DatabaseSummary]) -> Table:
     table.add_column("N", justify="right")
     table.add_column("E_hull", justify="right")
     table.add_column("gap", justify="right")
+    for column in columns:
+        table.add_column(column, justify="right")
     table.add_column("stable", justify="right")
     table.add_column("theo", justify="right")
     for summary in summaries:
-        table.add_row(
+        row = [
             summary.database,
             summary.identifier,
             summary.formula or "-",
@@ -107,9 +124,12 @@ def summary_table(summaries: Sequence[DatabaseSummary]) -> Table:
             "-" if summary.nsites is None else str(summary.nsites),
             number(summary.energy_above_hull),
             number(summary.band_gap),
-            flag(summary.is_stable),
-            flag(summary.theoretical),
-        )
+        ]
+        for column in columns:
+            value = summary.extra.get(column)
+            row.append("-" if value in (None, "") else str(value))
+        row.extend([flag(summary.is_stable), flag(summary.theoretical)])
+        table.add_row(*row)
     return table
 
 

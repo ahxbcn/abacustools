@@ -1,6 +1,7 @@
 """The ``abacustools database`` command family."""
 
 from . import download as download_command
+from . import fields as fields_command
 from . import listing as listing_command
 from . import providers as providers_command
 from . import search as search_command
@@ -21,6 +22,7 @@ def register_parser(subparsers) -> None:
     )
 
     listing_command.register_parser(database_subparsers)
+    fields_command.register_parser(database_subparsers)
     providers_command.register_parser(database_subparsers)
     search_command.register_parser(database_subparsers)
     download_command.register_parser(database_subparsers)

@@ -17,7 +17,7 @@ from typing import Any, FrozenSet, Mapping, Optional, Sequence
 DEFAULT_DATABASE_ENVIRONMENT_VARIABLE = "ABACUSTOOLS_DATABASE"
 
 #: Query selectors understood by :class:`DatabaseQuery`, in reporting order.
-SELECTORS = ("formula", "chemsys", "elements", "identifiers")
+SELECTORS = ("formula", "chemsys", "elements", "identifiers", "where")
 
 
 class DatabaseError(RuntimeError):
@@ -139,6 +139,8 @@ class DatabaseQuery:
         limit: Maximum number of summaries to return.
         fields: Provider-specific summary fields to request; databases that
             have no such notion ignore it.
+        where: Extra terms in the filter language of the database itself,
+            such as the C2DB expressions ``gap>1.5`` or ``is_magnetic=True``.
     """
 
     formula: Optional[str] = None
@@ -149,6 +151,7 @@ class DatabaseQuery:
     theoretical: Optional[bool] = None
     limit: int = 20
     fields: Optional[tuple[str, ...]] = None
+    where: Optional[tuple[str, ...]] = None
 
     def selectors(self) -> list[str]:
         """Return the selector names this query actually uses."""
@@ -257,6 +260,14 @@ class StructureDatabase(ABC):
     def supports(self, capability: str) -> bool:
         """Return whether this database supports one selector."""
         return capability in self.capabilities
+
+    def fields(self) -> list[tuple[str, str]]:
+        """Return the property keys of this database and their descriptions.
+
+        Databases that publish properties beyond the common fields override
+        this so that ``abacustools database fields`` can document them.
+        """
+        return []
 
     def check_query(self, query: DatabaseQuery) -> None:
         """Validate a query against this database's capabilities.

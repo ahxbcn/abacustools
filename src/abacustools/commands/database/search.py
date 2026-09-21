@@ -14,6 +14,7 @@ from .common import (
     provider_options,
     query_from_args,
     selected_database,
+    split_columns,
     summary_table,
 )
 
@@ -101,6 +102,22 @@ def register_parser(subparsers, *, default_database=None) -> None:
         help="Comma-separated summary fields to request, Materials Project only.",
     )
     parser.add_argument(
+        "--where",
+        action="append",
+        default=None,
+        metavar="EXPRESSION",
+        help="Filter term in the language of the database, such as 'gap>1.5'; "
+        "may be repeated (C2DB only).",
+    )
+    parser.add_argument(
+        "--show",
+        action="append",
+        default=None,
+        metavar="KEY",
+        help="Extra property column to show, such as 'gap_hse' or 'magstate'; "
+        "may be repeated (C2DB only).",
+    )
+    parser.add_argument(
         "--api-key",
         dest="api_key",
         default=None,
@@ -140,7 +157,7 @@ def run(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(records, indent=2, sort_keys=True))
     elif summaries:
-        Console().print(summary_table(summaries))
+        Console().print(summary_table(summaries, columns=split_columns(args.show) or ()))
     else:
         print("no entries matched the query")
     return 0 if summaries else 1

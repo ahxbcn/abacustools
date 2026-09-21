@@ -1540,7 +1540,8 @@ without it the default is `mp`.
 | `cod` | Crystallography Open Database: experimental structures | OPTIMADE |
 | `tcod` | Theoretical Crystallography Open Database | OPTIMADE |
 | `alexandria` | Alexandria materials database (PBE+SOL) | OPTIMADE |
-| `c2db` | Computational 2D Materials Database (DTU) | OPTIMADE |
+| `c2db` | Computational 2D Materials Database (DTU), with its computed data | query table + OPTIMADE |
+| `c2db-optimade` | the same structures over OPTIMADE only, without the computed data | OPTIMADE |
 | `mc3d`, `mc2d` | Materials Cloud three- and two-dimensional crystals | OPTIMADE |
 | `twodmatpedia` | 2DMatPedia: 2D materials exfoliated from the Materials Project | OPTIMADE |
 | `matterverse` | Matterverse: machine-learning property predictions | OPTIMADE |
@@ -1551,8 +1552,10 @@ without it the default is `mp`.
 `abacustools database list` shows which databases are ready, which need an API
 key, and which selectors each one accepts. Databases reached over OPTIMADE
 accept `--formula`, `--chemsys`, `--elements` and `--id`; the Materials Project
-also accepts `--stable`, `--theoretical` and `--fields`. Asking a database for
-a selector it does not know is an error rather than a silent partial match.
+also accepts `--stable`, `--theoretical` and `--fields`, and C2DB adds
+`--where` for its own property expressions and `--show` for extra columns (see
+below). Asking a database for a selector it does not know is an error rather
+than a silent partial match.
 
 The OPTIMADE catalogue follows the official index at
 `https://providers.optimade.org/providers.json`; `abacustools database
@@ -1560,9 +1563,41 @@ providers --refresh` prints the live list, and `--base-url` sends a query to an
 OPTIMADE endpoint that the catalogue does not contain. Providers differ in what
 they publish: `cod` and `tcod` report cell parameters but no atomic
 coordinates, so they answer searches while a download of one of their entries
-reports that there is no structure to write; `c2db` ignores filters on the
-entry id, so search it by formula or elements and download the identifier the
-search reported.
+reports that there is no structure to write; `c2db-optimade` ignores filters on
+the entry id and does not publish the computed data, which is why the `c2db`
+database reads the query table of the C2DB web application instead.
+
+### C2DB computed data
+
+C2DB stores much more than the geometry: PBE, HSE06 and G0W0 band gaps, the
+energy above the convex hull, the heat of formation, effective masses, elastic
+and piezoelectric constants, magnetic states, optical properties and so on.
+`abacustools database fields -d c2db` lists all 88 keys with their units, and
+`--where` filters on them with the expression language of the C2DB search page:
+
+```text
+abacustools database fields -d c2db
+abacustools database search -d c2db --formula MoS2 --limit 5
+abacustools database search -d c2db --elements Mo S --where 'gap>1.5' --limit 5
+abacustools database search -d c2db --where 'is_magnetic=True' --where 'ehull<0.05'
+abacustools database search -d c2db --formula MoS2 --show gap_hse,emass_cbm
+```
+
+A `--where` expression compares one key, as in `gap>1.5`, `ehull<0.05`,
+`xc=PBE` or `nspecies=3`; several expressions and the standard selectors are
+combined with "and", `|` combines alternatives and `~` negates a term, exactly
+as on the search page. `--show` adds the named keys as columns, and every
+search record also carries them under `extra` in `--json`. Entries are
+identified by their C2DB uid, such as `1MoS2-1`:
+
+```text
+abacustools database download -d c2db 1MoS2-1 --format cif
+abacustools database download -d c2db 1MoS2-1 --json
+```
+
+A download joins the property row of the query table with the geometry of the
+OPTIMADE endpoint, so the JSON record reports the formula, the site count, the
+PBE gap, the energy above the hull, and the tabulated properties.
 
 ### Materials Project
 

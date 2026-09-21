@@ -352,6 +352,7 @@ def _common_terms(query: DatabaseQuery) -> list[str]:
         elements = [part for part in re.split(r"[-\s,]+", str(query.chemsys)) if part]
     if elements:
         terms.append(_elements_term(elements))
+    terms.extend(str(term) for term in query.where or ())
     return terms
 
 

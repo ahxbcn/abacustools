@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -11,6 +12,8 @@ from unittest.mock import patch
 
 from abacustools.integrations.databases import (
     DatabaseQuery,
+    c2db_keys,
+    c2db_keys_source,
     DatabaseRequestError,
     DatabaseStructure,
     DatabaseSummary,
@@ -27,6 +30,12 @@ from abacustools.integrations.databases import (
     structure_path,
     unregister_database,
     write_structure,
+)
+from abacustools.integrations.databases.c2db import (
+    DEFAULT_COLUMNS,
+    build_filter,
+    parse_table,
+    summary_from_row,
 )
 from abacustools.integrations.databases.optimade import (
     OptimadeDatabase,
@@ -261,15 +270,16 @@ class TestOptimadeCatalogue(unittest.TestCase):
         for provider in providers:
             self.assertTrue(provider.base_url.startswith("http"))
         names = [provider.name for provider in providers]
-        for name in ("aflow", "c2db", "cod", "mc2d", "twodmatpedia"):
+        for name in ("aflow", "c2db-optimade", "cod", "mc2d", "twodmatpedia"):
             self.assertIn(name, names)
 
     def test_a_provider_can_narrow_the_selectors_it_answers(self):
-        provider = optimade_provider_from_name("c2db")
+        provider = optimade_provider_from_name("c2db-optimade")
 
-        self.assertEqual(provider.selectors, ("formula", "chemsys", "elements"))
-        database = get_database("c2db")
+        self.assertEqual(provider.selectors, ("formula", "chemsys", "elements", "where"))
+        database = get_database("c2db-optimade")
         self.assertFalse(database.supports("identifiers"))
+        self.assertTrue(database.supports("where"))
         with self.assertRaises(DatabaseRequestError) as error:
             database.search(DatabaseQuery(identifiers=("3680",)))
 
@@ -586,6 +596,281 @@ class TestStructureFiles(unittest.TestCase):
 
         self.assertIn("ATOMIC_SPECIES", text)
         self.assertIn("LATTICE_VECTORS", text)
+
+
+C2DB_LABELS = (
+    "Formula",
+    "Energy above hull [eV/atom]",
+    "Heat of formation [eV/atom]",
+    "Band gap (PBE) [eV]",
+    "Magnetic",
+    "Layer group (not Space group)",
+)
+
+
+def _c2db_page(rows, labels=C2DB_LABELS, total=None, error=""):
+    """Build the markup of one C2DB query page."""
+    total = len(rows) if total is None else total
+    header = "".join(f"<th><a>{label}</a></th>" for label in labels)
+    body = ""
+    for uid, values in rows:
+        cells = "".join(
+            f'<th scope="row"><a href=/material/{uid} target="_blank">{value}</a></th>'
+            for value in values
+        )
+        body += f"<tr>{cells}</tr>"
+    return (
+        '<div id="table-div">'
+        "<!--  show the error message  -->"
+        f'<div class="row"><p style="color: red;">{error}</p></div>'
+        "<!--  show the summary message  -->"
+        f'<div class="row"><p style="color: green;">Found {total} rows out of '
+        f"17001, showing rows 1-{len(rows)}</p></div>"
+        f"<table><thead><tr>{header}</tr></thead>{body}</table></div>"
+    )
+
+
+def _c2db_row(uid="1MoS2-1", **overrides):
+    """Build one body row of the C2DB table."""
+    values = {
+        "formula": "MoS<sub>2</sub>",
+        "ehull": "0.000",
+        "hform": "-0.921",
+        "gap": "1.580",
+        "is_magnetic": "No",
+        "layergroup": "p-6m2",
+    }
+    extra = [key for key in overrides if key not in values]
+    values.update(overrides)
+    return uid, [values[key] for key in [*DEFAULT_COLUMNS, *extra]]
+
+
+class TestC2DBKeys(unittest.TestCase):
+    def test_the_key_catalogue_documents_the_properties(self):
+        keys = c2db_keys()
+
+        self.assertGreaterEqual(len(keys), 80)
+        for key in ("gap", "gap_hse", "gap_gw", "ehull", "hform", "is_magnetic", "magstate"):
+            self.assertIn(key, keys)
+        self.assertEqual(keys["gap"], "Band gap (PBE) [eV]")
+        self.assertIn("c2db", c2db_keys_source()["source"])
+
+    def test_the_database_documents_its_fields(self):
+        fields = dict(get_database("c2db").fields())
+
+        self.assertEqual(fields["ehull"], "Energy above hull [eV/atom]")
+        self.assertEqual(len(fields), len(c2db_keys()))
+
+
+class TestC2DBFilter(unittest.TestCase):
+    def test_property_terms_come_first(self):
+        query = DatabaseQuery(formula="Fe2O3", where=("gap>1",))
+
+        self.assertEqual(build_filter(query), "gap>1,Fe2O3")
+
+    def test_elements_and_chemical_systems_become_element_lists(self):
+        self.assertEqual(build_filter(DatabaseQuery(elements=("Mo", "S"))), "Mo,S")
+        self.assertEqual(build_filter(DatabaseQuery(chemsys="Li-Fe-O")), "Li,Fe,O")
+
+    def test_identifiers_use_the_c2db_uid(self):
+        self.assertEqual(build_filter(DatabaseQuery(identifiers=("1MoS2-1",))), "uid=1MoS2-1")
+        self.assertEqual(
+            build_filter(DatabaseQuery(identifiers=("1MoS2-1", "1MoS2-2"))),
+            "(uid=1MoS2-1 | uid=1MoS2-2)",
+        )
+
+    def test_an_unknown_element_is_rejected(self):
+        with self.assertRaises(DatabaseRequestError):
+            build_filter(DatabaseQuery(elements=("Xx",)))
+
+    def test_an_empty_query_is_rejected(self):
+        with self.assertRaises(DatabaseRequestError):
+            build_filter(DatabaseQuery())
+
+
+class TestC2DBTable(unittest.TestCase):
+    def test_rows_and_columns_are_read(self):
+        page = parse_table(_c2db_page([_c2db_row()], total=167))
+
+        self.assertEqual(page.total, 167)
+        self.assertEqual(list(page.columns), list(DEFAULT_COLUMNS))
+        self.assertEqual(len(page.rows), 1)
+        self.assertEqual(page.rows[0].uid, "1MoS2-1")
+        self.assertEqual(page.rows[0].values["formula"], "MoS2")
+        self.assertEqual(page.rows[0].values["gap"], "1.580")
+
+    def test_a_single_row_summary_is_read(self):
+        page = parse_table(_c2db_page([_c2db_row()]))
+
+        self.assertEqual(page.total, 1)
+
+    def test_extra_columns_are_named_after_their_keys(self):
+        labels = [*C2DB_LABELS, "Band gap (HSE06) [eV]"]
+
+        page = parse_table(_c2db_page([_c2db_row(gap_hse="2.087")], labels))
+
+        self.assertEqual(list(page.columns)[-1], "gap_hse")
+        self.assertEqual(page.rows[0].values["gap_hse"], "2.087")
+
+    def test_empty_cells_stay_empty(self):
+        page = parse_table(_c2db_page([_c2db_row(gap="")]))
+
+        self.assertEqual(page.rows[0].values["gap"], "")
+
+    def test_a_rejected_filter_is_reported(self):
+        with self.assertRaises(DatabaseRequestError) as error:
+            parse_table(_c2db_page([], total=0, error="Bad filter string"))
+
+        self.assertIn("Bad filter string", str(error.exception))
+
+    def test_a_row_becomes_a_summary(self):
+        page = parse_table(_c2db_page([_c2db_row()]))
+
+        summary = summary_from_row(page.rows[0])
+
+        self.assertEqual(summary.database, "c2db")
+        self.assertEqual(summary.identifier, "1MoS2-1")
+        self.assertEqual(summary.formula, "MoS2")
+        self.assertEqual(summary.chemsys, "Mo-S")
+        self.assertAlmostEqual(summary.energy_above_hull, 0.0)
+        self.assertAlmostEqual(summary.band_gap, 1.58)
+        self.assertTrue(summary.theoretical)
+        self.assertEqual(summary.extra["layergroup"], "p-6m2")
+
+
+class TestC2DBSearch(unittest.TestCase):
+    def _transport(self, pages, optimade=None):
+        def responder(url):
+            if url.endswith("/"):
+                return '<input class="form-control" name="sid" value="4321">'
+            for match, page in pages.items():
+                if match in url:
+                    return page
+            if optimade is not None and "optimade" in url:
+                return optimade
+            raise AssertionError(f"unexpected URL: {url}")
+
+        return RecordingTransport(responder)
+
+    def test_search_queries_the_table_and_returns_the_properties(self):
+        page = _c2db_page([_c2db_row()], total=1)
+        transport = self._transport({"filter=MoS2": page})
+
+        summaries = get_database("c2db").search(
+            DatabaseQuery(formula="MoS2", limit=5), transport=transport
+        )
+
+        self.assertEqual(len(summaries), 1)
+        self.assertEqual(summaries[0].identifier, "1MoS2-1")
+        self.assertAlmostEqual(summaries[0].band_gap, 1.58)
+        self.assertIn("filter=MoS2", transport.urls[-1])
+        self.assertEqual(_query(transport.urls[-1])["sid"], ["4321"])
+
+    def test_property_terms_reach_the_filter(self):
+        page = _c2db_page([_c2db_row()], total=1)
+        transport = self._transport({"filter=gap%3E1.5": page})
+
+        get_database("c2db").search(DatabaseQuery(where=("gap>1.5",), limit=1), transport=transport)
+
+        self.assertIn("filter=gap%3E1.5", transport.urls[-1])
+
+    def test_extra_columns_are_toggled(self):
+        page = _c2db_page([_c2db_row()], total=1)
+        labels = [*C2DB_LABELS, "Band gap (HSE06) [eV]"]
+        toggled = _c2db_page([_c2db_row(gap_hse="2.087")], labels, total=1)
+        transport = self._transport({"toggle=gap_hse": toggled, "filter=MoS2": page})
+
+        summaries = get_database("c2db").search(
+            DatabaseQuery(formula="MoS2", limit=1),
+            show=("gap_hse",),
+            transport=transport,
+        )
+
+        self.assertEqual(summaries[0].extra["gap_hse"], "2.087")
+        self.assertTrue(any("toggle=gap_hse" in url for url in transport.urls))
+
+    def test_search_pages_through_the_results(self):
+        first = _c2db_page([_c2db_row("1MoS2-1")], total=2)
+        second = _c2db_page([_c2db_row("1MoS2-2")], total=2)
+        transport = self._transport({"filter=MoS2": first, "page=1": second})
+
+        summaries = get_database("c2db").search(
+            DatabaseQuery(formula="MoS2", limit=2), transport=transport
+        )
+
+        self.assertEqual([summary.identifier for summary in summaries], ["1MoS2-1", "1MoS2-2"])
+        self.assertIn("page=1", transport.urls[-1])
+
+    def test_an_unknown_column_is_rejected(self):
+        with self.assertRaises(DatabaseRequestError) as error:
+            get_database("c2db").search(
+                DatabaseQuery(formula="MoS2"),
+                show=("nope",),
+                transport=RecordingTransport(lambda url: ""),
+            )
+
+        self.assertIn("nope", str(error.exception))
+
+    def test_a_changed_column_layout_is_reported(self):
+        page = _c2db_page([_c2db_row()], labels=C2DB_LABELS[:-1], total=1)
+        transport = self._transport({"filter=MoS2": page})
+
+        with self.assertRaises(DatabaseRequestError) as error:
+            get_database("c2db").search(DatabaseQuery(formula="MoS2"), transport=transport)
+
+        self.assertIn("columns", str(error.exception))
+
+    def test_a_selector_the_database_does_not_support_is_reported(self):
+        with self.assertRaises(DatabaseRequestError) as error:
+            get_database("c2db").search(DatabaseQuery(formula="MoS2", is_stable=True))
+
+        self.assertIn("stability", str(error.exception))
+
+
+class TestC2DBFetch(unittest.TestCase):
+    def _transport(self, pages, optimade):
+        def responder(url):
+            if url.endswith("/"):
+                return '<input name="sid" value="4321">'
+            if "optimade" in url:
+                return json.dumps(optimade)
+            for match, page in pages.items():
+                if match in url:
+                    return page
+            raise AssertionError(f"unexpected URL: {url}")
+
+        return RecordingTransport(responder)
+
+    def test_fetch_joins_the_row_and_the_optimade_structure(self):
+        page = _c2db_page([_c2db_row()], total=1)
+        transport = self._transport(
+            {"filter=uid%3D1MoS2-1": page},
+            {"data": [_entry("8192")]},
+        )
+
+        structure = get_database("c2db").fetch("1MoS2-1", transport=transport)
+
+        self.assertEqual(structure.identifier, "1MoS2-1")
+        self.assertEqual(structure.summary.formula, "MoS2")
+        self.assertEqual(structure.summary.nsites, 5)
+        self.assertEqual(structure.summary.extra["optimade_id"], "8192")
+        self.assertEqual(structure.summary.extra["layergroup"], "p-6m2")
+        self.assertEqual(len(structure.structure), 5)
+        self.assertIn("optimade", transport.urls[-1])
+
+    def test_fetch_reports_a_missing_entry(self):
+        page = _c2db_page([], total=0)
+        transport = self._transport({"filter=uid": page}, {"data": []})
+
+        with self.assertRaises(LookupError):
+            get_database("c2db").fetch("nope", transport=transport)
+
+    def test_fetch_reports_an_entry_without_a_structure(self):
+        page = _c2db_page([_c2db_row()], total=1)
+        transport = self._transport({"filter=uid": page}, {"data": []})
+
+        with self.assertRaises(LookupError):
+            get_database("c2db").fetch("1MoS2-1", transport=transport)
 
 
 if __name__ == "__main__":

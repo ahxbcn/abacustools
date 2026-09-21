@@ -62,6 +62,7 @@ abacustools = [
     "io/input-params.json",
     "core/default_config.yaml",
     "integrations/databases/optimade_providers.json",
+    "integrations/databases/c2db_keys.json",
 ]
 
 [tool.ruff]

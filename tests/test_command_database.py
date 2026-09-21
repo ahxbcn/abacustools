@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from abacustools.commands.database.download import run as run_download
+from abacustools.commands.database.fields import run as run_fields
 from abacustools.commands.database.listing import run as run_list
 from abacustools.commands.database.providers import run as run_providers
 from abacustools.commands.database.search import run as run_search
@@ -45,16 +46,18 @@ class DemoDatabase(StructureDatabase):
     name = "demo"
     description = "demo database"
     protocol = "demo"
-    capabilities = frozenset({"formula", "elements", "identifiers", "stability"})
-    options = frozenset({"base_url"})
+    capabilities = frozenset({"formula", "elements", "identifiers", "stability", "where"})
+    options = frozenset({"base_url", "show"})
 
     def __init__(self):
         self.queries = []
         self.base_urls = []
+        self.shows = []
 
     def search(self, query, *, api_key=None, client=None, **options):
         self.queries.append(query)
         self.base_urls.append(options.get("base_url"))
+        self.shows.append(options.get("show"))
         if query.formula == "none":
             return []
         return [
@@ -66,6 +69,7 @@ class DemoDatabase(StructureDatabase):
                 nsites=2,
                 band_gap=0.61,
                 is_stable=True,
+                extra={"uid": "demo-1", "gap_hse": "2.087"},
             )
         ]
 
@@ -216,6 +220,34 @@ class TestDatabaseSearchCommand(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(self.database.base_urls[0], "https://demo.example/optimade")
 
+    def test_search_passes_property_filters_and_columns_through(self):
+        namespace = _search_namespace(
+            "-d", "demo", "--formula", "Si", "--where", "gap>1.5", "--show", "gap_hse,magstate"
+        )
+        with patch("sys.stdout", new_callable=StringIO):
+            status = run_search(namespace)
+
+        self.assertEqual(status, 0)
+        self.assertEqual(self.database.queries[0].where, ("gap>1.5",))
+        self.assertEqual(self.database.shows[0], ["gap_hse", "magstate"])
+
+    def test_search_shows_the_extra_columns(self):
+        namespace = _search_namespace("-d", "demo", "--formula", "Si", "--show", "gap_hse")
+        with patch("sys.stdout", new_callable=StringIO) as stdout:
+            status = run_search(namespace)
+
+        self.assertEqual(status, 0)
+        self.assertIn("gap", stdout.getvalue())
+        self.assertIn("2.087", stdout.getvalue())
+
+    def test_property_filters_are_rejected_by_databases_without_support(self):
+        namespace = _search_namespace("-d", "mp", "--formula", "Si", "--where", "gap>1")
+        with patch("sys.stderr", new_callable=StringIO) as stderr:
+            status = run_search(namespace)
+
+        self.assertEqual(status, 1)
+        self.assertIn("where", stderr.getvalue())
+
     def test_search_reports_an_error_from_the_database(self):
         with patch.object(self.database, "search", side_effect=DatabaseRequestError("boom")):
             with patch("sys.stderr", new_callable=StringIO) as stderr:
@@ -334,6 +366,42 @@ class TestDatabaseListingCommand(unittest.TestCase):
         self.assertTrue(
             all(record["status"] == "ready" for record in json.loads(stdout.getvalue()))
         )
+
+
+class TestDatabaseFieldsCommand(unittest.TestCase):
+    def _namespace(self, *arguments):
+        return _create_parser("abacustools").parse_args(["database", "fields", *arguments])
+
+    def test_fields_prints_the_c2db_keys(self):
+        namespace = self._namespace("-d", "c2db", "--json")
+        with patch("sys.stdout", new_callable=StringIO) as stdout:
+            status = run_fields(namespace)
+
+        records = json.loads(stdout.getvalue())
+        keys = [record["key"] for record in records]
+        self.assertEqual(status, 0)
+        self.assertGreaterEqual(len(records), 80)
+        self.assertIn("gap", keys)
+        self.assertEqual(
+            next(record["description"] for record in records if record["key"] == "gap"),
+            "Band gap (PBE) [eV]",
+        )
+
+    def test_fields_prints_a_table(self):
+        namespace = self._namespace("-d", "c2db")
+        with patch("sys.stdout", new_callable=StringIO) as stdout:
+            status = run_fields(namespace)
+
+        self.assertEqual(status, 0)
+        self.assertIn("ehull", stdout.getvalue())
+
+    def test_fields_reports_databases_without_keys(self):
+        namespace = self._namespace("-d", "mp")
+        with patch("sys.stdout", new_callable=StringIO) as stdout:
+            status = run_fields(namespace)
+
+        self.assertEqual(status, 0)
+        self.assertIn("does not document property keys", stdout.getvalue())
 
 
 class TestDatabaseProvidersCommand(unittest.TestCase):
