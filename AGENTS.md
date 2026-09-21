@@ -10,9 +10,13 @@ toolkit for DFT calculations with [ABACUS](https://abacus.deepmodeling.com/).
 - Requires Python >= 3.9 (developed on 3.11).
 - Runtime dependencies: `numpy`, `rich`, `pymatgen`, `phonopy`, `seekpath`,
   `matplotlib`, `ase`, `pydantic`.
-- Four command families:
+- Command families:
   - `abacustools file ...` — convert/inspect `INPUT`, `STRU`, `KPT`, structures.
   - `abacustools job ...` — prepare, check, validate, and monitor jobs.
+  - `abacustools database ...` — search and download structures from external
+    databases (`list`, `providers`, `search`, `download`); every database is a
+    `StructureDatabase` in `integrations/databases/` and `mp ...` is its
+    Materials Project spelling.
   - `abacustools postprocess ...` — `result`, `band`, `dos`, `cohp`, `mayer`, `bader`.
   - `abacustools workflow ...` — multi-step workflows (elastic, phonon, ...).
 

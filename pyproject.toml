@@ -39,8 +39,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Materials Project search and download (`abacustools mp ...`). The client is
-# imported lazily so every other command works without it.
+# Materials Project search and download (`abacustools mp ...`, `abacustools
+# database -d mp ...`). The other databases are reached through the OPTIMADE
+# protocol, which needs no extra package. The client is imported lazily so
+# every other command works without it.
 mp = ["mp-api"]
 
 # Electronic dielectric tensor of `abacustools workflow dielectric`, which
@@ -56,7 +58,11 @@ abacustools = "abacustools.main:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-abacustools = ["io/input-params.json", "core/default_config.yaml"]
+abacustools = [
+    "io/input-params.json",
+    "core/default_config.yaml",
+    "integrations/databases/optimade_providers.json",
+]
 
 [tool.ruff]
 target-version = "py39"

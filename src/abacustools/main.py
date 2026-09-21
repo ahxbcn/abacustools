@@ -7,6 +7,9 @@ import sys
 from typing import Optional, Sequence
 
 from abacustools import __version__
+from abacustools.commands.database import (
+    register_parser as register_database_parser,
+)
 from abacustools.commands.file import register_parser as register_file_parser
 from abacustools.commands.postprocess import (
     register_parser as register_postprocess_parser,
@@ -77,6 +80,7 @@ def _create_parser(prog: str) -> argparse.ArgumentParser:
 
     register_file_parser(subparsers)
     register_job_parser(subparsers)
+    register_database_parser(subparsers)
     register_mp_parser(subparsers)
     register_postprocess_parser(subparsers)
     register_workflow_parser(subparsers)

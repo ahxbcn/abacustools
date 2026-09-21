@@ -1,0 +1,117 @@
+{
+  "source": "https://providers.optimade.org/providers.json",
+  "retrieved": "2026-09-21",
+  "note": "Queryable OPTIMADE endpoints that answered a /v1/structures request on the retrieval date. The live index lists more providers and is what 'abacustools database providers --refresh' reads.",
+  "providers": [
+    {
+      "name": "mp-optimade",
+      "title": "The Materials Project (OPTIMADE)",
+      "base_url": "https://optimade.materialsproject.org",
+      "homepage": "https://materialsproject.org",
+      "description": "Public OPTIMADE endpoint of the Materials Project; no API key, summary fields only.",
+      "aliases": [
+        "materials-project-optimade"
+      ]
+    },
+    {
+      "name": "aflow",
+      "title": "AFLOW",
+      "base_url": "https://aflow.org/API/optimade",
+      "homepage": "https://aflow.org",
+      "description": "Automatic FLOW library of calculated alloys and compounds."
+    },
+    {
+      "name": "oqmd",
+      "title": "Open Quantum Materials Database",
+      "base_url": "https://oqmd.org/optimade",
+      "homepage": "https://oqmd.org",
+      "description": "DFT formation energies and thermodynamic stability from Northwestern.",
+      "note": "answered HTTP 502 during the retrieval probe; retry later"
+    },
+    {
+      "name": "nomad",
+      "title": "NOMAD",
+      "base_url": "https://nomad-lab.eu/prod/v1/optimade",
+      "homepage": "https://nomad-lab.eu",
+      "description": "Novel Materials Discovery archive of parsed ab initio calculations."
+    },
+    {
+      "name": "cod",
+      "title": "Crystallography Open Database",
+      "base_url": "https://www.crystallography.net/cod/optimade",
+      "homepage": "https://www.crystallography.net/cod",
+      "description": "Experimental crystal structures of organic, inorganic and metal-organic compounds.",
+      "note": "publishes cell parameters but no atomic coordinates through OPTIMADE"
+    },
+    {
+      "name": "tcod",
+      "title": "Theoretical Crystallography Open Database",
+      "base_url": "https://www.crystallography.net/tcod/optimade",
+      "homepage": "https://www.crystallography.net/tcod",
+      "description": "Theoretical structures and refined experimental ones from COD.",
+      "note": "publishes cell parameters but no atomic coordinates through OPTIMADE"
+    },
+    {
+      "name": "jarvis",
+      "title": "JARVIS-DFT (NIST)",
+      "base_url": "https://jarvis.nist.gov/optimade/jarvisdft",
+      "homepage": "https://jarvis.nist.gov",
+      "description": "NIST DFT database with optoelectronic and elastic properties.",
+      "note": "needs a filter, such as formula or elements; an unfiltered query returns nothing"
+    },
+    {
+      "name": "alexandria",
+      "title": "Alexandria",
+      "base_url": "https://alexandria.icams.rub.de/pbesol",
+      "homepage": "https://alexandria.icams.rub.de",
+      "description": "PBE+SOL structures from the Alexandria materials database.",
+      "note": "the PBE endpoint returned HTTP 500 during the retrieval probe"
+    },
+    {
+      "name": "mc3d",
+      "title": "Materials Cloud three-dimensional crystals",
+      "base_url": "https://optimade.materialscloud.org/main/mc3d-pbesol-v2",
+      "homepage": "https://www.materialscloud.org/discover/mc3d",
+      "description": "PBE+SOL structures of the Materials Cloud 3D crystals database."
+    },
+    {
+      "name": "mc2d",
+      "title": "Materials Cloud two-dimensional crystals",
+      "base_url": "https://optimade.materialscloud.org/main/mc2d",
+      "homepage": "https://www.materialscloud.org/discover/mc2d",
+      "description": "Computational 2D materials from the Materials Cloud."
+    },
+    {
+      "name": "twodmatpedia",
+      "title": "2DMatPedia",
+      "base_url": "http://optimade.2dmatpedia.org",
+      "homepage": "http://2dmatpedia.org",
+      "description": "Two-dimensional materials exfoliated from the Materials Project."
+    },
+    {
+      "name": "matterverse",
+      "title": "Matterverse",
+      "base_url": "https://optimade.matterverse.ai",
+      "homepage": "https://matterverse.ai",
+      "description": "Machine-learning property predictions for a very large structure set."
+    },
+    {
+      "name": "odbx",
+      "title": "Open Database of Xtals",
+      "base_url": "https://optimade.odbx.science",
+      "homepage": "https://odbx.science",
+      "description": "Community database of crystal structures."
+    },
+    {
+      "name": "mpds",
+      "title": "Materials Platform for Data Science",
+      "base_url": "https://api.mpds.io/v0/download/optimade",
+      "homepage": "https://mpds.io",
+      "description": "Curated Pauling File dataset; the endpoint is token protected.",
+      "requires_api_key": true,
+      "api_key_environment_variables": [
+        "MPDS_API_KEY"
+      ]
+    }
+  ]
+}
