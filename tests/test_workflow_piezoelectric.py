@@ -67,6 +67,36 @@ Zn
 
 
 class TestPiezoelectricWorkflow(unittest.TestCase):
+    #: A wurtzite cell, whose point group 6mm leaves three independent
+    #: piezoelectric components.
+    HEX_STRU = """ATOMIC_SPECIES
+Zn 65.38 Zn.upf
+S 32.06 S.upf
+
+LATTICE_CONSTANT
+1.0
+
+LATTICE_VECTORS
+3.82 0 0
+-1.91 3.3082 0
+0 0 6.26
+
+ATOMIC_POSITIONS
+Direct
+
+Zn
+0.0
+2
+0.333333 0.666667 0.0
+0.666667 0.333333 0.5
+
+S
+0.0
+2
+0.333333 0.666667 0.375
+0.666667 0.333333 0.875
+"""
+
     @staticmethod
     def _write_berry_task(
         task: Path,
@@ -166,7 +196,15 @@ class TestPiezoelectricWorkflow(unittest.TestCase):
             self._write_berry_task(
                 job / "piezoelectric_xx", [phase * 100.0, 0.0, 0.0]
             )
-            status = postprocess(Namespace(job=job, version="LTS3.10.1", output="result.json"))
+            status = postprocess(
+                Namespace(
+                    job=job,
+                    version="LTS3.10.1",
+                    output="result.json",
+                    symmetrize=False,
+                    fit="full",
+                )
+            )
 
             self.assertEqual(status, 0)
             result = json.loads((job / "result.json").read_text())
@@ -212,7 +250,15 @@ class TestPiezoelectricWorkflow(unittest.TestCase):
                 modulus=99.0,
                 volume=63.5,
             )
-            status = postprocess(Namespace(job=job, version="LTS3.10.1", output="result.json"))
+            status = postprocess(
+                Namespace(
+                    job=job,
+                    version="LTS3.10.1",
+                    output="result.json",
+                    symmetrize=False,
+                    fit="full",
+                )
+            )
 
             self.assertEqual(status, 0)
             tensor = np.asarray(
@@ -345,6 +391,87 @@ class TestPiezoelectricWorkflow(unittest.TestCase):
             self.assertNotIn(
                 "use_k_continuity", (job / "piezoelectric_xx" / "INPUT.nscf1").read_text()
             )
+
+    def test_prepare_keeps_only_the_independent_strain_modes(self) -> None:
+        """A 6mm cell needs three of the six strain modes."""
+        with tempfile.TemporaryDirectory() as temporary:
+            job = Path(temporary)
+            (job / "INPUT").write_text(
+                "INPUT_PARAMETERS\ncalculation scf\ngamma_only 1\n", encoding="utf-8"
+            )
+            (job / "STRU").write_text(self.HEX_STRU, encoding="utf-8")
+            (job / "Zn.upf").write_text("pseudo", encoding="utf-8")
+            (job / "S.upf").write_text("pseudo", encoding="utf-8")
+
+            self.assertEqual(
+                prepare(
+                    Namespace(
+                        job=job,
+                        strain=0.01,
+                        disp_type="c",
+                        use_k_continuity=False,
+                        relax=False,
+                        abacus_command="abacus",
+                        override=False,
+                        strains="independent",
+                    )
+                ),
+                0,
+            )
+            manifest = json.loads(
+                (job / "workflow_piezoelectric.json").read_text(encoding="utf-8")
+            )
+
+            self.assertEqual(manifest["strain_modes"], [0, 2, 3])
+            self.assertEqual(manifest["strains_mode"], "independent")
+            self.assertEqual(manifest["symmetry"]["point_group"], "6mm")
+            self.assertEqual(manifest["symmetry"]["independent_components"], 3)
+            self.assertEqual(len(manifest["tasks"]), 6)
+            self.assertTrue((job / "piezoelectric_xx" / "INPUT.nscf1").is_file())
+            self.assertTrue(
+                (job / "piezoelectric_yz_back" / "INPUT.nscf1").is_file()
+            )
+            self.assertFalse((job / "piezoelectric_yy").exists())
+
+    def test_postprocess_symmetrizes_with_the_crystal_symmetry(self) -> None:
+        """A centrosymmetric cell gives a vanishing tensor, the raw fit not."""
+        with tempfile.TemporaryDirectory() as temporary:
+            job = Path(temporary)
+            self._write_job(job)
+            prepare(
+                Namespace(
+                    job=job,
+                    strain=0.1,
+                    disp_type="c",
+                    use_k_continuity=False,
+                    relax=False,
+                    abacus_command="abacus",
+                    override=False,
+                )
+            )
+            for name in json.loads(
+                (job / "workflow_piezoelectric.json").read_text()
+            )["tasks"]:
+                self._write_berry_task(job / name, [0.0, 0.0, 0.0])
+            phase = 1.0 * 0.2 * 64.0 / (
+                100.0 * BOHR_TO_ANG * _ELECTRON_ANGSTROM_SQUARED_TO_CM2
+            )
+            self._write_berry_task(
+                job / "piezoelectric_xx", [phase * 100.0, 0.0, 0.0]
+            )
+
+            status = postprocess(
+                Namespace(job=job, version="LTS3.10.1", output="symmetrized.json")
+            )
+
+            self.assertEqual(status, 0)
+            result = json.loads((job / "symmetrized.json").read_text())
+            self.assertAlmostEqual(result["piezoelectric_tensor_raw"][0][0], 1.0)
+            for row in result["piezoelectric_tensor"]:
+                for value in row:
+                    self.assertAlmostEqual(value, 0.0, places=9)
+            self.assertEqual(result["independent_components"], {})
+            self.assertGreater(result["symmetrization_residual"], 0.9)
 
 
 if __name__ == "__main__":

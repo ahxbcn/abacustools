@@ -1273,6 +1273,26 @@ calculation. The tensor and per-task diagnostics are written under `JOB`:
 abacustools workflow piezoelectric postprocess -j JOB
 ```
 
+The tensor is a polar third-rank tensor, so the point group of the reference
+cell fixes how many of its 18 components are independent: one for `-43m`,
+three for `6mm`, four for `3m`, none for a centrosymmetric crystal. The
+preparation stage records the point group and the number of independent
+components in `workflow_piezoelectric.json`, and `--strains independent`
+prepares only the strain modes those components need - three of the six for a
+wurtzite cell. The postprocessing stage symmetrises the fitted tensor with the
+point group, which removes the components the symmetry forbids and enforces
+the relations between the ones that survive:
+
+```text
+abacustools workflow piezoelectric prepare -j JOB --strains independent
+abacustools workflow piezoelectric postprocess -j JOB --fit independent
+```
+
+Both the fitted tensor, the symmetrised tensor, the largest change the
+symmetrisation made and the independent components are written to
+`piezoelectric_results.json` under `JOB`; `--no-symmetrize` keeps the raw
+components.
+
 The strain is a Cartesian deformation of the lattice vectors with the
 fractional coordinates held fixed, so the six modes are the strain tensor
 components of the IEEE convention: a shear of nominal size `s` puts `s/2` in

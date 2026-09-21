@@ -56,8 +56,21 @@ DEFAULT_TOLERANCE = 1.0e-8
 #: rank test has to sit between the two.
 RANK_TOLERANCE = 1.0e-3
 
+#: Absolute floor of the rank test.  The basis tensors are built from unit
+#: components, so a direction that survives a projection has a norm of order
+#: one, while a direction the symmetry forbids projects onto numerical zero.
+#: Without the floor such a zero would still count as a new direction, because
+#: the tolerance of the rank test is relative to the largest singular value of
+#: the matrix it is given.
+RANK_FLOOR = 1.0e-9
 
-def _rank(matrix: np.ndarray, relative_tolerance: float = RANK_TOLERANCE) -> int:
+
+def numerical_rank(
+    matrix: np.ndarray,
+    relative_tolerance: float = RANK_TOLERANCE,
+    *,
+    floor: float = RANK_FLOOR,
+) -> int:
     """Return the numerical rank with a tolerance scaled to the matrix."""
     values = np.asarray(matrix, dtype=float)
     if values.size == 0:
@@ -65,7 +78,8 @@ def _rank(matrix: np.ndarray, relative_tolerance: float = RANK_TOLERANCE) -> int
     singular = np.linalg.svd(values, compute_uv=False)
     if singular.size == 0 or singular[0] <= 0.0:
         return 0
-    return int(np.count_nonzero(singular > relative_tolerance * singular[0]))
+    threshold = max(relative_tolerance * singular[0], floor)
+    return int(np.count_nonzero(singular > threshold))
 
 
 def voigt_index(first: int, second: int) -> int:
@@ -351,7 +365,7 @@ def independent_basis(
         element[first, second] = 1.0
         element[second, first] = 1.0
         projected = project_tensor(element, rotations)
-        new_rank = _rank(
+        new_rank = numerical_rank(
             np.asarray(flat + [projected.ravel()], dtype=float), tolerance
         )
         if new_rank <= rank:
@@ -454,7 +468,7 @@ def independent_strain_modes(
     for index in range(6):
         direction = strain_voigt(strain_tensor(index))
         block = np.asarray([tensor @ direction for tensor in basis], dtype=float).T
-        new_rank = _rank(np.vstack(stacked + [block]), tolerance)
+        new_rank = numerical_rank(np.vstack(stacked + [block]), tolerance)
         if new_rank <= rank:
             continue
         stacked.append(block)
@@ -616,7 +630,7 @@ def energy_strain_patterns(
         row = np.asarray(
             [direction @ tensor @ direction for tensor in basis], dtype=float
         )
-        new_rank = _rank(np.asarray(stacked + [row], dtype=float), tolerance)
+        new_rank = numerical_rank(np.asarray(stacked + [row], dtype=float), tolerance)
         if new_rank <= rank:
             continue
         stacked.append(row)
