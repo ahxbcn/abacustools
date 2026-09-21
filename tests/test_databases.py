@@ -1,25 +1,25 @@
-"""Tests for the pluggable structure-database layer."""
+"""Tests for the structure-database layer: registry, OPTIMADE and C2DB."""
 
 from __future__ import annotations
 
 import json
 import sys
 import tempfile
-import unittest
 import urllib.parse
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from abacustools.integrations.databases import (
     DatabaseQuery,
-    c2db_keys,
-    c2db_keys_source,
     DatabaseRequestError,
     DatabaseStructure,
     DatabaseSummary,
     OptimadeHttpError,
     OptimadeProvider,
-    StructureDatabase,
+    c2db_keys,
+    c2db_keys_source,
     describe_databases,
     get_database,
     optimade_catalogue,
@@ -33,7 +33,7 @@ from abacustools.integrations.databases import (
 )
 from abacustools.integrations.databases.c2db import (
     DEFAULT_COLUMNS,
-    build_filter,
+    build_filter as c2db_filter,
     parse_table,
     summary_from_row,
 )
@@ -46,7 +46,12 @@ from abacustools.integrations.databases.optimade import (
     structure_from_entry,
     summary_from_entry,
 )
-from abacustools.integrations.materials_project import MaterialSummary
+from abacustools.integrations.materials_project import (
+    MaterialStructure,
+    MaterialSummary,
+)
+
+OPTIMADE_URL = "https://demo.example/optimade"
 
 
 def _structure():
@@ -60,6 +65,7 @@ def _structure():
 
 
 def _entry(identifier: str = "demo-1", **attributes):
+    """One OPTIMADE structure entry."""
     fields = {
         "chemical_formula_reduced": "Fe2O3",
         "chemical_formula_descriptive": "Fe2O3",
@@ -82,6 +88,15 @@ def _query(url: str) -> dict[str, list[str]]:
     return urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
 
 
+def _failing(status: int, message: str = "failed"):
+    """A transport that answers every request with an HTTP error."""
+
+    def responder(url):
+        raise OptimadeHttpError(f"{url} returned HTTP {status}", status=status, url=url)
+
+    return responder
+
+
 class RecordingTransport:
     """A stand-in HTTP transport that records the URLs it was asked for."""
 
@@ -94,509 +109,300 @@ class RecordingTransport:
         return self.responder(url)
 
 
-class DemoDatabase(StructureDatabase):
-    """Minimal database used to test the registry and the commands."""
-
-    name = "demo"
-    description = "demo database"
-    protocol = "demo"
-    capabilities = frozenset({"formula", "identifiers", "stability"})
-
-    def search(self, query, *, api_key=None, client=None, **options):
-        return [
-            DatabaseSummary(
-                database=self.name,
-                identifier="demo-1",
-                formula="Si2",
-                chemsys="Si",
-                nsites=2,
-                band_gap=0.61,
-                is_stable=True,
-            )
-        ]
-
-    def fetch(self, identifier, *, api_key=None, client=None, **options):
-        if identifier == "missing":
-            raise LookupError(f"{self.name} has no entry {identifier!r}")
-        return DatabaseStructure(
-            summary=DatabaseSummary(
-                database=self.name, identifier=identifier, formula="Si2", nsites=2
-            ),
-            structure=_structure(),
-        )
-
-
-class TestRegistry(unittest.TestCase):
-    def test_bundled_databases_are_registered(self):
-        from abacustools.integrations.databases import database_names
-
-        names = database_names()
-        for name in ("mp", "optimade", "aflow", "cod", "nomad", "jarvis"):
-            self.assertIn(name, names)
-
-    def test_aliases_resolve_to_the_same_adapter(self):
-        self.assertIs(get_database("mp"), get_database("materials-project"))
-        self.assertIs(get_database("optimade"), get_database("optimade-federation"))
-
-    def test_unknown_database_lists_the_known_ones(self):
-        with self.assertRaises(DatabaseRequestError) as error:
-            get_database("nope")
-
-        self.assertIn("mp", str(error.exception))
-
-    def test_register_and_unregister(self):
-        database = DemoDatabase()
-        try:
-            register_database(database, aliases=("demo-alias",))
-            self.assertIs(get_database("demo-alias"), database)
-        finally:
-            unregister_database("demo")
-
-        with self.assertRaises(DatabaseRequestError):
-            get_database("demo-alias")
-
-    def test_describe_databases_reports_every_database_once(self):
-        records = describe_databases()
-        names = [record["name"] for record in records]
-
-        self.assertEqual(len(names), len(set(names)))
-        self.assertIn("mp", names)
-        for record in records:
-            self.assertIn(record["status"], {"ready", "needs-api-key", "unavailable"})
-
-
-class TestDatabaseQuery(unittest.TestCase):
-    def test_selectors_report_what_the_query_uses(self):
-        query = DatabaseQuery(formula="Si", elements=("Li", "O"), is_stable=True, limit=5)
-
-        self.assertEqual(query.selectors(), ["formula", "elements", "stability"])
-
-    def test_a_query_without_a_selector_is_rejected(self):
-        with self.assertRaises(DatabaseRequestError):
-            DatabaseQuery().require_selector()
-
-    def test_unsupported_selectors_are_reported(self):
-        query = DatabaseQuery(formula="Si", theoretical=True)
-
-        self.assertEqual(query.unsupported(frozenset({"formula"})), ["theoretical"])
-
-
-class TestDatabaseSummary(unittest.TestCase):
-    def test_serialisation_keeps_the_common_fields(self):
-        summary = DatabaseSummary(database="demo", identifier="demo-1", formula="Si2")
-
-        record = summary.to_dict()
-
-        self.assertEqual(record["database"], "demo")
-        self.assertEqual(record["id"], "demo-1")
-        self.assertEqual(record["extra"], {})
-
-    def test_structure_converts_to_abacus_metadata(self):
-        structure = DatabaseStructure(
-            summary=DatabaseSummary(database="demo", identifier="demo-1"),
-            structure=_structure(),
-        )
-
-        abacus = structure.to_abacus_structure()
-
-        self.assertEqual(abacus.metadata["source"], "demo")
-        self.assertEqual(abacus.metadata["identifier"], "demo-1")
-
-
-class TestMaterialsProjectDatabase(unittest.TestCase):
-    def test_search_maps_summaries_and_keeps_the_material_id(self):
-        document = MaterialSummary(
-            material_id="mp-149", formula="Si2", chemsys="Si", nsites=2, band_gap=0.61
-        )
-        database = get_database("mp")
-
-        with patch(
-            "abacustools.integrations.databases.materials_project.search_materials",
-            return_value=[document],
-        ) as search:
-            summaries = database.search(DatabaseQuery(formula="Si", limit=5))
-
-        self.assertEqual(summaries[0].database, "mp")
-        self.assertEqual(summaries[0].identifier, "mp-149")
-        self.assertEqual(summaries[0].extra["material_id"], "mp-149")
-        self.assertEqual(search.call_args.kwargs["formula"], "Si")
-        self.assertEqual(search.call_args.kwargs["limit"], 5)
-
-    def test_search_needs_a_selector(self):
-        with self.assertRaises(DatabaseRequestError):
-            get_database("mp").search(DatabaseQuery())
-
-    def test_a_stability_filter_reaches_the_adapter(self):
-        database = get_database("mp")
-
-        with patch(
-            "abacustools.integrations.databases.materials_project.search_materials",
-            return_value=[],
-        ) as search:
-            database.search(DatabaseQuery(chemsys="Li-O", is_stable=True))
-
-        self.assertTrue(search.call_args.kwargs["is_stable"])
-
-    def test_fetch_returns_a_database_structure(self):
-        from abacustools.integrations.materials_project import MaterialStructure
-
-        material = MaterialStructure(
-            summary=MaterialSummary(material_id="mp-149", formula="Si2"),
-            structure=_structure(),
-        )
-
-        with patch(
-            "abacustools.integrations.databases.materials_project.download_material",
-            return_value=material,
-        ):
-            structure = get_database("mp").fetch("mp-149")
-
-        self.assertEqual(structure.identifier, "mp-149")
-        self.assertEqual(len(structure.structure), 2)
-
-    def test_missing_client_is_reported_as_unavailable(self):
-        database = get_database("mp")
-        with patch.dict(sys.modules, {"mp_api": None, "mp_api.client": None}):
-            self.assertFalse(database.available())
-            self.assertEqual(database.status(), "unavailable")
-            self.assertIn("mp-api", database.unavailable_reason())
-
-
-class TestOptimadeCatalogue(unittest.TestCase):
-    def test_catalogue_lists_queryable_providers(self):
-        providers = optimade_catalogue()
-
-        self.assertGreaterEqual(len(providers), 10)
-        for provider in providers:
-            self.assertTrue(provider.base_url.startswith("http"))
-        names = [provider.name for provider in providers]
-        for name in ("aflow", "c2db-optimade", "cod", "mc2d", "twodmatpedia"):
-            self.assertIn(name, names)
-
-    def test_a_provider_can_narrow_the_selectors_it_answers(self):
-        provider = optimade_provider_from_name("c2db-optimade")
-
-        self.assertEqual(provider.selectors, ("formula", "chemsys", "elements", "where"))
-        database = get_database("c2db-optimade")
-        self.assertFalse(database.supports("identifiers"))
-        self.assertTrue(database.supports("where"))
-        with self.assertRaises(DatabaseRequestError) as error:
-            database.search(DatabaseQuery(identifiers=("3680",)))
-
-        self.assertIn("identifiers", str(error.exception))
-
-    def test_catalogue_records_where_it_came_from(self):
-        source = optimade_catalogue_source()
-
-        self.assertIn("optimade.org", source["source"])
-        self.assertTrue(source["retrieved"])
-
-    def test_providers_resolve_by_name_and_alias(self):
-        self.assertEqual(optimade_provider_from_name("aflow").name, "aflow")
-        self.assertEqual(
-            optimade_provider_from_name("materials-project-optimade").name, "mp-optimade"
-        )
-
-    def test_unknown_provider_lists_the_catalogue(self):
-        with self.assertRaises(DatabaseRequestError) as error:
-            optimade_provider_from_name("nope")
-
-        self.assertIn("aflow", str(error.exception))
-
-
-class TestOptimadeFilters(unittest.TestCase):
-    def test_identifiers_and_elements_become_standard_terms(self):
-        query = DatabaseQuery(identifiers=("cod-1", "cod-2"), elements=("Fe", "O"))
-
-        expression = build_filters(query)[0]
-
-        self.assertIn('(id="cod-1" OR id="cod-2")', expression)
-        self.assertIn('elements HAS ALL "Fe", "O"', expression)
-
-    def test_a_lone_element_uses_has(self):
-        self.assertIn('elements HAS "Li"', build_filters(DatabaseQuery(elements=("Li",)))[0])
-
-    def test_a_chemical_system_becomes_an_element_filter(self):
-        self.assertIn('elements HAS ALL "Li", "O"', build_filters(DatabaseQuery(chemsys="Li-O"))[0])
-
-    def test_a_formula_offers_a_reduced_description_and_element_filter(self):
-        strategies = build_strategies(DatabaseQuery(formula="Fe2O3"))
-
-        self.assertIn('chemical_formula_reduced="Fe2O3"', strategies[0].expression)
-        self.assertIn("CONTAINS", strategies[1].expression)
-        self.assertTrue(strategies[1].check_formula)
-        self.assertIn('elements HAS ALL "Fe", "O"', strategies[2].expression)
-        self.assertTrue(strategies[2].check_formula)
-
-    def test_an_empty_query_filters_nothing(self):
-        self.assertEqual(build_filters(DatabaseQuery()), [None])
-
-    def test_wildcards_are_rejected(self):
-        with self.assertRaises(DatabaseRequestError):
-            reduced_formula("Li*O")
-
-    def test_an_unparsable_formula_is_rejected(self):
-        with self.assertRaises(DatabaseRequestError):
-            reduced_formula("not a formula")
-
-    def test_formula_matching_compares_compositions(self):
-        self.assertTrue(formula_matches("Fe2O3", "Fe2O3"))
-        self.assertTrue(formula_matches("Fe4O6", "Fe2O3"))
-        self.assertFalse(formula_matches("Fe2O3Si", "Fe2O3"))
-        self.assertFalse(formula_matches(None, "Fe2O3"))
-
-
-class TestOptimadeEntries(unittest.TestCase):
-    def test_summary_reads_the_standard_attributes(self):
-        summary = summary_from_entry(_entry(), "cod")
-
-        self.assertEqual(summary.identifier, "demo-1")
-        self.assertEqual(summary.formula, "Fe2O3")
-        self.assertEqual(summary.chemsys, "Fe-O")
-        self.assertEqual(summary.nsites, 5)
-
-    def test_summary_derives_nsites_and_keeps_private_attributes(self):
-        entry = _entry(nsites=None, _cod_flags="has coordinates")
-
-        summary = summary_from_entry(entry, "cod")
-
-        self.assertEqual(summary.nsites, 5)
-        self.assertEqual(summary.extra["_cod_flags"], "has coordinates")
-
-    def test_summary_reads_the_materials_project_hull_energy(self):
-        entry = _entry(
-            _mp_stability={"gga_gga+u": {"energy_above_hull": 0.25}},
-            _mp_chemical_system="Fe-O",
-        )
-
-        summary = summary_from_entry(entry, "mp-optimade")
-
-        self.assertAlmostEqual(summary.energy_above_hull, 0.25)
-
-    def test_structure_is_built_from_the_coordinates(self):
-        structure = structure_from_entry(_entry())
-
-        self.assertEqual(len(structure), 5)
-        self.assertEqual(structure.composition.reduced_formula, "Fe2O3")
-
-    def test_an_entry_without_coordinates_is_rejected(self):
-        entry = _entry(cartesian_site_positions=None, species_at_sites=None)
-
-        with self.assertRaises(DatabaseRequestError):
-            structure_from_entry(entry)
-
-
-class TestOptimadeSearch(unittest.TestCase):
-    def _database(self):
-        return OptimadeDatabase(
-            OptimadeProvider(name="demo", base_url="https://demo.example/optimade")
-        )
-
-    def test_search_queries_the_structures_endpoint(self):
-        transport = RecordingTransport(lambda url: _response([_entry()]))
-
-        summaries = self._database().search(
-            DatabaseQuery(formula="Fe2O3", limit=1), transport=transport
-        )
-
-        self.assertEqual(len(summaries), 1)
-        self.assertEqual(summaries[0].database, "demo")
-        self.assertEqual(summaries[0].extra["provider"], "demo")
-        url = transport.urls[0]
-        self.assertIn("/v1/structures", url)
-        self.assertIn("chemical_formula_reduced", _query(url)["filter"][0])
-
-    def test_limit_is_sent_and_applied(self):
-        payload = _response([_entry("demo-1"), _entry("demo-2")])
-        transport = RecordingTransport(lambda url: payload)
-
-        summaries = self._database().search(
-            DatabaseQuery(identifiers=("demo-1",), limit=1), transport=transport
-        )
-
-        self.assertEqual([summary.identifier for summary in summaries], ["demo-1"])
-        self.assertLessEqual(int(_query(transport.urls[0])["page_limit"][0]), 100)
-
-    def test_pagination_follows_next_links(self):
-        first = _response(
-            [_entry("demo-1")],
-            next_link={"href": "https://demo.example/optimade/v1/structures?page_offset=1"},
-        )
-        second = _response([_entry("demo-2")])
-        transport = RecordingTransport(
-            lambda url: first if url.count("page_offset") == 0 else second
-        )
-
-        summaries = self._database().search(
-            DatabaseQuery(identifiers=("demo-1", "demo-2"), limit=2), transport=transport
-        )
-
-        self.assertEqual([summary.identifier for summary in summaries], ["demo-1", "demo-2"])
-        self.assertEqual(len(transport.urls), 2)
-
-    def test_a_rejected_formula_filter_falls_back(self):
-        def responder(url):
-            filter_expression = _query(url).get("filter", [""])[0]
-            if "chemical_formula_reduced" in filter_expression:
-                raise OptimadeHttpError("queries are not supported", status=501, url=url)
-            return _response([_entry()])
-
-        transport = RecordingTransport(responder)
-
-        summaries = self._database().search(
-            DatabaseQuery(formula="Fe2O3", limit=1), transport=transport
-        )
-
-        self.assertEqual(len(summaries), 1)
-        self.assertIn("CONTAINS", _query(transport.urls[1])["filter"][0])
-
-    def test_substring_matches_are_checked_against_the_formula(self):
-        def responder(url):
-            filter_expression = _query(url).get("filter", [""])[0]
-            if "chemical_formula_reduced" in filter_expression:
-                raise OptimadeHttpError("not supported", status=501, url=url)
-            if "CONTAINS" in filter_expression:
-                return _response([_entry("demo-2", chemical_formula_reduced="Fe2O3Si")])
-            return _response([_entry("demo-3")])
-
-        transport = RecordingTransport(responder)
-
-        summaries = self._database().search(
-            DatabaseQuery(formula="Fe2O3", limit=1), transport=transport
-        )
-
-        self.assertEqual([summary.identifier for summary in summaries], ["demo-3"])
-        self.assertIn("elements HAS ALL", _query(transport.urls[-1])["filter"][0])
-
-    def test_an_empty_result_still_reports_nothing(self):
-        transport = RecordingTransport(lambda url: _response([]))
-
-        summaries = self._database().search(
-            DatabaseQuery(elements=("Fe",), limit=3), transport=transport
-        )
-
-        self.assertEqual(summaries, [])
-
-    def test_a_broken_fallback_keeps_a_valid_empty_answer(self):
-        def responder(url):
-            filter_expression = _query(url).get("filter", [""])[0]
-            if "chemical_formula_reduced" in filter_expression:
-                return _response([])
-            raise OptimadeHttpError("internal error", status=500, url=url)
-
-        transport = RecordingTransport(responder)
-
-        summaries = self._database().search(
-            DatabaseQuery(formula="Fe2O3", limit=3), transport=transport
-        )
-
-        self.assertEqual(summaries, [])
-        self.assertEqual(len(transport.urls), 3)
-
-    def test_a_broken_filter_without_an_answer_is_reported(self):
-        def responder(url):
-            raise OptimadeHttpError(f"{url} returned HTTP 500", status=500, url=url)
-
-        transport = RecordingTransport(responder)
-
-        with self.assertRaises(DatabaseRequestError) as error:
-            self._database().search(DatabaseQuery(formula="Fe2O3"), transport=transport)
-
-        self.assertIn("500", str(error.exception))
-
-    def test_a_missing_endpoint_falls_back_to_the_root_path(self):
-        def responder(url):
-            if "/v1/structures" in url:
-                raise OptimadeHttpError("not found", status=404, url=url)
-            return _response([_entry()])
-
-        transport = RecordingTransport(responder)
-
-        summaries = self._database().search(
-            DatabaseQuery(elements=("Fe",), limit=1), transport=transport
-        )
-
-        self.assertEqual(len(summaries), 1)
-        self.assertIn("https://demo.example/optimade/structures", transport.urls[-1])
-
-    def test_unsupported_selectors_are_reported(self):
-        database = get_database("cod")
-
-        with self.assertRaises(DatabaseRequestError) as error:
-            database.search(DatabaseQuery(formula="Si", is_stable=True))
-
-        self.assertIn("stability", str(error.exception))
-
-    def test_fetch_reads_a_single_structure(self):
-        transport = RecordingTransport(lambda url: {"data": _entry("demo-1")})
-
-        structure = self._database().fetch("demo-1", transport=transport)
-
-        self.assertEqual(structure.identifier, "demo-1")
-        self.assertEqual(len(structure.structure), 5)
-        self.assertTrue(transport.urls[0].endswith("/v1/structures/demo-1"))
-
-    def test_fetch_reports_a_missing_entry(self):
-        def responder(url):
-            raise OptimadeHttpError("not found", status=404, url=url)
-
-        with self.assertRaises(LookupError):
-            self._database().fetch("nope", transport=RecordingTransport(responder))
-
-    def test_the_federation_needs_a_provider_to_fetch(self):
-        with self.assertRaises(DatabaseRequestError) as error:
-            get_database("optimade").fetch("demo-1")
-
-        self.assertIn("provider", str(error.exception))
-
-    def test_a_provider_can_be_named_for_a_federation_search(self):
-        transport = RecordingTransport(lambda url: _response([_entry()]))
-        database = get_database("optimade")
-
+def _optimade():
+    return OptimadeDatabase(OptimadeProvider(name="demo", base_url=OPTIMADE_URL))
+
+
+def test_registry_lists_every_database_once_with_aliases():
+    records = describe_databases()
+    names = [record["name"] for record in records]
+    assert len(names) == len(set(names))
+    assert {"mp", "optimade", "c2db", "c2db-optimade", "aflow", "cod"} <= set(names)
+    assert all(record["status"] in {"ready", "needs-api-key", "unavailable"} for record in records)
+    assert get_database("materials-project") is get_database("mp")
+    assert get_database("optimade-federation") is get_database("optimade")
+
+
+def test_registering_and_replacing_a_database():
+    class Demo:
+        name = "demo"
+
+    demo = Demo()
+    try:
+        register_database(demo, aliases=("demo-alias",))
+        assert get_database("demo-alias") is demo
+        with pytest.raises(ValueError):
+            register_database(Demo())
+    finally:
+        unregister_database("demo")
+    with pytest.raises(DatabaseRequestError):
+        get_database("demo-alias")
+
+
+def test_unknown_databases_and_providers_list_the_known_ones():
+    with pytest.raises(DatabaseRequestError, match="mp"):
+        get_database("nope")
+    with pytest.raises(DatabaseRequestError, match="aflow"):
+        optimade_provider_from_name("nope")
+
+
+def test_query_reports_and_validates_its_selectors():
+    cases = [
+        (DatabaseQuery(formula="Si"), ["formula"]),
+        (DatabaseQuery(chemsys="Li-O", is_stable=True, limit=5), ["chemsys", "stability"]),
+        (DatabaseQuery(elements=("Li", "O"), theoretical=True), ["elements", "theoretical"]),
+        (DatabaseQuery(where=("gap>1",)), ["where"]),
+    ]
+    for query, selectors in cases:
+        assert query.selectors() == selectors
+
+    with pytest.raises(DatabaseRequestError, match="selector"):
+        DatabaseQuery().require_selector()
+    unsupported = DatabaseQuery(formula="Si", theoretical=True).unsupported(frozenset({"formula"}))
+    assert unsupported == ["theoretical"]
+
+
+def test_summaries_and_structures_serialise_to_the_common_shape():
+    summary = DatabaseSummary(database="demo", identifier="demo-1", formula="Si2")
+    record = summary.to_dict()
+    assert (record["database"], record["id"], record["extra"]) == ("demo", "demo-1", {})
+
+    abacus = DatabaseStructure(summary=summary, structure=_structure()).to_abacus_structure()
+    assert abacus.metadata == {
+        "lattice_constant": 1.0,
+        "atom_type": "cartesian",
+        "source": "demo",
+        "identifier": "demo-1",
+    }
+
+
+def test_materials_project_maps_searches_and_structures():
+    document = MaterialSummary(
+        material_id="mp-149", formula="Si2", chemsys="Si", nsites=2, band_gap=0.61
+    )
+    database = get_database("mp")
+
+    with patch(
+        "abacustools.integrations.databases.materials_project.search_materials",
+        return_value=[document],
+    ) as search:
         summaries = database.search(
-            DatabaseQuery(elements=("Fe",), limit=1),
-            provider="aflow",
-            transport=transport,
+            DatabaseQuery(formula="Si", chemsys="Si-O", is_stable=True, limit=5)
+        )
+    assert [summary.identifier for summary in summaries] == ["mp-149"]
+    assert summaries[0].database == "mp"
+    assert summaries[0].extra["material_id"] == "mp-149"
+    assert search.call_args.kwargs["is_stable"] is True
+    assert search.call_args.kwargs["limit"] == 5
+
+    material = MaterialStructure(summary=document, structure=_structure())
+    with patch(
+        "abacustools.integrations.databases.materials_project.download_material",
+        return_value=material,
+    ):
+        structure = database.fetch("mp-149")
+    assert structure.identifier == "mp-149"
+    assert len(structure.structure) == 2
+
+    with pytest.raises(DatabaseRequestError):
+        database.search(DatabaseQuery())
+
+
+def test_materials_project_without_its_client_is_unavailable():
+    database = get_database("mp")
+    with patch.dict(sys.modules, {"mp_api": None, "mp_api.client": None}):
+        assert database.available() is False
+        assert database.status() == "unavailable"
+        assert "mp-api" in database.unavailable_reason()
+
+
+def test_the_optimade_catalogue_documents_its_providers():
+    providers = optimade_catalogue()
+    assert len(providers) >= 10
+    assert {"aflow", "c2db-optimade", "cod", "twodmatpedia"} <= {p.name for p in providers}
+    assert all(provider.base_url.startswith("http") for provider in providers)
+    assert "optimade.org" in optimade_catalogue_source()["source"]
+    assert optimade_catalogue_source()["retrieved"]
+    assert optimade_provider_from_name("materials-project-optimade").name == "mp-optimade"
+
+    c2db = get_database("c2db-optimade")
+    assert c2db.supports("where") and not c2db.supports("identifiers")
+
+
+def test_optimade_filters_translate_the_selectors():
+    cases = [
+        (
+            DatabaseQuery(identifiers=("a", "b"), elements=("Fe", "O")),
+            ['(id="a" OR id="b")', 'elements HAS ALL "Fe", "O"'],
+        ),
+        (DatabaseQuery(elements=("Li",)), ['elements HAS "Li"']),
+        (DatabaseQuery(chemsys="Li-O"), ['elements HAS ALL "Li", "O"']),
+        (
+            DatabaseQuery(formula="Fe2O3", where=("gap>1",)),
+            ['chemical_formula_reduced="Fe2O3"', "gap>1"],
+        ),
+    ]
+    for query, terms in cases:
+        expression = build_filters(query)[0]
+        for term in terms:
+            assert term in expression
+    assert build_filters(DatabaseQuery()) == [None]
+
+
+def test_optimade_formula_strategies_and_validation():
+    strategies = build_strategies(DatabaseQuery(formula="Fe2O3"))
+    assert 'chemical_formula_reduced="Fe2O3"' in strategies[0].expression
+    assert "CONTAINS" in strategies[1].expression and strategies[1].check_formula
+    assert strategies[2].expression == 'elements HAS ALL "Fe", "O"'
+    assert strategies[2].check_formula
+
+    assert formula_matches("Fe4O6", "Fe2O3")
+    assert not formula_matches("Fe2O3Si", "Fe2O3")
+    assert not formula_matches(None, "Fe2O3")
+    for formula in ("Li*O", "not a formula"):
+        with pytest.raises(DatabaseRequestError):
+            reduced_formula(formula)
+
+
+def test_optimade_entries_become_summaries_and_structures():
+    entry = _entry(
+        nsites=None,
+        _mp_stability={"gga_gga+u": {"energy_above_hull": 0.25}},
+        _cod_flags="has coordinates",
+    )
+    summary = summary_from_entry(entry, "mp-optimade")
+    assert (summary.identifier, summary.formula, summary.chemsys) == ("demo-1", "Fe2O3", "Fe-O")
+    assert summary.nsites == 5
+    assert summary.energy_above_hull == pytest.approx(0.25)
+    assert summary.extra["_cod_flags"] == "has coordinates"
+
+    structure = structure_from_entry(entry)
+    assert len(structure) == 5
+    assert structure.composition.reduced_formula == "Fe2O3"
+
+    with pytest.raises(DatabaseRequestError, match="coordinates"):
+        structure_from_entry(_entry(cartesian_site_positions=None, species_at_sites=None))
+
+
+def test_optimade_search_queries_and_pages_the_endpoint():
+    first = _response(
+        [_entry("demo-1")], next_link={"href": f"{OPTIMADE_URL}/v1/structures?page_offset=1"}
+    )
+    second = _response([_entry("demo-2")])
+    transport = RecordingTransport(lambda url: first if "page_offset" not in url else second)
+
+    summaries = _optimade().search(DatabaseQuery(formula="Fe2O3", limit=2), transport=transport)
+
+    assert [summary.identifier for summary in summaries] == ["demo-1", "demo-2"]
+    assert summaries[0].extra["provider"] == "demo"
+    filter_expression = _query(transport.urls[0])["filter"][0]
+    assert "/v1/structures" in transport.urls[0]
+    assert "chemical_formula_reduced" in filter_expression
+    assert int(_query(transport.urls[0])["page_limit"][0]) <= 100
+
+
+def test_optimade_search_falls_back_when_a_formula_filter_is_rejected():
+    def responder(url):
+        filter_expression = _query(url).get("filter", [""])[0]
+        if "chemical_formula_reduced" in filter_expression:
+            raise OptimadeHttpError("not supported", status=501, url=url)
+        if "CONTAINS" in filter_expression:
+            # A substring match, which the client has to check itself.
+            return _response([_entry("demo-2", chemical_formula_reduced="Fe2O3Si")])
+        return _response([_entry("demo-3")])
+
+    transport = RecordingTransport(responder)
+    summaries = _optimade().search(DatabaseQuery(formula="Fe2O3", limit=1), transport=transport)
+
+    assert [summary.identifier for summary in summaries] == ["demo-3"]
+    assert "elements HAS ALL" in _query(transport.urls[-1])["filter"][0]
+
+
+def test_optimade_search_tolerates_empty_and_failing_fallbacks():
+    empty = RecordingTransport(lambda url: _response([]))
+    assert _optimade().search(DatabaseQuery(elements=("Fe",), limit=3), transport=empty) == []
+
+    def empty_then_broken(url):
+        if "chemical_formula_reduced" in _query(url).get("filter", [""])[0]:
+            return _response([])
+        return _failing(500)(url)
+
+    summaries = _optimade().search(
+        DatabaseQuery(formula="Fe2O3", limit=3),
+        transport=RecordingTransport(empty_then_broken),
+    )
+    assert summaries == []
+
+    with pytest.raises(DatabaseRequestError, match="500"):
+        _optimade().search(
+            DatabaseQuery(formula="Fe2O3"), transport=RecordingTransport(_failing(500))
         )
 
-        self.assertEqual(summaries[0].database, "aflow")
-        self.assertIn("aflow.org", transport.urls[0])
 
-    def test_options_are_rejected_by_databases_that_do_not_take_them(self):
-        with self.assertRaises(DatabaseRequestError):
-            get_database("mp").check_options(provider="aflow")
+def test_optimade_search_falls_back_to_the_root_path():
+    def responder(url):
+        if "/v1/structures" in url:
+            return _failing(404)(url)
+        return _response([_entry()])
+
+    transport = RecordingTransport(responder)
+    summaries = _optimade().search(DatabaseQuery(elements=("Fe",), limit=1), transport=transport)
+
+    assert len(summaries) == 1
+    assert transport.urls[-1].split("?")[0].endswith("/optimade/structures")
 
 
-class TestStructureFiles(unittest.TestCase):
-    def test_filenames_follow_the_format(self):
-        self.assertEqual(structure_filename("stru"), "STRU")
-        self.assertEqual(structure_filename(".cif"), "structure.cif")
+def test_optimade_fetch_and_its_errors():
+    transport = RecordingTransport(lambda url: {"data": _entry("demo-1")})
+    structure = _optimade().fetch("demo-1", transport=transport)
 
-    def test_unknown_formats_are_rejected(self):
-        with self.assertRaises(ValueError):
-            structure_filename("gen")
+    assert structure.identifier == "demo-1"
+    assert len(structure.structure) == 5
+    assert transport.urls[0].endswith("/v1/structures/demo-1")
 
-    def test_paths_can_be_grouped_by_database(self):
-        self.assertEqual(structure_path(Path("out"), "mp-149"), Path("out") / "mp-149" / "STRU")
-        self.assertEqual(
-            structure_path(Path("out"), "1000000", fmt="poscar", database="cod"),
-            Path("out") / "cod" / "1000000" / "POSCAR",
-        )
+    with pytest.raises(LookupError):
+        _optimade().fetch("nope", transport=RecordingTransport(_failing(404)))
 
-    def test_writing_creates_directories_and_a_stru(self):
-        structure = DatabaseStructure(
-            summary=DatabaseSummary(database="demo", identifier="demo-1"),
-            structure=_structure(),
-        )
+    with pytest.raises(DatabaseRequestError, match="provider"):
+        get_database("optimade").fetch("demo-1")
 
-        with tempfile.TemporaryDirectory() as temporary:
-            destination = structure_path(Path(temporary), "demo-1")
-            written = write_structure(structure, destination)
-            text = written.read_text()
+    federation_transport = RecordingTransport(lambda url: _response([_entry()]))
+    federation = get_database("optimade").search(
+        DatabaseQuery(elements=("Fe",), limit=1),
+        provider="aflow",
+        transport=federation_transport,
+    )
+    assert federation[0].database == "aflow"
+    assert "aflow.org" in federation_transport.urls[0]
 
-        self.assertIn("ATOMIC_SPECIES", text)
-        self.assertIn("LATTICE_VECTORS", text)
 
+def test_unsupported_selectors_and_options_are_rejected():
+    with pytest.raises(DatabaseRequestError, match="stability"):
+        get_database("cod").search(DatabaseQuery(formula="Si", is_stable=True))
+    with pytest.raises(DatabaseRequestError, match="provider"):
+        get_database("mp").check_options(provider="aflow")
+
+
+def test_structure_files_are_named_and_written():
+    assert structure_filename("stru") == "STRU"
+    assert structure_filename(".cif") == "structure.cif"
+    assert structure_path(Path("out"), "mp-149") == Path("out/mp-149/STRU")
+    assert structure_path(Path("out"), "1MoS2-1", fmt="poscar", database="c2db") == Path(
+        "out/c2db/1MoS2-1/POSCAR"
+    )
+    with pytest.raises(ValueError):
+        structure_filename("gen")
+
+    structure = DatabaseStructure(
+        summary=DatabaseSummary(database="demo", identifier="demo-1"), structure=_structure()
+    )
+    with tempfile.TemporaryDirectory() as temporary:
+        written = write_structure(structure, structure_path(Path(temporary), "demo-1"))
+        text = written.read_text()
+    assert "ATOMIC_SPECIES" in text and "LATTICE_VECTORS" in text
+
+
+# ---------------------------------------------------------------- C2DB
 
 C2DB_LABELS = (
     "Formula",
@@ -645,233 +451,134 @@ def _c2db_row(uid="1MoS2-1", **overrides):
     return uid, [values[key] for key in [*DEFAULT_COLUMNS, *extra]]
 
 
-class TestC2DBKeys(unittest.TestCase):
-    def test_the_key_catalogue_documents_the_properties(self):
-        keys = c2db_keys()
+def _c2db_transport(pages):
+    """A transport that answers the session, table and OPTIMADE requests."""
 
-        self.assertGreaterEqual(len(keys), 80)
-        for key in ("gap", "gap_hse", "gap_gw", "ehull", "hform", "is_magnetic", "magstate"):
-            self.assertIn(key, keys)
-        self.assertEqual(keys["gap"], "Band gap (PBE) [eV]")
-        self.assertIn("c2db", c2db_keys_source()["source"])
+    def responder(url):
+        if url.endswith("/"):
+            return '<input class="form-control" name="sid" value="4321">'
+        for match, page in pages.items():
+            if match in url:
+                return page
+        raise AssertionError(f"unexpected URL: {url}")
 
-    def test_the_database_documents_its_fields(self):
-        fields = dict(get_database("c2db").fields())
-
-        self.assertEqual(fields["ehull"], "Energy above hull [eV/atom]")
-        self.assertEqual(len(fields), len(c2db_keys()))
+    return RecordingTransport(responder)
 
 
-class TestC2DBFilter(unittest.TestCase):
-    def test_property_terms_come_first(self):
-        query = DatabaseQuery(formula="Fe2O3", where=("gap>1",))
+def test_c2db_documents_its_property_keys():
+    keys = c2db_keys()
+    assert len(keys) >= 80
+    assert keys["gap"] == "Band gap (PBE) [eV]"
+    assert "c2db" in c2db_keys_source()["source"]
+    assert c2db_keys_source()["retrieved"]
 
-        self.assertEqual(build_filter(query), "gap>1,Fe2O3")
+    fields = dict(get_database("c2db").fields())
+    assert fields["ehull"] == "Energy above hull [eV/atom]"
+    assert len(fields) == len(keys)
 
-    def test_elements_and_chemical_systems_become_element_lists(self):
-        self.assertEqual(build_filter(DatabaseQuery(elements=("Mo", "S"))), "Mo,S")
-        self.assertEqual(build_filter(DatabaseQuery(chemsys="Li-Fe-O")), "Li,Fe,O")
 
-    def test_identifiers_use_the_c2db_uid(self):
-        self.assertEqual(build_filter(DatabaseQuery(identifiers=("1MoS2-1",))), "uid=1MoS2-1")
-        self.assertEqual(
-            build_filter(DatabaseQuery(identifiers=("1MoS2-1", "1MoS2-2"))),
-            "(uid=1MoS2-1 | uid=1MoS2-2)",
+def test_c2db_filters_translate_the_selectors():
+    cases = [
+        (DatabaseQuery(formula="Fe2O3", where=("gap>1",)), "gap>1,Fe2O3"),
+        (DatabaseQuery(elements=("Mo", "S")), "Mo,S"),
+        (DatabaseQuery(chemsys="Li-Fe-O"), "Li,Fe,O"),
+        (DatabaseQuery(identifiers=("1MoS2-1",)), "uid=1MoS2-1"),
+        (DatabaseQuery(identifiers=("a", "b")), "(uid=a | uid=b)"),
+    ]
+    for query, expected in cases:
+        assert c2db_filter(query) == expected
+
+    for query in (DatabaseQuery(elements=("Xx",)), DatabaseQuery()):
+        with pytest.raises(DatabaseRequestError):
+            c2db_filter(query)
+
+
+def test_c2db_table_parsing():
+    page = parse_table(_c2db_page([_c2db_row()], total=167))
+    assert page.total == 167
+    assert list(page.columns) == list(DEFAULT_COLUMNS)
+    assert page.rows[0].uid == "1MoS2-1"
+    assert page.rows[0].values["formula"] == "MoS2"
+    assert page.rows[0].values["gap"] == "1.580"
+
+    extra = parse_table(
+        _c2db_page([_c2db_row(gap_hse="2.087")], [*C2DB_LABELS, "Band gap (HSE06) [eV]"])
+    )
+    assert list(extra.columns)[-1] == "gap_hse"
+    assert extra.rows[0].values["gap_hse"] == "2.087"
+
+    assert parse_table(_c2db_page([_c2db_row(gap="")])).rows[0].values["gap"] == ""
+    assert parse_table(_c2db_page([_c2db_row()])).total == 1
+    with pytest.raises(DatabaseRequestError, match="Bad filter"):
+        parse_table(_c2db_page([], total=0, error="Bad filter string"))
+
+    summary = summary_from_row(page.rows[0])
+    assert (summary.database, summary.identifier) == ("c2db", "1MoS2-1")
+    assert (summary.formula, summary.chemsys) == ("MoS2", "Mo-S")
+    assert summary.band_gap == pytest.approx(1.58)
+    assert summary.energy_above_hull == pytest.approx(0.0)
+    assert summary.theoretical is True
+    assert summary.extra["layergroup"] == "p-6m2"
+
+
+def test_c2db_search_reads_the_query_table():
+    first = _c2db_page([_c2db_row("1MoS2-1")], total=2)
+    second = _c2db_page([_c2db_row("1MoS2-2")], total=2)
+    toggled = _c2db_page(
+        [_c2db_row(gap_hse="2.087")], [*C2DB_LABELS, "Band gap (HSE06) [eV]"], total=2
+    )
+    transport = _c2db_transport({"toggle=gap_hse": toggled, "page=1": second, "filter=": first})
+
+    summaries = get_database("c2db").search(
+        DatabaseQuery(formula="MoS2", where=("gap>1.5",), limit=2),
+        show=("gap_hse",),
+        transport=transport,
+    )
+
+    assert [summary.identifier for summary in summaries] == ["1MoS2-1", "1MoS2-2"]
+    assert summaries[0].extra["gap_hse"] == "2.087"
+    urls = " ".join(transport.urls)
+    assert "filter=gap%3E1.5%2CMoS2" in urls
+    assert "toggle=gap_hse" in urls
+    assert "page=1" in urls
+    assert "sid=4321" in urls
+
+
+def test_c2db_search_rejects_bad_input():
+    database = get_database("c2db")
+    with pytest.raises(DatabaseRequestError, match="nope"):
+        database.search(
+            DatabaseQuery(formula="MoS2"),
+            show=("nope",),
+            transport=RecordingTransport(lambda url: ""),
         )
+    with pytest.raises(DatabaseRequestError, match="stability"):
+        database.search(DatabaseQuery(formula="MoS2", is_stable=True))
 
-    def test_an_unknown_element_is_rejected(self):
-        with self.assertRaises(DatabaseRequestError):
-            build_filter(DatabaseQuery(elements=("Xx",)))
-
-    def test_an_empty_query_is_rejected(self):
-        with self.assertRaises(DatabaseRequestError):
-            build_filter(DatabaseQuery())
-
-
-class TestC2DBTable(unittest.TestCase):
-    def test_rows_and_columns_are_read(self):
-        page = parse_table(_c2db_page([_c2db_row()], total=167))
-
-        self.assertEqual(page.total, 167)
-        self.assertEqual(list(page.columns), list(DEFAULT_COLUMNS))
-        self.assertEqual(len(page.rows), 1)
-        self.assertEqual(page.rows[0].uid, "1MoS2-1")
-        self.assertEqual(page.rows[0].values["formula"], "MoS2")
-        self.assertEqual(page.rows[0].values["gap"], "1.580")
-
-    def test_a_single_row_summary_is_read(self):
-        page = parse_table(_c2db_page([_c2db_row()]))
-
-        self.assertEqual(page.total, 1)
-
-    def test_extra_columns_are_named_after_their_keys(self):
-        labels = [*C2DB_LABELS, "Band gap (HSE06) [eV]"]
-
-        page = parse_table(_c2db_page([_c2db_row(gap_hse="2.087")], labels))
-
-        self.assertEqual(list(page.columns)[-1], "gap_hse")
-        self.assertEqual(page.rows[0].values["gap_hse"], "2.087")
-
-    def test_empty_cells_stay_empty(self):
-        page = parse_table(_c2db_page([_c2db_row(gap="")]))
-
-        self.assertEqual(page.rows[0].values["gap"], "")
-
-    def test_a_rejected_filter_is_reported(self):
-        with self.assertRaises(DatabaseRequestError) as error:
-            parse_table(_c2db_page([], total=0, error="Bad filter string"))
-
-        self.assertIn("Bad filter string", str(error.exception))
-
-    def test_a_row_becomes_a_summary(self):
-        page = parse_table(_c2db_page([_c2db_row()]))
-
-        summary = summary_from_row(page.rows[0])
-
-        self.assertEqual(summary.database, "c2db")
-        self.assertEqual(summary.identifier, "1MoS2-1")
-        self.assertEqual(summary.formula, "MoS2")
-        self.assertEqual(summary.chemsys, "Mo-S")
-        self.assertAlmostEqual(summary.energy_above_hull, 0.0)
-        self.assertAlmostEqual(summary.band_gap, 1.58)
-        self.assertTrue(summary.theoretical)
-        self.assertEqual(summary.extra["layergroup"], "p-6m2")
+    changed = _c2db_page([_c2db_row()], labels=C2DB_LABELS[:-1], total=1)
+    transport = _c2db_transport({"filter=": changed})
+    with pytest.raises(DatabaseRequestError, match="columns"):
+        database.search(DatabaseQuery(formula="MoS2"), transport=transport)
 
 
-class TestC2DBSearch(unittest.TestCase):
-    def _transport(self, pages, optimade=None):
-        def responder(url):
-            if url.endswith("/"):
-                return '<input class="form-control" name="sid" value="4321">'
-            for match, page in pages.items():
-                if match in url:
-                    return page
-            if optimade is not None and "optimade" in url:
-                return optimade
-            raise AssertionError(f"unexpected URL: {url}")
+def test_c2db_fetch_joins_the_properties_and_the_structure():
+    page = _c2db_page([_c2db_row()], total=1)
+    transport = _c2db_transport(
+        {"optimade": json.dumps({"data": [_entry("8192")]}), "filter=": page}
+    )
 
-        return RecordingTransport(responder)
+    structure = get_database("c2db").fetch("1MoS2-1", transport=transport)
 
-    def test_search_queries_the_table_and_returns_the_properties(self):
-        page = _c2db_page([_c2db_row()], total=1)
-        transport = self._transport({"filter=MoS2": page})
+    assert structure.identifier == "1MoS2-1"
+    assert structure.summary.formula == "MoS2"
+    assert structure.summary.nsites == 5
+    assert structure.summary.extra["optimade_id"] == "8192"
+    assert structure.summary.extra["layergroup"] == "p-6m2"
+    assert len(structure.structure) == 5
 
-        summaries = get_database("c2db").search(
-            DatabaseQuery(formula="MoS2", limit=5), transport=transport
-        )
-
-        self.assertEqual(len(summaries), 1)
-        self.assertEqual(summaries[0].identifier, "1MoS2-1")
-        self.assertAlmostEqual(summaries[0].band_gap, 1.58)
-        self.assertIn("filter=MoS2", transport.urls[-1])
-        self.assertEqual(_query(transport.urls[-1])["sid"], ["4321"])
-
-    def test_property_terms_reach_the_filter(self):
-        page = _c2db_page([_c2db_row()], total=1)
-        transport = self._transport({"filter=gap%3E1.5": page})
-
-        get_database("c2db").search(DatabaseQuery(where=("gap>1.5",), limit=1), transport=transport)
-
-        self.assertIn("filter=gap%3E1.5", transport.urls[-1])
-
-    def test_extra_columns_are_toggled(self):
-        page = _c2db_page([_c2db_row()], total=1)
-        labels = [*C2DB_LABELS, "Band gap (HSE06) [eV]"]
-        toggled = _c2db_page([_c2db_row(gap_hse="2.087")], labels, total=1)
-        transport = self._transport({"toggle=gap_hse": toggled, "filter=MoS2": page})
-
-        summaries = get_database("c2db").search(
-            DatabaseQuery(formula="MoS2", limit=1),
-            show=("gap_hse",),
-            transport=transport,
-        )
-
-        self.assertEqual(summaries[0].extra["gap_hse"], "2.087")
-        self.assertTrue(any("toggle=gap_hse" in url for url in transport.urls))
-
-    def test_search_pages_through_the_results(self):
-        first = _c2db_page([_c2db_row("1MoS2-1")], total=2)
-        second = _c2db_page([_c2db_row("1MoS2-2")], total=2)
-        transport = self._transport({"filter=MoS2": first, "page=1": second})
-
-        summaries = get_database("c2db").search(
-            DatabaseQuery(formula="MoS2", limit=2), transport=transport
-        )
-
-        self.assertEqual([summary.identifier for summary in summaries], ["1MoS2-1", "1MoS2-2"])
-        self.assertIn("page=1", transport.urls[-1])
-
-    def test_an_unknown_column_is_rejected(self):
-        with self.assertRaises(DatabaseRequestError) as error:
-            get_database("c2db").search(
-                DatabaseQuery(formula="MoS2"),
-                show=("nope",),
-                transport=RecordingTransport(lambda url: ""),
-            )
-
-        self.assertIn("nope", str(error.exception))
-
-    def test_a_changed_column_layout_is_reported(self):
-        page = _c2db_page([_c2db_row()], labels=C2DB_LABELS[:-1], total=1)
-        transport = self._transport({"filter=MoS2": page})
-
-        with self.assertRaises(DatabaseRequestError) as error:
-            get_database("c2db").search(DatabaseQuery(formula="MoS2"), transport=transport)
-
-        self.assertIn("columns", str(error.exception))
-
-    def test_a_selector_the_database_does_not_support_is_reported(self):
-        with self.assertRaises(DatabaseRequestError) as error:
-            get_database("c2db").search(DatabaseQuery(formula="MoS2", is_stable=True))
-
-        self.assertIn("stability", str(error.exception))
-
-
-class TestC2DBFetch(unittest.TestCase):
-    def _transport(self, pages, optimade):
-        def responder(url):
-            if url.endswith("/"):
-                return '<input name="sid" value="4321">'
-            if "optimade" in url:
-                return json.dumps(optimade)
-            for match, page in pages.items():
-                if match in url:
-                    return page
-            raise AssertionError(f"unexpected URL: {url}")
-
-        return RecordingTransport(responder)
-
-    def test_fetch_joins_the_row_and_the_optimade_structure(self):
-        page = _c2db_page([_c2db_row()], total=1)
-        transport = self._transport(
-            {"filter=uid%3D1MoS2-1": page},
-            {"data": [_entry("8192")]},
-        )
-
-        structure = get_database("c2db").fetch("1MoS2-1", transport=transport)
-
-        self.assertEqual(structure.identifier, "1MoS2-1")
-        self.assertEqual(structure.summary.formula, "MoS2")
-        self.assertEqual(structure.summary.nsites, 5)
-        self.assertEqual(structure.summary.extra["optimade_id"], "8192")
-        self.assertEqual(structure.summary.extra["layergroup"], "p-6m2")
-        self.assertEqual(len(structure.structure), 5)
-        self.assertIn("optimade", transport.urls[-1])
-
-    def test_fetch_reports_a_missing_entry(self):
-        page = _c2db_page([], total=0)
-        transport = self._transport({"filter=uid": page}, {"data": []})
-
-        with self.assertRaises(LookupError):
-            get_database("c2db").fetch("nope", transport=transport)
-
-    def test_fetch_reports_an_entry_without_a_structure(self):
-        page = _c2db_page([_c2db_row()], total=1)
-        transport = self._transport({"filter=uid": page}, {"data": []})
-
-        with self.assertRaises(LookupError):
-            get_database("c2db").fetch("1MoS2-1", transport=transport)
-
-
-if __name__ == "__main__":
-    unittest.main()
+    for pages in (
+        {"optimade": json.dumps({"data": []}), "filter=": _c2db_page([], total=0)},
+        {"optimade": json.dumps({"data": []}), "filter=": page},
+    ):
+        with pytest.raises(LookupError):
+            get_database("c2db").fetch("1MoS2-1", transport=_c2db_transport(pages))

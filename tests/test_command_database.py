@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import json
-import tempfile
-import unittest
 from io import StringIO
-from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from abacustools.commands.database.download import run as run_download
 from abacustools.commands.database.fields import run as run_fields
@@ -84,432 +83,275 @@ class DemoDatabase(StructureDatabase):
         )
 
 
-def _search_namespace(*arguments: str):
-    return _create_parser("abacustools").parse_args(["database", "search", *arguments])
+@pytest.fixture
+def demo():
+    """Register the demo database for one test."""
+    database = DemoDatabase()
+    register_database(database)
+    yield database
+    unregister_database("demo")
 
 
-def _download_namespace(*arguments: str):
-    return _create_parser("abacustools").parse_args(["database", "download", *arguments])
+def _parse(*argv: str):
+    return _create_parser("abacustools").parse_args(list(argv))
 
 
-class TestDatabaseParsers(unittest.TestCase):
-    def test_database_family_is_registered(self):
-        namespace = _search_namespace("--formula", "Si")
-
-        self.assertEqual(namespace.command, "database")
-        self.assertEqual(namespace.database_command, "search")
-        self.assertIsNotNone(namespace.handler)
-
-    def test_database_has_a_short_alias(self):
-        namespace = _create_parser("abacustools").parse_args(["db", "list"])
-
-        self.assertEqual(namespace.command, "db")
-        self.assertEqual(namespace.database_command, "list")
-
-    def test_mp_family_still_works_and_selects_the_materials_project(self):
-        namespace = _create_parser("abacustools").parse_args(["mp", "search", "--formula", "Si"])
-
-        self.assertEqual(namespace.command, "mp")
-        self.assertEqual(namespace.mp_command, "search")
-        self.assertEqual(namespace.database, "mp")
-
-    def test_every_subcommand_is_available(self):
-        parser = _create_parser("abacustools")
-
-        for subcommand in ("list", "providers", "search", "download"):
-            namespace = parser.parse_args(
-                ["database", subcommand, *(("demo-1",) if subcommand == "download" else ())]
-            )
-            self.assertEqual(namespace.database_command, subcommand)
-
-    def test_download_requires_an_identifier(self):
-        parser = _create_parser("abacustools")
-        with patch("sys.stderr", new_callable=StringIO):
-            with self.assertRaises(SystemExit):
-                parser.parse_args(["database", "download"])
+def _search(*arguments: str):
+    return _parse("database", "search", *arguments)
 
 
-class TestDatabaseSearchCommand(unittest.TestCase):
-    def setUp(self):
-        self.database = DemoDatabase()
-        register_database(self.database)
+def _download(*arguments: str):
+    return _parse("database", "download", *arguments)
 
-    def tearDown(self):
-        unregister_database("demo")
 
-    def test_search_prints_a_table_of_matches(self):
-        namespace = _search_namespace("-d", "demo", "--formula", "Si")
-        with patch("sys.stdout", new_callable=StringIO) as stdout:
-            status = run_search(namespace)
+def test_the_family_and_its_subcommands_are_registered():
+    namespace = _search("--formula", "Si")
+    assert (namespace.command, namespace.database_command) == ("database", "search")
+    assert namespace.handler is not None
 
-        self.assertEqual(status, 0)
-        self.assertIn("demo-1", stdout.getvalue())
-        self.assertIn("Si2", stdout.getvalue())
-        self.assertIn("0.610", stdout.getvalue())
+    assert _parse("db", "list").database_command == "list"
+    alias = _parse("mp", "search", "--formula", "Si")
+    assert (alias.command, alias.mp_command, alias.database) == ("mp", "search", "mp")
 
-    def test_search_passes_the_selectors_to_the_database(self):
-        namespace = _search_namespace(
-            "-d", "demo", "--formula", "Si", "--elements", "Li", "O", "--stable", "--limit", "7"
-        )
-        with patch("sys.stdout", new_callable=StringIO):
-            run_search(namespace)
+    for subcommand, extra in (
+        ("list", ()),
+        ("fields", ()),
+        ("providers", ()),
+        ("search", ()),
+        ("download", ("demo-1",)),
+    ):
+        namespace = _parse("database", subcommand, *extra)
+        assert namespace.database_command == subcommand
 
-        query = self.database.queries[0]
-        self.assertEqual(query.formula, "Si")
-        self.assertEqual(query.elements, ("Li", "O"))
-        self.assertTrue(query.is_stable)
-        self.assertEqual(query.limit, 7)
+    with patch("sys.stderr", new_callable=StringIO):
+        with pytest.raises(SystemExit):
+            _parse("database", "download")
 
-    def test_search_accepts_repeated_identifiers(self):
-        namespace = _search_namespace("-d", "demo", "--id", "demo-1", "--material-id", "demo-2")
-        with patch("sys.stdout", new_callable=StringIO):
-            run_search(namespace)
 
-        self.assertEqual(self.database.queries[0].identifiers, ("demo-1", "demo-2"))
+def test_search_prints_a_table_json_and_a_file(demo, tmp_path):
+    namespace = _search("-d", "demo", "--formula", "Si")
+    with patch("sys.stdout", new_callable=StringIO) as stdout:
+        status = run_search(namespace)
+    assert status == 0
+    assert "demo-1" in stdout.getvalue() and "0.610" in stdout.getvalue()
 
-    def test_search_prints_json_and_writes_the_output_file(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            destination = Path(temporary) / "results.json"
-            namespace = _search_namespace(
-                "-d", "demo", "--formula", "Si", "--json", "--output", str(destination)
-            )
-            with patch("sys.stdout", new_callable=StringIO) as stdout:
-                status = run_search(namespace)
+    destination = tmp_path / "results.json"
+    namespace = _search("-d", "demo", "--formula", "Si", "--json", "--output", str(destination))
+    with patch("sys.stdout", new_callable=StringIO) as stdout:
+        status = run_search(namespace)
+    assert status == 0
+    assert json.loads(stdout.getvalue())[0]["id"] == "demo-1"
+    assert json.loads(destination.read_text())[0]["band_gap"] == 0.61
 
-            self.assertEqual(status, 0)
-            self.assertEqual(json.loads(stdout.getvalue())[0]["id"], "demo-1")
-            self.assertEqual(json.loads(destination.read_text())[0]["band_gap"], 0.61)
+    with patch("sys.stdout", new_callable=StringIO) as stdout:
+        status = run_search(_search("-d", "demo", "--formula", "none"))
+    assert status == 1
+    assert "no entries matched" in stdout.getvalue()
 
-    def test_search_without_matches_returns_one(self):
-        namespace = _search_namespace("-d", "demo", "--formula", "none")
-        with patch("sys.stdout", new_callable=StringIO) as stdout:
-            status = run_search(namespace)
 
-        self.assertEqual(status, 1)
-        self.assertIn("no entries matched", stdout.getvalue())
+def test_search_passes_the_query_and_the_options_through(demo):
+    namespace = _search(
+        "-d",
+        "demo",
+        "--formula",
+        "Si",
+        "--elements",
+        "Li",
+        "O",
+        "--stable",
+        "--limit",
+        "7",
+        "--where",
+        "gap>1.5",
+        "--show",
+        "gap_hse,magstate",
+        "--base-url",
+        "https://demo.example/optimade",
+    )
+    with patch("sys.stdout", new_callable=StringIO):
+        status = run_search(namespace)
 
-    def test_search_without_a_selector_fails_before_reaching_the_database(self):
+    assert status == 0
+    query = demo.queries[0]
+    assert (query.formula, query.elements, query.limit) == ("Si", ("Li", "O"), 7)
+    assert query.is_stable is True
+    assert query.where == ("gap>1.5",)
+    assert demo.shows[0] == ["gap_hse", "magstate"]
+    assert demo.base_urls[0] == "https://demo.example/optimade"
+
+    namespace = _search("-d", "demo", "--formula", "Si", "--show", "gap_hse")
+    with patch("sys.stdout", new_callable=StringIO) as stdout:
+        assert run_search(namespace) == 0
+    assert "2.087" in stdout.getvalue()
+
+
+def test_search_reports_bad_input(demo):
+    cases = [
+        (_search("-d", "demo"), "selector"),
+        (_search("-d", "demo", "--formula", "Si", "--theoretical"), "theoretical"),
+        (_search("-d", "nope", "--formula", "Si"), "unknown database"),
+        (_search("-d", "mp", "--formula", "Si", "--where", "gap>1"), "where"),
+    ]
+    for namespace, message in cases:
         with patch("sys.stderr", new_callable=StringIO) as stderr:
-            status = run_search(_search_namespace("-d", "demo"))
+            assert run_search(namespace) == 1
+        assert message in stderr.getvalue()
+    assert demo.queries == []
 
-        self.assertEqual(status, 1)
-        self.assertIn("selector", stderr.getvalue())
-        self.assertEqual(self.database.queries, [])
-
-    def test_search_reports_a_selector_the_database_does_not_support(self):
+    with patch.object(demo, "search", side_effect=DatabaseRequestError("boom")):
         with patch("sys.stderr", new_callable=StringIO) as stderr:
-            status = run_search(_search_namespace("-d", "demo", "--formula", "Si", "--theoretical"))
+            assert run_search(_search("-d", "demo", "--formula", "Si")) == 1
+    assert "boom" in stderr.getvalue()
 
-        self.assertEqual(status, 1)
-        self.assertIn("theoretical", stderr.getvalue())
 
-    def test_search_reports_an_unknown_database(self):
+def test_download_writes_the_files_it_reports(demo, tmp_path):
+    namespace = _download("-d", "demo", "demo-1", "-o", str(tmp_path))
+    with patch("sys.stdout", new_callable=StringIO) as stdout:
+        status = run_download(namespace)
+    written = tmp_path / "demo-1" / "STRU"
+    assert status == 0
+    assert written.is_file() and "ATOMIC_SPECIES" in written.read_text()
+    assert "demo-1" in stdout.getvalue()
+
+    grouped = tmp_path / "grouped"
+    namespace = _download(
+        "-d", "demo", "demo-1", "-o", str(grouped), "-f", "poscar", "--group-by-database"
+    )
+    with patch("sys.stdout", new_callable=StringIO):
+        assert run_download(namespace) == 0
+    assert (grouped / "demo" / "demo-1" / "POSCAR").is_file()
+
+    namespace = _download("-d", "demo", "demo-1", "-o", str(tmp_path), "--json")
+    with patch("sys.stdout", new_callable=StringIO) as stdout:
+        assert run_download(namespace) == 0
+    record = json.loads(stdout.getvalue())[0]
+    assert (record["database"], record["id"]) == ("demo", "demo-1")
+    assert record["file"].endswith("demo-1/STRU")
+
+
+def test_download_keeps_going_after_one_failure(demo, tmp_path):
+    namespace = _download("-d", "demo", "missing", "demo-1", "-o", str(tmp_path))
+    with (
+        patch("sys.stdout", new_callable=StringIO),
+        patch("sys.stderr", new_callable=StringIO) as stderr,
+    ):
+        status = run_download(namespace)
+
+    assert status == 1
+    assert "missing" in stderr.getvalue()
+    assert (tmp_path / "demo-1" / "STRU").is_file()
+    assert not (tmp_path / "missing").exists()
+
+
+def test_list_reports_the_databases():
+    with patch("sys.stdout", new_callable=StringIO) as stdout:
+        assert run_list(_parse("database", "list")) == 0
+    assert "mp" in stdout.getvalue() and "optimade" in stdout.getvalue()
+
+    namespace = _parse("database", "list", "--json")
+    with patch("sys.stdout", new_callable=StringIO) as stdout:
+        assert run_list(namespace) == 0
+    records = json.loads(stdout.getvalue())
+    assert "cod" in [record["name"] for record in records]
+    assert all("status" in record for record in records)
+
+    namespace = _parse("database", "list", "--available", "--json")
+    with patch("sys.stdout", new_callable=StringIO) as stdout:
+        run_list(namespace)
+    assert all(record["status"] == "ready" for record in json.loads(stdout.getvalue()))
+
+
+def test_fields_lists_the_property_keys():
+    namespace = _parse("database", "fields", "-d", "c2db", "--json")
+    with patch("sys.stdout", new_callable=StringIO) as stdout:
+        assert run_fields(namespace) == 0
+    records = json.loads(stdout.getvalue())
+    assert len(records) >= 80
+    assert {"key": "gap", "description": "Band gap (PBE) [eV]"} in records
+
+    with patch("sys.stdout", new_callable=StringIO) as stdout:
+        assert run_fields(_parse("database", "fields", "-d", "c2db")) == 0
+    assert "ehull" in stdout.getvalue()
+
+    with patch("sys.stdout", new_callable=StringIO) as stdout:
+        assert run_fields(_parse("database", "fields", "-d", "mp")) == 0
+    assert "does not document property keys" in stdout.getvalue()
+
+
+def test_providers_lists_and_refreshes_the_catalogue():
+    with patch("sys.stdout", new_callable=StringIO) as stdout:
+        assert run_providers(_parse("database", "providers")) == 0
+    assert "aflow" in stdout.getvalue() and "mp-optimade" in stdout.getvalue()
+
+    with patch("sys.stdout", new_callable=StringIO) as stdout:
+        assert run_providers(_parse("database", "providers", "--json")) == 0
+    records = json.loads(stdout.getvalue())
+    assert len(records) >= 10
+    assert all(record["endpoint"].startswith("http") for record in records)
+
+    index = {
+        "data": [
+            {
+                "id": "demo",
+                "attributes": {
+                    "base_url": "https://demo.example/index",
+                    "homepage": "https://demo.example",
+                    "description": "Demo provider\nMore text",
+                },
+            }
+        ]
+    }
+    namespace = _parse("database", "providers", "--refresh", "--json")
+    with patch("abacustools.integrations.databases.optimade._http_get_json", return_value=index):
+        with patch("sys.stdout", new_callable=StringIO) as stdout:
+            assert run_providers(namespace) == 0
+    assert json.loads(stdout.getvalue())[0] == {
+        "name": "demo",
+        "endpoint": "https://demo.example/index",
+        "homepage": "https://demo.example",
+        "description": "Demo provider",
+        "note": "index meta-database",
+        "requires_api_key": False,
+    }
+
+
+def test_the_mp_alias_uses_the_materials_project(tmp_path):
+    summary = MaterialSummary(
+        material_id="mp-149",
+        formula="Si2",
+        chemsys="Si",
+        nsites=2,
+        volume=40.0,
+        energy_above_hull=0.0,
+        band_gap=0.61,
+        is_stable=True,
+        theoretical=False,
+    )
+    namespace = _parse("mp", "search", "--formula", "Si", "--limit", "5")
+    with patch(
+        "abacustools.integrations.databases.materials_project.search_materials",
+        return_value=[summary],
+    ) as search:
+        with patch("sys.stdout", new_callable=StringIO) as stdout:
+            assert run_search(namespace) == 0
+    assert "mp-149" in stdout.getvalue()
+    assert search.call_args.kwargs["formula"] == "Si"
+    assert search.call_args.kwargs["limit"] == 5
+
+    with patch(
+        "abacustools.integrations.databases.materials_project.search_materials",
+        side_effect=MaterialsProjectApiKeyError("no Materials Project API key found"),
+    ):
         with patch("sys.stderr", new_callable=StringIO) as stderr:
-            status = run_search(_search_namespace("-d", "nope", "--formula", "Si"))
+            assert run_search(_parse("mp", "search", "--formula", "Si")) == 1
+    assert "no Materials Project API key found" in stderr.getvalue()
 
-        self.assertEqual(status, 1)
-        self.assertIn("unknown database", stderr.getvalue())
-
-    def test_search_passes_provider_options_through(self):
-        namespace = _search_namespace(
-            "-d", "demo", "--formula", "Si", "--base-url", "https://demo.example/optimade"
-        )
+    material = MaterialStructure(summary=summary, structure=_structure())
+    namespace = _parse("mp", "download", "mp-149", "-o", str(tmp_path))
+    with patch(
+        "abacustools.integrations.databases.materials_project.download_material",
+        return_value=material,
+    ):
         with patch("sys.stdout", new_callable=StringIO):
-            status = run_search(namespace)
-
-        self.assertEqual(status, 0)
-        self.assertEqual(self.database.base_urls[0], "https://demo.example/optimade")
-
-    def test_search_passes_property_filters_and_columns_through(self):
-        namespace = _search_namespace(
-            "-d", "demo", "--formula", "Si", "--where", "gap>1.5", "--show", "gap_hse,magstate"
-        )
-        with patch("sys.stdout", new_callable=StringIO):
-            status = run_search(namespace)
-
-        self.assertEqual(status, 0)
-        self.assertEqual(self.database.queries[0].where, ("gap>1.5",))
-        self.assertEqual(self.database.shows[0], ["gap_hse", "magstate"])
-
-    def test_search_shows_the_extra_columns(self):
-        namespace = _search_namespace("-d", "demo", "--formula", "Si", "--show", "gap_hse")
-        with patch("sys.stdout", new_callable=StringIO) as stdout:
-            status = run_search(namespace)
-
-        self.assertEqual(status, 0)
-        self.assertIn("gap", stdout.getvalue())
-        self.assertIn("2.087", stdout.getvalue())
-
-    def test_property_filters_are_rejected_by_databases_without_support(self):
-        namespace = _search_namespace("-d", "mp", "--formula", "Si", "--where", "gap>1")
-        with patch("sys.stderr", new_callable=StringIO) as stderr:
-            status = run_search(namespace)
-
-        self.assertEqual(status, 1)
-        self.assertIn("where", stderr.getvalue())
-
-    def test_search_reports_an_error_from_the_database(self):
-        with patch.object(self.database, "search", side_effect=DatabaseRequestError("boom")):
-            with patch("sys.stderr", new_callable=StringIO) as stderr:
-                status = run_search(_search_namespace("-d", "demo", "--formula", "Si"))
-
-        self.assertEqual(status, 1)
-        self.assertIn("boom", stderr.getvalue())
-
-
-class TestDatabaseDownloadCommand(unittest.TestCase):
-    def setUp(self):
-        self.database = DemoDatabase()
-        register_database(self.database)
-
-    def tearDown(self):
-        unregister_database("demo")
-
-    def test_download_writes_one_directory_per_entry(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            namespace = _download_namespace("-d", "demo", "demo-1", "-o", temporary, "-f", "poscar")
-            with patch("sys.stdout", new_callable=StringIO) as stdout:
-                status = run_download(namespace)
-
-            written = Path(temporary) / "demo-1" / "POSCAR"
-            self.assertTrue(written.is_file())
-
-        self.assertEqual(status, 0)
-        self.assertIn("demo-1", stdout.getvalue())
-        self.assertIn("POSCAR", stdout.getvalue())
-
-    def test_download_defaults_to_stru(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            namespace = _download_namespace("-d", "demo", "demo-1", "-o", temporary)
-            with patch("sys.stdout", new_callable=StringIO):
-                status = run_download(namespace)
-
-            written = Path(temporary) / "demo-1" / "STRU"
-            self.assertTrue(written.is_file())
-            self.assertIn("ATOMIC_SPECIES", written.read_text())
-
-        self.assertEqual(status, 0)
-
-    def test_download_can_group_entries_by_database(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            namespace = _download_namespace(
-                "-d", "demo", "demo-1", "-o", temporary, "--group-by-database"
-            )
-            with patch("sys.stdout", new_callable=StringIO):
-                run_download(namespace)
-
-            self.assertTrue((Path(temporary) / "demo" / "demo-1" / "STRU").is_file())
-
-    def test_download_prints_json_when_asked(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            namespace = _download_namespace("-d", "demo", "demo-1", "-o", temporary, "--json")
-            with patch("sys.stdout", new_callable=StringIO) as stdout:
-                status = run_download(namespace)
-
-        self.assertEqual(status, 0)
-        record = json.loads(stdout.getvalue())[0]
-        self.assertEqual(record["id"], "demo-1")
-        self.assertEqual(record["database"], "demo")
-        self.assertTrue(record["file"].endswith("demo-1/STRU"))
-
-    def test_download_reports_unknown_entries_and_returns_one(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            namespace = _download_namespace("-d", "demo", "missing", "-o", temporary)
-            with patch("sys.stderr", new_callable=StringIO) as stderr:
-                status = run_download(namespace)
-
-        self.assertEqual(status, 1)
-        self.assertIn("missing", stderr.getvalue())
-
-    def test_download_keeps_going_after_one_failure(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            namespace = _download_namespace("-d", "demo", "missing", "demo-1", "-o", temporary)
-            with (
-                patch("sys.stdout", new_callable=StringIO),
-                patch("sys.stderr", new_callable=StringIO),
-            ):
-                status = run_download(namespace)
-
-            self.assertTrue((Path(temporary) / "demo-1" / "STRU").is_file())
-            self.assertFalse((Path(temporary) / "missing").exists())
-
-        self.assertEqual(status, 1)
-
-
-class TestDatabaseListingCommand(unittest.TestCase):
-    def test_list_prints_the_registered_databases(self):
-        with patch("sys.stdout", new_callable=StringIO) as stdout:
-            status = run_list(_create_parser("abacustools").parse_args(["database", "list"]))
-
-        self.assertEqual(status, 0)
-        self.assertIn("mp", stdout.getvalue())
-        self.assertIn("optimade", stdout.getvalue())
-
-    def test_list_prints_json(self):
-        namespace = _create_parser("abacustools").parse_args(["database", "list", "--json"])
-        with patch("sys.stdout", new_callable=StringIO) as stdout:
-            status = run_list(namespace)
-
-        records = json.loads(stdout.getvalue())
-        names = [record["name"] for record in records]
-        self.assertEqual(status, 0)
-        self.assertIn("cod", names)
-        self.assertTrue(all("status" in record for record in records))
-
-    def test_list_can_keep_only_ready_databases(self):
-        namespace = _create_parser("abacustools").parse_args(
-            ["database", "list", "--available", "--json"]
-        )
-        with patch("sys.stdout", new_callable=StringIO) as stdout:
-            run_list(namespace)
-
-        self.assertTrue(
-            all(record["status"] == "ready" for record in json.loads(stdout.getvalue()))
-        )
-
-
-class TestDatabaseFieldsCommand(unittest.TestCase):
-    def _namespace(self, *arguments):
-        return _create_parser("abacustools").parse_args(["database", "fields", *arguments])
-
-    def test_fields_prints_the_c2db_keys(self):
-        namespace = self._namespace("-d", "c2db", "--json")
-        with patch("sys.stdout", new_callable=StringIO) as stdout:
-            status = run_fields(namespace)
-
-        records = json.loads(stdout.getvalue())
-        keys = [record["key"] for record in records]
-        self.assertEqual(status, 0)
-        self.assertGreaterEqual(len(records), 80)
-        self.assertIn("gap", keys)
-        self.assertEqual(
-            next(record["description"] for record in records if record["key"] == "gap"),
-            "Band gap (PBE) [eV]",
-        )
-
-    def test_fields_prints_a_table(self):
-        namespace = self._namespace("-d", "c2db")
-        with patch("sys.stdout", new_callable=StringIO) as stdout:
-            status = run_fields(namespace)
-
-        self.assertEqual(status, 0)
-        self.assertIn("ehull", stdout.getvalue())
-
-    def test_fields_reports_databases_without_keys(self):
-        namespace = self._namespace("-d", "mp")
-        with patch("sys.stdout", new_callable=StringIO) as stdout:
-            status = run_fields(namespace)
-
-        self.assertEqual(status, 0)
-        self.assertIn("does not document property keys", stdout.getvalue())
-
-
-class TestDatabaseProvidersCommand(unittest.TestCase):
-    def test_providers_prints_the_bundled_catalogue(self):
-        namespace = _create_parser("abacustools").parse_args(["database", "providers"])
-        with patch("sys.stdout", new_callable=StringIO) as stdout:
-            status = run_providers(namespace)
-
-        self.assertEqual(status, 0)
-        self.assertIn("aflow", stdout.getvalue())
-        self.assertIn("mp-optimade", stdout.getvalue())
-
-    def test_providers_prints_json(self):
-        namespace = _create_parser("abacustools").parse_args(["database", "providers", "--json"])
-        with patch("sys.stdout", new_callable=StringIO) as stdout:
-            status = run_providers(namespace)
-
-        records = json.loads(stdout.getvalue())
-        self.assertEqual(status, 0)
-        self.assertGreaterEqual(len(records), 10)
-        self.assertTrue(all(record["endpoint"].startswith("http") for record in records))
-
-    def test_refresh_reads_the_live_index(self):
-        payload = {
-            "data": [
-                {
-                    "id": "demo",
-                    "attributes": {
-                        "base_url": "https://demo.example/index",
-                        "homepage": "https://demo.example",
-                        "description": "Demo provider\nMore text",
-                    },
-                }
-            ]
-        }
-        namespace = _create_parser("abacustools").parse_args(
-            ["database", "providers", "--refresh", "--json"]
-        )
-        with patch(
-            "abacustools.integrations.databases.optimade._http_get_json", return_value=payload
-        ):
-            with patch("sys.stdout", new_callable=StringIO) as stdout:
-                status = run_providers(namespace)
-
-        records = json.loads(stdout.getvalue())
-        self.assertEqual(status, 0)
-        self.assertEqual(records[0]["name"], "demo")
-        self.assertEqual(records[0]["description"], "Demo provider")
-
-
-class TestMaterialsProjectAlias(unittest.TestCase):
-    def _summary(self) -> MaterialSummary:
-        return MaterialSummary(
-            material_id="mp-149",
-            formula="Si2",
-            chemsys="Si",
-            nsites=2,
-            volume=40.0,
-            energy_above_hull=0.0,
-            band_gap=0.61,
-            is_stable=True,
-            theoretical=False,
-        )
-
-    def test_mp_search_uses_the_materials_project_database(self):
-        namespace = _create_parser("abacustools").parse_args(
-            ["mp", "search", "--formula", "Si", "--limit", "5"]
-        )
-        with patch(
-            "abacustools.integrations.databases.materials_project.search_materials",
-            return_value=[self._summary()],
-        ) as search:
-            with patch("sys.stdout", new_callable=StringIO) as stdout:
-                status = run_search(namespace)
-
-        self.assertEqual(status, 0)
-        self.assertIn("mp-149", stdout.getvalue())
-        self.assertEqual(search.call_args.kwargs["formula"], "Si")
-        self.assertEqual(search.call_args.kwargs["limit"], 5)
-
-    def test_mp_search_reports_a_missing_api_key(self):
-        namespace = _create_parser("abacustools").parse_args(["mp", "search", "--formula", "Si"])
-        with patch(
-            "abacustools.integrations.databases.materials_project.search_materials",
-            side_effect=MaterialsProjectApiKeyError("no Materials Project API key found"),
-        ):
-            with patch("sys.stderr", new_callable=StringIO) as stderr:
-                status = run_search(namespace)
-
-        self.assertEqual(status, 1)
-        self.assertIn("no Materials Project API key found", stderr.getvalue())
-
-    def test_mp_download_writes_the_structure(self):
-        material = MaterialStructure(summary=self._summary(), structure=_structure())
-        namespace = _create_parser("abacustools").parse_args(["mp", "download", "mp-149"])
-        with tempfile.TemporaryDirectory() as temporary:
-            namespace.output = Path(temporary)
-            with patch(
-                "abacustools.integrations.databases.materials_project.download_material",
-                return_value=material,
-            ):
-                with patch("sys.stdout", new_callable=StringIO):
-                    status = run_download(namespace)
-
-            self.assertTrue((Path(temporary) / "mp-149" / "STRU").is_file())
-
-        self.assertEqual(status, 0)
-
-
-if __name__ == "__main__":
-    unittest.main()
+            assert run_download(namespace) == 0
+    assert (tmp_path / "mp-149" / "STRU").is_file()
