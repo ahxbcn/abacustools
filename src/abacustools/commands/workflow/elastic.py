@@ -6,14 +6,16 @@ import argparse
 import json
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
 
 import numpy as np
 
 from abacustools.data.elastic import (
+    directional_moduli_summary,
     elastic_moduli,
     fit_stress_strain,
     fit_independent_stress_strain,
+    in_plane_voigt_indices,
     independent_component_count,
     independent_components,
     independent_strain_modes,
@@ -21,7 +23,10 @@ from abacustools.data.elastic import (
     stress_voigt,
     symmetrize_elastic_tensor,
     symmetrization_residual,
+    two_dimensional_moduli,
+    two_dimensional_tensor,
 )
+from abacustools.data.dimensionality import classify_dimensionality
 from abacustools.data.symmetry import crystallographic_symmetry
 from abacustools.data.versions import default_version
 
@@ -87,6 +92,16 @@ def _register_prepare_arguments(parser: argparse.ArgumentParser) -> None:
             "strain directions, 'independent' applies one representative per "
             "symmetry orbit of strain directions, which is enough to "
             "determine the independent constants, default: full."
+        ),
+    )
+    parser.add_argument(
+        "--dimension",
+        choices=("auto", "3d", "2d"),
+        default="auto",
+        help=(
+            "Dimensionality of the system. 'auto' looks for a vacuum "
+            "direction and strains only the periodic axes when it finds one, "
+            "'3d' always uses all six strain directions, default: auto."
         ),
     )
     parser.add_argument(
@@ -198,7 +213,12 @@ def _deformed_structure(structure, pymatgen_structure):
     return deformed
 
 
-def _structure_symmetry(structure, symprec: float) -> dict[str, Any]:
+def _structure_symmetry(
+    structure,
+    symprec: float,
+    *,
+    components: Optional[Iterable[int]] = None,
+) -> dict[str, Any]:
     """Return the symmetry block recorded for a reference structure."""
     analysis = crystallographic_symmetry(structure, symprec=symprec)
     if not analysis.get("available"):
@@ -216,8 +236,47 @@ def _structure_symmetry(structure, symprec: float) -> dict[str, Any]:
         "lattice_type": analysis.get("lattice_type"),
         "inversion_symmetry": analysis.get("inversion_symmetry"),
         "operations": int(len(rotations)),
-        "independent_constants": independent_component_count(rotations),
+        "independent_constants": independent_component_count(
+            rotations, components=components
+        ),
+        "considered_components": (
+            None if components is None else [int(value) for value in components]
+        ),
         "symprec": float(symprec),
+    }
+
+
+def _dimension_block(structure, dimension: str) -> dict[str, Any]:
+    """Return the dimensionality block recorded for a reference structure.
+
+    A slab has vacuum along one direction, and its elastic constants live in
+    the strain components of the two periodic axes only; the components that
+    involve the vacuum direction are set by the cell, not by the material.
+    """
+    if dimension == "3d":
+        return {"dimensionality": "bulk", "vacuum_axis": None, "in_plane_modes": None}
+    analysis = classify_dimensionality(structure)
+    detected = str(analysis.get("dimensionality", "bulk"))
+    if dimension == "2d" and detected != "slab":
+        raise RuntimeError(
+            "--dimension 2d needs a slab with vacuum along one direction, "
+            f"but the reference cell is classified as {detected}"
+        )
+    if detected != "slab":
+        return {
+            "dimensionality": detected,
+            "vacuum_axis": None,
+            "in_plane_modes": None,
+        }
+    direction = str(analysis["vacuum_directions"][0])
+    axis = {"a": 0, "b": 1, "c": 2}[direction]
+    length = float(np.linalg.norm(np.asarray(structure.cell, dtype=float)[axis]))
+    return {
+        "dimensionality": "slab",
+        "vacuum_direction": direction,
+        "vacuum_axis": axis,
+        "cell_height": length,
+        "in_plane_modes": in_plane_voigt_indices(axis),
     }
 
 
@@ -235,12 +294,18 @@ def prepare(args: argparse.Namespace) -> int:
     elastic_inputs["cal_stress"] = 1
     kpoint_file = kpoint_filename(job, inputs)
 
-    symmetry = _structure_symmetry(structure, DEFAULT_SYMPREC)
+    dimension = _dimension_block(structure, getattr(args, "dimension", "auto"))
+    symmetry = _structure_symmetry(
+        structure,
+        DEFAULT_SYMPREC,
+        components=dimension.get("in_plane_modes"),
+    )
     rotations = point_group_operations(structure, symprec=DEFAULT_SYMPREC)
+    allowed = dimension.get("in_plane_modes") or list(range(6))
     if args.strains == "independent":
-        strain_modes = independent_strain_modes(rotations)
+        strain_modes = independent_strain_modes(rotations, allowed=allowed)
     else:
-        strain_modes = list(range(6))
+        strain_modes = list(allowed)
     generated = _pymatgen_deformations(
         structure, args.norm, args.shear, modes=strain_modes
     )
@@ -252,6 +317,15 @@ def prepare(args: argparse.Namespace) -> int:
     print(f"  normal strain: {args.norm}")
     print(f"  shear strain: {args.shear}")
     print(f"  calculation: {elastic_inputs['calculation']}")
+    print(
+        f"  dimensionality: {dimension['dimensionality']}"
+        + (
+            f" (vacuum along {dimension['vacuum_direction']}, "
+            f"cell height {dimension['cell_height']:.3f} Angstrom)"
+            if dimension.get("vacuum_direction")
+            else ""
+        )
+    )
     print(
         f"  strain modes: {len(strain_modes)} of 6 "
         f"({', '.join(_voigt_labels(strain_modes))})"
@@ -298,6 +372,7 @@ def prepare(args: argparse.Namespace) -> int:
         strains=strain_metadata,
         strain_modes=strain_modes,
         strains_mode=args.strains,
+        dimension=dimension,
         symmetry=symmetry,
         norm=float(args.norm),
         shear=float(args.shear),
@@ -333,17 +408,20 @@ def _fit_tensor(
     strains: Iterable[dict[str, Any]],
     stresses: Iterable[np.ndarray],
     equilibrium_stress: np.ndarray,
+    *,
+    indices: Optional[Iterable[int]] = None,
 ) -> np.ndarray:
     """Fit the unconstrained 6x6 stress-strain tensor in GPa."""
     strain_values, stress_values = _strain_stress_values(
         strains, stresses, equilibrium_stress
     )
-    if strain_values.shape[0] < 24:
+    wanted = list(range(6)) if indices is None else [int(index) for index in indices]
+    if strain_values.shape[0] < 4 * len(wanted):
         raise ValueError(
             "the unconstrained fit needs the full strain set; prepare the job "
             "with --strains full or postprocess it with --fit independent"
         )
-    return fit_stress_strain(strain_values, stress_values)
+    return fit_stress_strain(strain_values, stress_values, indices=wanted)
 
 
 def _strain_stress_values(
@@ -402,6 +480,8 @@ def postprocess(args: argparse.Namespace) -> int:
         strain_modes = list(range(6))
 
     require_relaxation = not bool(manifest.get("norelax", False))
+    dimension = manifest.get("dimension") or {}
+    in_plane = dimension.get("in_plane_modes") or None
     symmetry = _symmetry_block(job, manifest, args.symprec)
     print(f"  job: {job}")
     print(
@@ -435,13 +515,15 @@ def postprocess(args: argparse.Namespace) -> int:
             strains, deformed_stresses, equilibrium_stress
         )
         tensor = fit_independent_stress_strain(
-            strain_values, stress_values, rotations
+            strain_values, stress_values, rotations, components=in_plane
         )
         raw = tensor
         residual = 0.0
         print("  fit: independent constants")
     else:
-        raw = _fit_tensor(strains, deformed_stresses, equilibrium_stress)
+        raw = _fit_tensor(
+            strains, deformed_stresses, equilibrium_stress, indices=in_plane
+        )
         if args.symmetrize:
             tensor = symmetrize_elastic_tensor(raw, rotations)
         else:
@@ -451,19 +533,42 @@ def postprocess(args: argparse.Namespace) -> int:
         "elastic_tensor": tensor.tolist(),
         "elastic_tensor_raw": raw.tolist(),
         "symmetrization_residual": residual,
-        "independent_constants": independent_components(tensor, rotations),
+        "independent_constants": independent_components(
+            tensor, rotations, components=in_plane
+        ),
         "symmetry": symmetry,
         "fit": {
             "method": method,
             "strain_modes": [int(mode) for mode in strain_modes],
             "strained_jobs": len(strains),
             "independent_constants": len(
-                independent_components(tensor, rotations)
+                independent_components(tensor, rotations, components=in_plane)
             ),
         },
         **elastic_moduli(tensor),
         "stress_unit": "GPa",
     }
+    if dimension.get("dimensionality") == "slab":
+        axis = int(dimension["vacuum_axis"])
+        height = float(dimension["cell_height"])
+        block = two_dimensional_tensor(tensor, axis, height=height)
+        curve = two_dimensional_moduli(block)
+        summary = directional_moduli_summary(curve)
+        result["elastic_tensor_2d"] = block.tolist()
+        result["two_dimensional"] = {
+            "vacuum_direction": dimension.get("vacuum_direction"),
+            "cell_height": height,
+            "cell_height_unit": "Angstrom",
+            "unit": "N/m",
+            "in_plane_modes": [int(mode) for mode in dimension["in_plane_modes"]],
+            "independent_constants": {
+                name: value * height * 0.1
+                for name, value in result["independent_constants"].items()
+            },
+            "moduli": summary,
+            "moduli_curve": curve,
+        }
+        result["moduli_unit"] = "N/m"
 
     output = Path(args.output)
     if not output.is_absolute():
@@ -487,6 +592,30 @@ def postprocess(args: argparse.Namespace) -> int:
         "  independent constants (GPa): "
         + ", ".join(f"{name} = {value:.6f}" for name, value in components.items())
     )
+    if "two_dimensional" in result:
+        block = np.asarray(result["elastic_tensor_2d"], dtype=float)
+        layer = result["two_dimensional"]
+        print(
+            f"  in-plane block (N/m), vacuum along "
+            f"{layer['vacuum_direction']}, cell height {layer['cell_height']:.3f} Angstrom:"
+        )
+        for row in block:
+            print("    " + " ".join(f"{value: .6f}" for value in row))
+        print(
+            "  independent constants (N/m): "
+            + ", ".join(
+                f"{name} = {value:.6f}"
+                for name, value in layer["independent_constants"].items()
+            )
+        )
+        moduli = layer["moduli"]
+        print(
+            f"  in-plane Young's modulus: {moduli['young_modulus_min']:.4f} to "
+            f"{moduli['young_modulus_max']:.4f} N/m "
+            f"(anisotropy {moduli['anisotropy']:.4f}), "
+            f"Poisson ratio: {moduli['poisson_ratio_min']:.4f} to "
+            f"{moduli['poisson_ratio_max']:.4f}"
+        )
     for name in ("bulk_modulus", "shear_modulus", "young_modulus"):
         print(f"  {name}: {result[name]:.8f} GPa")
     # The Poisson ratio is dimensionless, so it carries no unit.

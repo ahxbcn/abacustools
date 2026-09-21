@@ -8,6 +8,7 @@ from pymatgen.core import Lattice, Structure
 
 from abacustools.data.elastic import (
     deformation_gradient,
+    directional_moduli_summary,
     elastic_component_names,
     elastic_moduli,
     energy_strain_patterns,
@@ -17,6 +18,7 @@ from abacustools.data.elastic import (
     independent_component_count,
     independent_components,
     independent_strain_modes,
+    in_plane_voigt_indices,
     matrix_from_voigt,
     point_group_operations,
     project_tensor,
@@ -25,6 +27,8 @@ from abacustools.data.elastic import (
     symmetrize_elastic_tensor,
     symmetrization_residual,
     tensor4_from_voigt,
+    two_dimensional_moduli,
+    two_dimensional_tensor,
     voigt_from_tensor4,
 )
 from abacustools.io.stru import AbacusSTRU
@@ -393,6 +397,103 @@ def test_energy_strain_rejects_a_strain_set_that_is_too_small() -> None:
         fit_energy_strain(
             np.asarray(strains), np.asarray(energies), volume, rotations
         )
+
+
+@pytest.mark.parametrize(
+    ("axis", "expected"),
+    [(0, [1, 2, 3]), (1, [0, 2, 4]), (2, [0, 1, 5])],
+)
+def test_in_plane_modes_of_a_slab(axis: int, expected: list[int]) -> None:
+    assert in_plane_voigt_indices(axis) == expected
+
+
+def test_two_dimensional_block_scales_to_newton_per_metre() -> None:
+    tensor = np.zeros((6, 6), dtype=float)
+    tensor[0, 0] = tensor[1, 1] = 100.0
+    tensor[0, 1] = tensor[1, 0] = 20.0
+    tensor[5, 5] = 40.0
+    tensor[2, 2] = 3.0  # vacuum direction, must not reach the block
+    tensor[3, 3] = tensor[4, 4] = 0.5
+
+    block = two_dimensional_tensor(tensor, 2, height=20.0)
+
+    np.testing.assert_allclose(
+        block, [[200.0, 40.0, 0.0], [40.0, 200.0, 0.0], [0.0, 0.0, 80.0]]
+    )
+    assert two_dimensional_tensor(tensor, 2).shape == (3, 3)
+    assert two_dimensional_tensor(tensor, 0).shape == (3, 3)
+
+
+def test_hexagonal_layer_has_an_isotropic_in_plane_response() -> None:
+    c11, c12 = 350.0, 60.0
+    block = np.array(
+        [
+            [c11, c12, 0.0],
+            [c12, c11, 0.0],
+            [0.0, 0.0, 0.5 * (c11 - c12)],
+        ]
+    )
+
+    summary = directional_moduli_summary(two_dimensional_moduli(block))
+
+    assert summary["anisotropy"] == pytest.approx(1.0, abs=1e-9)
+    assert summary["young_modulus_max"] == pytest.approx(
+        (c11**2 - c12**2) / c11, rel=1e-9
+    )
+    assert summary["poisson_ratio_max"] == pytest.approx(c12 / c11, rel=1e-9)
+    assert summary["poisson_ratio_min"] == pytest.approx(c12 / c11, rel=1e-9)
+
+
+def test_oblique_layer_is_anisotropic() -> None:
+    block = np.array(
+        [
+            [120.0, 30.0, 12.0],
+            [30.0, 140.0, -8.0],
+            [12.0, -8.0, 45.0],
+        ]
+    )
+
+    summary = directional_moduli_summary(two_dimensional_moduli(block))
+
+    assert summary["anisotropy"] > 1.2
+    assert summary["young_modulus_max_angle"] != summary["young_modulus_min_angle"]
+
+
+def test_fit_can_restrict_the_components_to_the_in_plane_set() -> None:
+    tensor = np.zeros((6, 6), dtype=float)
+    tensor[0, 0] = tensor[1, 1] = 120.0
+    tensor[0, 1] = tensor[1, 0] = 30.0
+    tensor[5, 5] = 45.0
+    tensor[2, 2] = 7.0
+    tensor[3, 3] = tensor[4, 4] = 2.0
+    strains, stresses = [], []
+    for component in (0, 1, 5):
+        for amplitude in (-0.01, -0.005, 0.005, 0.01):
+            strain = np.zeros(6, dtype=float)
+            strain[component] = amplitude
+            strains.append(strain)
+            stresses.append(tensor @ strain)
+
+    fitted = fit_stress_strain(
+        np.asarray(strains), np.asarray(stresses), indices=[0, 1, 5]
+    )
+
+    np.testing.assert_allclose(fitted[:2, :2], tensor[:2, :2], atol=1e-10)
+    assert fitted[5, 5] == pytest.approx(45.0)
+    assert fitted[2, 2] == 0.0
+    assert fitted[3, 3] == 0.0
+
+
+def test_independent_modes_can_be_restricted_to_the_plane() -> None:
+    rotations = _rotations(HEXAGONAL)
+
+    modes = independent_strain_modes(rotations, allowed=[0, 1, 5])
+
+    # In the plane the hexagonal cell has C66 = (C11 - C12) / 2, so a single
+    # normal strain determines both independent constants.
+    assert modes == [0]
+    assert independent_component_count(rotations, components=[0, 1, 5]) == 2
+    assert independent_component_count(rotations) == 5  # the three dimensional count
 
 
 def test_hexagonal_projection_imposes_the_c66_relation() -> None:

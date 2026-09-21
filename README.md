@@ -866,6 +866,25 @@ Use `--no-symmetrize` to keep the raw fit; `--symprec` sets the tolerance of
 the symmetry analysis, which defaults to 0.01 Angstrom so that a relaxed cell
 is still recognised as symmetric.
 
+A two dimensional material is recognised automatically: when the reference
+cell has vacuum along one direction, only the strain components of the two
+periodic axes are prepared and fitted, because the components that involve the
+vacuum direction are set by the cell rather than by the material. The report
+then carries the in-plane block in `elastic_tensor_2d`, converted to the two
+dimensional unit N/m with the cell height along the vacuum direction, its
+independent constants, and the directional in-plane Young's modulus and
+Poisson ratio:
+
+```text
+abacustools workflow elastic prepare -j JOB --dimension auto --strains independent
+abacustools workflow elastic postprocess -j JOB
+```
+
+`--dimension 3d` forces the three dimensional treatment, and `--dimension 2d`
+refuses a cell without vacuum. For a hexagonal sheet the in-plane symmetry
+leaves two independent constants, so a single strain direction is enough and
+the run needs five calculations instead of twenty five.
+
 For a crystal with symmetry there is a second, cheaper route: strain only one
 representative of every symmetry orbit of strain directions and fit the
 independent constants directly, instead of straining all six directions and

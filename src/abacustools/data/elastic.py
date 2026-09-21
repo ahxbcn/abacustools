@@ -28,7 +28,7 @@ Properties of Crystals* (1985), and Mouhat & Coudert, Phys. Rev. B **90**,
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 
@@ -290,6 +290,7 @@ def independent_components(
     rotations: np.ndarray,
     *,
     tolerance: float = DEFAULT_TOLERANCE,
+    components: Optional[Iterable[int]] = None,
 ) -> Dict[str, float]:
     """Return the components a symmetry class leaves independent.
 
@@ -304,6 +305,9 @@ def independent_components(
         voigt: Six-by-six stiffness matrix, in GPa.
         rotations: Point group rotations of the reference structure.
         tolerance: Components below this magnitude are left out, in GPa.
+        components: Voigt indices of the components to report; ``None``
+            reports all six, and a two dimensional material passes its
+            in-plane set.
 
     Returns:
         Mapping of component names such as ``C11`` to their GPa values.
@@ -311,7 +315,7 @@ def independent_components(
     matrix = np.asarray(voigt, dtype=float)
     if matrix.shape != (6, 6):
         raise ValueError("an elastic tensor must be a 6x6 matrix")
-    _, pairs = independent_basis(rotations)
+    _, pairs = independent_basis(rotations, components=components)
     components: Dict[str, float] = {}
     for first, second in pairs:
         value = 0.5 * (matrix[first, second] + matrix[second, first])
@@ -320,7 +324,11 @@ def independent_components(
     return components
 
 
-def independent_component_count(rotations: np.ndarray) -> int:
+def independent_component_count(
+    rotations: np.ndarray,
+    *,
+    components: Optional[Iterable[int]] = None,
+) -> int:
     """Return how many elastic constants a point group leaves independent.
 
     The count is the rank of the projection, which is obtained by projecting
@@ -328,11 +336,14 @@ def independent_component_count(rotations: np.ndarray) -> int:
 
     Args:
         rotations: Point group rotations of the reference structure.
+        components: Voigt indices of the components to consider; ``None``
+            considers all six, and a two dimensional material passes its
+            in-plane set.
 
     Returns:
         The number of independent elastic constants.
     """
-    basis, _ = independent_basis(rotations)
+    basis, _ = independent_basis(rotations, components=components)
     return len(basis)
 
 
@@ -340,6 +351,7 @@ def independent_basis(
     rotations: np.ndarray,
     *,
     tolerance: float = RANK_TOLERANCE,
+    components: Optional[Iterable[int]] = None,
 ) -> Tuple[List[np.ndarray], List[Tuple[int, int]]]:
     """Return a basis of the elastic tensors a point group allows.
 
@@ -351,6 +363,10 @@ def independent_basis(
     Args:
         rotations: Point group rotations of the reference structure.
         tolerance: Relative tolerance of the rank test.
+        components: Voigt indices of the components the basis may use.
+            ``None`` uses all six; a two dimensional material passes its
+            in-plane set, which reduces the count to the two dimensional
+            independent constants.
 
     Returns:
         The matrices of the basis, and the pair of Voigt indices of the
@@ -360,7 +376,12 @@ def independent_basis(
     pairs: List[Tuple[int, int]] = []
     flat: List[np.ndarray] = []
     rank = 0
+    allowed = (
+        None if components is None else {int(component) for component in components}
+    )
     for first, second in _upper_triangle_pairs():
+        if allowed is not None and (first not in allowed or second not in allowed):
+            continue
         element = np.zeros((6, 6), dtype=float)
         element[first, second] = 1.0
         element[second, first] = 1.0
@@ -437,6 +458,7 @@ def independent_strain_modes(
     rotations: np.ndarray,
     *,
     tolerance: float = RANK_TOLERANCE,
+    allowed: Optional[Iterable[int]] = None,
 ) -> List[int]:
     """Return the strain directions needed for the independent constants.
 
@@ -452,6 +474,9 @@ def independent_strain_modes(
     Args:
         rotations: Point group rotations of the reference structure.
         tolerance: Relative tolerance of the rank test.
+        allowed: Voigt indices the strains may be taken from.  ``None`` allows
+            all six; a two dimensional material passes its in-plane set, so
+            that only those directions are strained.
 
     Returns:
         The Voigt indices of the strain directions, in increasing order.
@@ -461,11 +486,16 @@ def independent_strain_modes(
             every independent constant, which cannot happen for a point group
             of a three-dimensional crystal.
     """
-    basis, _ = independent_basis(rotations, tolerance=tolerance)
+    basis, _ = independent_basis(
+        rotations, tolerance=tolerance, components=allowed
+    )
     stacked: List[np.ndarray] = []
     rank = 0
     modes: List[int] = []
-    for index in range(6):
+    candidates = (
+        list(range(6)) if allowed is None else [int(index) for index in allowed]
+    )
+    for index in candidates:
         direction = strain_voigt(strain_tensor(index))
         block = np.asarray([tensor @ direction for tensor in basis], dtype=float).T
         new_rank = numerical_rank(np.vstack(stacked + [block]), tolerance)
@@ -491,6 +521,7 @@ def fit_independent_stress_strain(
     *,
     equilibrium_stress: Optional[np.ndarray] = None,
     tolerance: float = RANK_TOLERANCE,
+    components: Optional[Iterable[int]] = None,
 ) -> np.ndarray:
     """Fit only the independent constants of a stiffness matrix.
 
@@ -508,6 +539,9 @@ def fit_independent_stress_strain(
         equilibrium_stress: Stress of the unstrained cell, in Voigt form and
             in GPa, subtracted from every stress before fitting.
         tolerance: Relative tolerance of the rank test that builds the basis.
+        components: Voigt indices of the components the fit may use; ``None``
+            uses all six, and a two dimensional material passes its in-plane
+            set.
 
     Returns:
         The 6x6 stiffness matrix, in GPa, following ``sigma_i = C_ij eps_j``.
@@ -528,7 +562,9 @@ def fit_independent_stress_strain(
             raise ValueError("the equilibrium stress needs six components")
         stresses = stresses - reference
 
-    basis, pairs = independent_basis(rotations, tolerance=tolerance)
+    basis, pairs = independent_basis(
+        rotations, tolerance=tolerance, components=components
+    )
     design = np.zeros((strains.shape[0] * 6, len(basis)), dtype=float)
     target = np.zeros(strains.shape[0] * 6, dtype=float)
     for state, (strain, stress) in enumerate(zip(strains, stresses)):
@@ -802,11 +838,130 @@ def elastic_moduli(tensor: np.ndarray) -> Dict[str, float]:
     }
 
 
+def in_plane_voigt_indices(aperiodic_axis: int) -> List[int]:
+    """Return the Voigt indices of the periodic directions of a slab.
+
+    A two dimensional material is periodic along two axes and has vacuum along
+    the third, so only the strain components of the periodic pair, and the
+    shear between them, carry information: for vacuum along ``c`` those are
+    ``xx``, ``yy`` and ``xy``.
+
+    Args:
+        aperiodic_axis: Index of the vacuum direction, 0 to 2.
+
+    Returns:
+        The Voigt indices, in increasing order.
+    """
+    if aperiodic_axis not in (0, 1, 2):
+        raise ValueError("the vacuum direction runs from 0 to 2")
+    periodic = [axis for axis in (0, 1, 2) if axis != aperiodic_axis]
+    return sorted(periodic + [voigt_index(*periodic)])
+
+
+def two_dimensional_tensor(
+    tensor: np.ndarray,
+    aperiodic_axis: int,
+    *,
+    height: Optional[float] = None,
+) -> np.ndarray:
+    """Return the in-plane block of a stiffness matrix.
+
+    Args:
+        tensor: Six-by-six stiffness matrix, in GPa (or a 3x3 in-plane one,
+            which is returned unchanged apart from the scaling).
+        aperiodic_axis: Index of the vacuum direction, 0 to 2.
+        height: Length of the cell along the vacuum direction, in Angstrom.
+            When given, the block is converted to the two dimensional units
+            N/m, ``1 GPa Angstrom = 0.1 N/m``.
+
+    Returns:
+        The in-plane stiffness block: ``C11``, ``C22`` and ``C12`` for vacuum
+        along ``c``, in GPa or N/m.
+    """
+    values = np.asarray(tensor, dtype=float)
+    indices = in_plane_voigt_indices(aperiodic_axis)
+    if values.shape == (6, 6):
+        block = values[np.ix_(indices, indices)]
+    elif values.shape == (3, 3):
+        block = values
+    else:
+        raise ValueError("expected a 6x6 stiffness matrix or its 3x3 in-plane block")
+    if height is None:
+        return block
+    if not np.isfinite(height) or height <= 0.0:
+        raise ValueError("the cell height must be positive")
+    return block * height * 0.1
+
+
+def two_dimensional_moduli(
+    tensor: np.ndarray,
+    angles: Iterable[float] = tuple(range(0, 360, 5)),
+) -> List[Dict[str, float]]:
+    """Return the directional Young's modulus and Poisson ratio of a layer.
+
+    The in-plane block is interpreted with the engineering convention of a two
+    dimensional tensor, whose Voigt order is the two normal strains followed
+    by their shear.  For a direction ``n = (cos t, sin t)`` a uniaxial stress
+    ``sigma0 n n`` gives ``E = sigma0 / (n e n)`` and
+    ``nu = -(t e t) / (n e n)`` with ``t`` perpendicular to ``n``.
+
+    Args:
+        tensor: Three-by-three in-plane stiffness block, in N/m or GPa.
+        angles: Direction angles in degrees, measured from the first periodic
+            axis.
+
+    Returns:
+        One mapping per angle with ``angle_deg``, ``young_modulus`` and
+        ``poisson_ratio``, in the unit of the input.
+    """
+    values = np.asarray(tensor, dtype=float)
+    if values.shape != (3, 3):
+        raise ValueError("a two dimensional stiffness matrix must be 3x3")
+    compliance = np.linalg.inv(values)
+    rows = []
+    for angle in angles:
+        radians = np.radians(float(angle))
+        cosine, sine = np.cos(radians), np.sin(radians)
+        normal = np.array([cosine * cosine, sine * sine, cosine * sine])
+        transverse = np.array([sine * sine, cosine * cosine, -cosine * sine])
+        strain_normal = float(normal @ compliance @ normal)
+        strain_transverse = float(transverse @ compliance @ normal)
+        rows.append(
+            {
+                "angle_deg": float(angle),
+                "young_modulus": 1.0 / strain_normal,
+                "poisson_ratio": -strain_transverse / strain_normal,
+            }
+        )
+    return rows
+
+
+def directional_moduli_summary(rows: Iterable[Dict[str, float]]) -> Dict[str, float]:
+    """Return the extrema of a directional moduli curve."""
+    values = list(rows)
+    if not values:
+        raise ValueError("a directional curve needs at least one angle")
+    stiffer = max(values, key=lambda row: row["young_modulus"])
+    softer = min(values, key=lambda row: row["young_modulus"])
+    poisson_max = max(values, key=lambda row: row["poisson_ratio"])
+    poisson_min = min(values, key=lambda row: row["poisson_ratio"])
+    return {
+        "young_modulus_max": stiffer["young_modulus"],
+        "young_modulus_max_angle": stiffer["angle_deg"],
+        "young_modulus_min": softer["young_modulus"],
+        "young_modulus_min_angle": softer["angle_deg"],
+        "anisotropy": stiffer["young_modulus"] / softer["young_modulus"],
+        "poisson_ratio_max": poisson_max["poisson_ratio"],
+        "poisson_ratio_min": poisson_min["poisson_ratio"],
+    }
+
+
 def fit_stress_strain(
     strain_values: np.ndarray,
     stress_values: np.ndarray,
     *,
     equilibrium_stress: Optional[np.ndarray] = None,
+    indices: Optional[Iterable[int]] = None,
 ) -> np.ndarray:
     """Fit the stiffness matrix from strain and stress data.
 
@@ -821,6 +976,9 @@ def fit_stress_strain(
         stress_values: Array of shape ``(n, 6)`` with the stresses, in GPa.
         equilibrium_stress: Stress of the unstrained cell, in Voigt form and
             in GPa, subtracted from every stress before fitting.
+        indices: Voigt indices of the strain components to fit.  ``None`` fits
+            all six; a two dimensional material passes its in-plane set, and
+            the components outside it stay zero.
 
     Returns:
         The 6x6 stiffness matrix, in GPa, following ``sigma_i = C_ij eps_j``.
@@ -838,7 +996,8 @@ def fit_stress_strain(
         stresses = stresses - reference
 
     tensor = np.zeros((6, 6), dtype=float)
-    for component in range(6):
+    wanted = list(range(6)) if indices is None else [int(index) for index in indices]
+    for component in wanted:
         mask = np.abs(strains[:, component]) > 0.0
         if np.count_nonzero(mask) < 2:
             raise ValueError(f"insufficient strain data for component {component}")
@@ -846,7 +1005,7 @@ def fit_stress_strain(
         # The strain states of a single Voigt component are uncoupled, but the
         # fit keeps the other components as regressors so that a strain set
         # that mixes them still gives the full stiffness matrix.
-        for other in range(6):
+        for other in wanted:
             if other == component:
                 continue
             if np.any(np.abs(strains[mask, other]) > 0.0):
