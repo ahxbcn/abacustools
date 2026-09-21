@@ -5,10 +5,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Sequence
 
 import numpy as np
 
+from abacustools.data.symmetry import space_group_operations
 from abacustools.io.abacus import ReadInput
 from abacustools.io.stru import AbacusSTRU, periodic_lattice
 
@@ -392,35 +393,272 @@ def calculate_density_matrix_k(wfc: np.ndarray, occupations: np.ndarray) -> np.n
 
 
 def read_kpoint_weights(kpoints_file: str | Path) -> np.ndarray:
-    """Read weights from the ``KPOINTS DIRECT_X ... WEIGHT`` table."""
+    """Read the weights printed in the ``KPOINTS DIRECT_X ... WEIGHT`` table."""
 
-    path = Path(kpoints_file)
-    _required_file(path, "k-point table")
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    table = next((i for i, line in enumerate(lines) if "KPOINTS" in line.upper() and "DIRECT_X" in line.upper()), None)
-    if table is None:
-        raise ValueError(f"{path}: cannot find KPOINTS DIRECT_X table")
-    weights: list[float] = []
-    for line in lines[table + 1 :]:
-        if not line.strip():
-            if weights:
+    table = read_kpoint_table(kpoints_file)
+    weights = np.asarray([kpoint.weight for kpoint in table.ibz], dtype=float)
+    if not len(weights) or not np.all(np.isfinite(weights)) or sum(weights) <= 0:
+        raise ValueError(f"{kpoints_file}: no valid k-point weights found")
+    return weights
+
+
+
+
+#: Distance tolerances in Angstrom tried when the space-group operations of a
+#: symmetry-reduced run are rebuilt from the structure; the tightest one that
+#: reproduces the k-point reduction of the run is used.
+SYMMETRY_TOLERANCES = (1e-5, 1e-4, 1e-3, 1e-2)
+
+
+@dataclass(frozen=True)
+class KPoint:
+    """One k-point in direct coordinates with the weight its file prints."""
+
+    direct: tuple[float, float, float]
+    weight: float
+
+
+@dataclass(frozen=True)
+class KPointTable:
+    """The k-points of an ABACUS run.
+
+    Attributes:
+        ibz: The computed k-points, in the order of the WFC and density-matrix
+            files.
+        mesh: The full k-mesh of a symmetry-reduced run, every point with the
+            one-based index of the computed k-point it belongs to. Empty when
+            ABACUS kept the whole mesh or reduced it by time reversal only.
+        kpoint_count: Number of k-points of the unreduced mesh, when the
+            output records it (the develop density matrices do).
+    """
+
+    ibz: tuple[KPoint, ...]
+    mesh: tuple[tuple[tuple[float, float, float], int], ...] = ()
+    kpoint_count: Optional[int] = None
+
+
+def _kpoint_rows(lines: list[str], marker: str, columns: int) -> list[list[str]]:
+    """Return the numeric rows of the k-point table that follows a marker."""
+    start = next((index for index, line in enumerate(lines) if marker in line), None)
+    if start is None:
+        return []
+    while start < len(lines) and "DIRECT_X" not in lines[start]:
+        start += 1
+    rows: list[list[str]] = []
+    for line in lines[start + 1 :]:
+        fields = line.split()
+        if not fields:
+            if rows:
                 break
             continue
-        tokens = line.split()
-        if len(tokens) < 5:
-            continue
         try:
-            index, weight = int(tokens[0]), _number(tokens[4])
+            [float(token) for token in fields[1:4]]
         except ValueError:
             continue
-        if index != len(weights) + 1 or weight < 0:
-            raise ValueError(f"{path}: invalid k-point row {line!r}")
+        if len(fields) == columns:
+            rows.append(fields)
+    return rows
+
+
+def read_kpoint_table(kpoints_file: str | Path) -> KPointTable:
+    """Read the ``kpoints`` file of an ABACUS output directory.
+
+    The file lists the computed k-points and, when ABACUS reduced the mesh by
+    symmetry, the full mesh with the index of the computed k-point every mesh
+    point belongs to.
+    """
+    path = _required_file(Path(kpoints_file), "k-point table")
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    ibz_rows = _kpoint_rows(lines, "KPOINTS", 5)
+    if not ibz_rows:
+        raise ValueError(f"{path}: cannot find KPOINTS DIRECT_X table")
+    ibz = tuple(
+        KPoint(tuple(_number(token) for token in row[1:4]), _number(row[4]))
+        for row in ibz_rows
+    )
+    mesh = tuple(
+        (tuple(_number(token) for token in row[1:4]), int(row[4]))
+        for row in _kpoint_rows(lines, "K-POINTS REDUCTION", 8)
+    )
+    return KPointTable(ibz, mesh)
+
+
+def read_develop_kpoints(files: Iterable[tuple[int, int, Path]]) -> KPointTable:
+    """Read the k-points recorded in the develop ``dm*_nao.txt`` headers."""
+    per_k: dict[int, KPoint] = {}
+    total: Optional[int] = None
+    for ik, _ispin, path in files:
+        if ik in per_k:
+            continue
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        counts = [int(line.split()[0]) for line in lines if "# total k points" in line]
+        direct = [line for line in lines if "# k point coordinate (direct)" in line]
+        weight = [line for line in lines if "# weight of this k point" in line]
+        if len(counts) < 2 or not direct or not weight:
+            raise ValueError(f"{path}: cannot read the k-point header")
+        if total is None:
+            total = counts[0]
+        per_k[ik] = KPoint(
+            tuple(_number(token) for token in direct[-1].split()[:3]),
+            _number(weight[-1].split()[0]),
+        )
+    return KPointTable(tuple(per_k[ik] for ik in sorted(per_k)), (), total)
+
+
+def _time_reversal_invariant(direct: Sequence[float], *, tolerance: float = 1e-8) -> bool:
+    """Return whether a k-point is its own time-reversed partner."""
+    return all(abs(2.0 * value - round(2.0 * value)) < tolerance for value in direct)
+
+
+def exact_kpoint_weights(table: KPointTable, *, printed_scale: float = 1.0) -> tuple[float, ...]:
+    """Return the weight of every computed k-point, free of file rounding.
+
+    The printed weights carry four decimals, so a run whose weights are 1/64,
+    6/64, ... would be summed with a small bias. The exact weights follow from
+    the symmetry of the reduction: the star sizes of a symmetry-reduced run,
+    one per k-point of a full mesh, and the time-reversal multiplicity of the
+    k-point in between.
+
+    Args:
+        table: k-points of the run.
+        printed_scale: Factor between the printed weight and the k-point
+            weight, which is two for the LTS wavefunctions of a spin-unpaired
+            run and one for its spin-paired ones.
+
+    Returns:
+        The weight of every computed k-point, in the file order.
+
+    Raises:
+        ValueError: If the weights do not reproduce the printed ones, which
+            happens when the output does not record the reduction.
+    """
+    if table.mesh:
+        counts = [0] * len(table.ibz)
+        for _point, index in table.mesh:
+            if not 1 <= index <= len(counts):
+                raise ValueError(f"k-point table refers to k-point {index}, which was not computed")
+            counts[index - 1] += 1
+    else:
+        uniform = True
+        printed = [kpoint.weight for kpoint in table.ibz]
+        if printed:
+            uniform = max(printed) - min(printed) <= 1e-4 * max(printed)
+        if uniform:
+            counts = [1] * len(table.ibz)
+        else:
+            counts = [1 if _time_reversal_invariant(kpoint.direct) else 2 for kpoint in table.ibz]
+    total = sum(counts)
+    if table.kpoint_count is not None and total != table.kpoint_count:
+        raise ValueError(
+            f"the k-points follow a mesh of {total} points but the output records "
+            f"{table.kpoint_count}; the reduction cannot be rebuilt from this output"
+        )
+    weights = []
+    for kpoint, count in zip(table.ibz, counts):
+        weight = count / total
+        if abs(weight * printed_scale - kpoint.weight) > 1e-4:
+            raise ValueError(
+                f"k-point {kpoint.direct} has weight {kpoint.weight} in the output "
+                f"but {weight:g} follows from the symmetry; rerun the calculation "
+                "with symmetry=0 or -1 to analyse it"
+            )
         weights.append(weight)
-    if not weights or not np.all(np.isfinite(weights)) or sum(weights) <= 0:
-        raise ValueError(f"{path}: no valid k-point weights found")
-    return np.asarray(weights, dtype=float)
+    return tuple(weights)
 
 
+def _mesh_permutations(table: KPointTable, structure: AbacusSTRU) -> list[tuple[int, ...]]:
+    """Return the atom permutation that reaches every mesh point from its k-point."""
+    coordinates = [np.asarray(kpoint.direct, dtype=float) for kpoint in table.ibz]
+    for symprec in SYMMETRY_TOLERANCES:
+        try:
+            operations = space_group_operations(structure, symprec=symprec)
+        except ValueError:
+            continue
+        permutations: list[tuple[int, ...]] = []
+        for point, index in table.mesh:
+            if not 1 <= index <= len(coordinates):
+                raise ValueError(f"k-point table refers to k-point {index}, which was not computed")
+            target = coordinates[index - 1]
+            found = None
+            for operation in operations:
+                rotated = operation.rotate_kpoint(target)
+                for candidate in (rotated, -rotated):
+                    delta = candidate - np.asarray(point, dtype=float)
+                    delta -= np.round(delta)
+                    if np.all(np.abs(delta) < 1e-6):
+                        found = operation.permutation
+                        break
+                if found is not None:
+                    break
+            if found is None:
+                permutations = []
+                break
+            permutations.append(found)
+        if permutations:
+            return permutations
+    raise ValueError(
+        "the space-group operations that reduced the k-points of this run cannot "
+        "be rebuilt from the structure; rerun the calculation with symmetry=0 or -1"
+    )
+
+
+def expanded_orders(
+    stars: dict[int, Sequence[tuple[int, ...]]],
+    weights: Sequence[float],
+    values_of: Any,
+    pairs: Sequence[tuple[int, int]],
+) -> dict[tuple[int, int], float]:
+    """Average the star members of every reduced k-point.
+
+    A quantity like the Mayer bond order is not linear in the k-resolved
+    density matrix, so the star of a computed k-point cannot be folded into
+    its weight: the value of every star member has to be evaluated separately.
+    Applying a symmetry operation ``{R|w}`` to the wavefunction of k moves the
+    orbital labels onto the atoms the operation maps them to, which means that
+    a pair value at the star member ``R k`` equals the value at ``k`` for the
+    pair of the atoms that the operation moves onto the original pair.
+
+    Args:
+        stars: One-based computed k-point index -> atom permutation of every
+            mesh point of its star.
+        weights: Weight of every computed k-point.
+        values_of: Callable ``(k-point index, pairs) -> {pair: value}`` that
+            evaluates the pairs at one computed k-point.
+        pairs: Zero-based atom pairs of interest.
+
+    Returns:
+        The bond order of every pair, summed over the full mesh.
+    """
+    orders = {pair: 0.0 for pair in pairs}
+    for index, members in stars.items():
+        weight = weights[index - 1]
+        needed = {
+            tuple(sorted((permutation[pair[0]], permutation[pair[1]])))
+            for permutation in members
+            for pair in pairs
+        }
+        values = values_of(index - 1, sorted(needed))
+        for pair in pairs:
+            total = 0.0
+            for permutation in members:
+                total += values[tuple(sorted((permutation[pair[0]], permutation[pair[1]])))]
+            orders[pair] += total / len(members) / weight
+    return orders
+
+
+def _symmetry_expanded_orders(
+    table: KPointTable,
+    weights: Sequence[float],
+    values_of: Any,
+    pairs: Sequence[tuple[int, int]],
+    structure: AbacusSTRU,
+) -> dict[tuple[int, int], float]:
+    """Rebuild the k-points that the space group of a run reduced away."""
+    permutations = _mesh_permutations(table, structure)
+    stars: dict[int, list[tuple[int, ...]]] = {}
+    for (_point, index), permutation in zip(table.mesh, permutations):
+        stars.setdefault(index, []).append(permutation)
+    return expanded_orders(stars, weights, values_of, pairs)
 
 
 def detect_matrix_format(output_dir: Path, out_dmk: int) -> str:
@@ -716,9 +954,11 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
             raise FileNotFoundError(f"No dm*_nao.txt files found in {output}")
 
         kpoints = sorted({ik for ik, _ispin, _path in density_files})
-        weight = 1.0 / len(kpoints)
+        weights = exact_kpoint_weights(
+            read_develop_kpoints(density_files), printed_scale=2.0 / nspin
+        )
         overlaps: dict[int, np.ndarray] = {}
-        for ik in kpoints:
+        for position, ik in enumerate(kpoints):
             overlap_path = _required_file(
                 _develop_overlap_file(output, ik),
                 f"overlap matrix for k-point {ik} (develop)",
@@ -751,7 +991,7 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
             # single doubly-occupied manifold.
             factor = 2.0 if (nspin == 2 and channels == 2) else 1.0
             for pair in selected_pairs:
-                orders[pair] += factor * spin_orders[pair] / weight
+                orders[pair] += factor * spin_orders[pair] / weights[position]
     else:
         # LTS version format (original code)
         if gamma_only:
@@ -780,31 +1020,49 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
             wfc_paths = sorted(output.glob("WFC_NAO_K*.txt"), key=lambda path: int(re.search(r"K(\d+)", path.name).group(1)))
             if not wfc_paths:
                 raise FileNotFoundError(f"No WFC_NAO_K*.txt files found in {output}")
-            weights = read_kpoint_weights(_required_file(output / "kpoints", "k-point table"))
+            table = read_kpoint_table(_required_file(output / "kpoints", "k-point table"))
+            weights = exact_kpoint_weights(table)
             if len(wfc_paths) not in (len(weights), 2 * len(weights)) or (nspin == 1 and len(wfc_paths) != len(weights)):
                 raise ValueError(f"number of k-point weights ({len(weights)}) does not match WFC files ({len(wfc_paths)})")
             spin_paired = nspin == 2 and len(wfc_paths) == 2 * len(weights)
-            for ik, weight in enumerate(weights):
-                overlap_path = _required_file(output / f"data-{ik}-S", f"overlap matrix for k-point {ik + 1}")
-                overlap = read_overlap_matrix(overlap_path)
-                up_wfc, up_occ = read_wfc_nao_k(wfc_paths[ik])
-                up_dm = calculate_density_matrix_k(up_wfc, up_occ)
-                if overlap.shape != (basis_functions, basis_functions) or up_dm.shape != overlap.shape:
-                    raise ValueError(f"k-point {ik + 1}: matrix dimensions do not match NAO basis size {basis_functions}")
-                down_dm = None
-                if spin_paired:
-                    down_wfc, down_occ = read_wfc_nao_k(wfc_paths[ik + len(weights)])
-                    down_dm = calculate_density_matrix_k(down_wfc, down_occ)
-                    if down_dm.shape != overlap.shape:
-                        raise ValueError(f"k-point {ik + 1}: spin-down matrix dimension mismatch")
-                for pair in selected_pairs:
+            matrices: dict[int, tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]] = {}
+
+            def kpoint_values(ik: int, pairs: Sequence[tuple[int, int]]) -> dict[tuple[int, int], float]:
+                """Return the spin-summed value of the pairs at one computed k-point."""
+                if ik not in matrices:
+                    overlap_path = _required_file(output / f"data-{ik}-S", f"overlap matrix for k-point {ik + 1}")
+                    overlap = read_overlap_matrix(overlap_path)
+                    up_wfc, up_occ = read_wfc_nao_k(wfc_paths[ik])
+                    up_dm = calculate_density_matrix_k(up_wfc, up_occ)
+                    if overlap.shape != (basis_functions, basis_functions) or up_dm.shape != overlap.shape:
+                        raise ValueError(f"k-point {ik + 1}: matrix dimensions do not match NAO basis size {basis_functions}")
+                    down_dm = None
+                    if spin_paired:
+                        down_wfc, down_occ = read_wfc_nao_k(wfc_paths[ik + len(weights)])
+                        down_dm = calculate_density_matrix_k(down_wfc, down_occ)
+                        if down_dm.shape != overlap.shape:
+                            raise ValueError(f"k-point {ik + 1}: spin-down matrix dimension mismatch")
+                        data_files.append(str(wfc_paths[ik + len(weights)]))
+                    matrices[ik] = (overlap, up_dm, down_dm)
+                    data_files.extend([str(overlap_path), str(wfc_paths[ik])])
+                overlap, up_dm, down_dm = matrices[ik]
+                values = {}
+                for pair in pairs:
                     value = _mayer_order(up_dm, overlap, atom_ranges[pair[0]], atom_ranges[pair[1]])
                     if down_dm is not None:
                         value = 2.0 * (value + _mayer_order(down_dm, overlap, atom_ranges[pair[0]], atom_ranges[pair[1]]))
-                    orders[pair] += value / weight
-                data_files.extend([str(overlap_path), str(wfc_paths[ik])])
-                if spin_paired:
-                    data_files.append(str(wfc_paths[ik + len(weights)]))
+                    values[pair] = value
+                return values
+
+            if table.mesh:
+                # symmetry=1: rebuild the stars that ABACUS reduced away.
+                orders.update(
+                    _symmetry_expanded_orders(table, weights, kpoint_values, selected_pairs, structure)
+                )
+            else:
+                for ik, weight in enumerate(weights):
+                    for pair, value in kpoint_values(ik, selected_pairs).items():
+                        orders[pair] += value / weight
 
     fractions = structure.coords_direct
     lattice = periodic_lattice(structure)

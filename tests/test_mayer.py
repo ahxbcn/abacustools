@@ -5,10 +5,16 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from dataclasses import replace
+from pathlib import Path
+
 from abacustools.data.mayer import (
     _develop_density_files,
     _develop_overlap_file,
     analyze_mayer_bond_order,
+    exact_kpoint_weights,
+    expanded_orders,
+    read_kpoint_table,
     calculate_density_matrix_k,
     detect_matrix_format,
     get_nao_basis_num,
@@ -20,6 +26,8 @@ from abacustools.data.mayer import (
     read_overlap_matrix_develop,
     read_wfc_nao_k,
 )
+from abacustools.data.symmetry import atom_permutation, space_group_operations
+from abacustools.io.stru import AbacusSTRU
 
 
 def test_read_nao_file_uses_summary_and_mesh(tmp_path):
@@ -424,3 +432,236 @@ def test_periodic_lattice_rejects_a_degenerate_cell():
 
     with pytest.raises(ValueError, match="non-singular"):
         periodic_lattice(structure)
+
+# ---------------------------------------------------------- k-point symmetry
+
+#: A cubic cell of two hydrogen atoms, which the fractional translation
+#: (1/2, 1/2, 1/2) maps onto itself by swapping the two atoms.
+SYMMETRIC_STRU = """ATOMIC_SPECIES
+H 1.008 H.upf
+
+NUMERICAL_ORBITAL
+H.orb
+
+LATTICE_CONSTANT
+1.889726
+
+LATTICE_VECTORS
+4.0 0.0 0.0
+0.0 4.0 0.0
+0.0 0.0 4.0
+
+ATOMIC_POSITIONS
+Direct
+
+H
+0.0
+2
+0.0 0.0 0.0
+0.5 0.5 0.5
+"""
+
+SYMMETRIC_ORB = """Element H
+Energy Cutoff(Ry) 100
+Radius Cutoff(a.u.) 6
+Lmax 0
+Number of Sorbital--> 1
+SUMMARY  END
+
+Mesh 1
+dr 0.01
+Type L N
+0 0 0
+1.0
+"""
+
+#: Star, seed overlap (off-diagonal) and seed phase of every k-point of a
+#: 2x2x2 mesh.  The two coefficients of a seed have the same modulus, so the
+#: density matrix is invariant under the atom swap the translations induce.
+SYMMETRIC_SEEDS = {
+    (0.0, 0.0, 0.0): (0.30, (0.7071067811865476, 0.7071067811865476)),
+    (0.5, 0.0, 0.0): (0.10, (0.7071067811865476, -0.7071067811865476)),
+    (0.5, 0.5, 0.0): (0.20, (0.7071067811865476, 0.7071067811865476j)),
+    (0.5, 0.5, 0.5): (0.40, (0.7071067811865476, -0.7071067811865476j)),
+}
+
+#: The 2x2x2 mesh with the star of every point, as ABACUS reduces it.
+SYMMETRIC_MESH = (
+    ((0.0, 0.0, 0.0), 1),
+    ((0.5, 0.0, 0.0), 2),
+    ((0.0, 0.5, 0.0), 2),
+    ((0.0, 0.0, 0.5), 2),
+    ((0.5, 0.5, 0.0), 3),
+    ((0.5, 0.0, 0.5), 3),
+    ((0.0, 0.5, 0.5), 3),
+    ((0.5, 0.5, 0.5), 4),
+)
+
+
+def _kpoint_table_text(ibz, mesh=()):
+    """Build the text of an ABACUS ``kpoints`` file."""
+    lines = ["                               nkstot now = %d" % len(ibz), "K-POINTS DIRECT COORDINATES",
+             " KPOINTS    DIRECT_X    DIRECT_Y    DIRECT_Z  WEIGHT"]
+    for index, (point, weight) in enumerate(ibz, start=1):
+        lines.append(f"  {index:6d}  {point[0]:.8f}  {point[1]:.8f}  {point[2]:.8f}  {weight:.4f}")
+    if mesh:
+        lines += ["", "                                   nkstot = %d" % len(mesh),
+                  "K-POINTS REDUCTION ACCORDING TO SYMMETRY",
+                  "     KPT    DIRECT_X    DIRECT_Y    DIRECT_Z     IBZ    DIRECT_X    DIRECT_Y    DIRECT_Z"]
+        for index, (point, star) in enumerate(mesh, start=1):
+            reference = ibz[star - 1][0]
+            lines.append(
+                f"  {index:6d}  {point[0]:.8f}  {point[1]:.8f}  {point[2]:.8f}"
+                f"  {star:6d}  {reference[0]:.8f}  {reference[1]:.8f}  {reference[2]:.8f}"
+            )
+    return "\n".join(lines) + "\n"
+
+
+def _write_overlap(path: Path, off_diagonal: float) -> None:
+    path.write_text(f"2 1.0 {off_diagonal}\n1.0\n", encoding="utf-8")
+
+
+def _write_wfc(path: Path, index: int, coefficients, occupation: float) -> None:
+    values = " ".join(f"{value.real:.10f} {value.imag:.10f}" for value in coefficients)
+    path.write_text(
+        f"{index} (index of k points)\n1 (number of bands)\n2 (number of orbitals)\n"
+        f"1 (band)\n0.0 (Ry)\n{occupation:.10f} (Occupations)\n{values}\n",
+        encoding="utf-8",
+    )
+
+
+def _write_synthetic_job(root: Path, *, reduced: bool) -> None:
+    """Write an ABACUS LCAO job of the two-atom cubic cell."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "INPUT").write_text(
+        "INPUT_PARAMETERS\ncalculation scf\nnspin 1\nbasis_type lcao\n"
+        "out_mat_hs 1\nsymmetry 1\n",
+        encoding="utf-8",
+    )
+    (root / "STRU").write_text(SYMMETRIC_STRU, encoding="utf-8")
+    (root / "H.orb").write_text(SYMMETRIC_ORB, encoding="utf-8")
+    output = root / "OUT.ABACUS"
+    output.mkdir()
+
+    representatives = [(0.0, 0.0, 0.0), (0.5, 0.0, 0.0), (0.5, 0.5, 0.0), (0.5, 0.5, 0.5)]
+    if reduced:
+        counts = [sum(1 for _point, star in SYMMETRIC_MESH if star == index) for index in range(1, 5)]
+        nodes = [(point, count / len(SYMMETRIC_MESH)) for point, count in zip(representatives, counts)]
+    else:
+        # Every mesh point is computed, but the symmetry-equivalent points
+        # share the electronic structure of their star representative.
+        nodes = [
+            (representatives[star - 1], 1.0 / len(SYMMETRIC_MESH))
+            for _point, star in SYMMETRIC_MESH
+        ]
+    mesh = SYMMETRIC_MESH if reduced else ()
+    (output / "kpoints").write_text(_kpoint_table_text(nodes, mesh), encoding="utf-8")
+
+    for index, (point, weight) in enumerate(nodes, start=1):
+        seed = SYMMETRIC_SEEDS[point]
+        _write_overlap(output / f"data-{index - 1}-S", seed[0])
+        # ABACUS writes the occupations as twice the k-point weight.
+        _write_wfc(output / f"WFC_NAO_K{index}.txt", index, seed[1], 2.0 * weight)
+
+
+def test_read_kpoint_table_reads_the_symmetry_reduction(tmp_path):
+    path = tmp_path / "kpoints"
+    nodes = [
+        ((0.0, 0.0, 0.0), 0.125),
+        ((0.5, 0.0, 0.0), 0.375),
+        ((0.5, 0.5, 0.0), 0.375),
+        ((0.5, 0.5, 0.5), 0.125),
+    ]
+    path.write_text(_kpoint_table_text(nodes, SYMMETRIC_MESH), encoding="utf-8")
+    table = read_kpoint_table(path)
+
+    assert [kpoint.direct for kpoint in table.ibz] == [node[0] for node in nodes]
+    assert [kpoint.weight for kpoint in table.ibz] == [node[1] for node in nodes]
+    assert len(table.mesh) == 8
+    assert {index for _point, index in table.mesh} == {1, 2, 3, 4}
+
+
+def test_exact_kpoint_weights_follow_the_symmetry(tmp_path):
+    """The printed weights are rounded, the exact ones follow from the stars."""
+    weight = 1.0 / 3.0
+    path = tmp_path / "reduced"
+    path.write_text(
+        _kpoint_table_text([((0.0, 0.0, 0.0), 0.3333), ((0.5, 0.0, 0.0), 0.6667)],
+                           [((0.0, 0.0, 0.0), 1), ((0.5, 0.0, 0.0), 2), ((0.0, 0.5, 0.0), 2)]),
+        encoding="utf-8",
+    )
+    np.testing.assert_allclose(exact_kpoint_weights(read_kpoint_table(path)), [weight, 2 * weight])
+
+    path = tmp_path / "time-reversal"
+    path.write_text(
+        _kpoint_table_text(
+            [
+                ((0.0, 0.0, 0.0), 0.2500),
+                ((0.5, 0.0, 0.0), 0.2500),
+                ((0.25, 0.0, 0.0), 0.5000),
+            ]
+        ),
+        encoding="utf-8",
+    )
+    np.testing.assert_allclose(exact_kpoint_weights(read_kpoint_table(path)), [0.25, 0.25, 0.5])
+
+    path = tmp_path / "full-mesh"
+    path.write_text(
+        _kpoint_table_text([((0.0, 0.0, 0.0), 0.5000), ((0.25, 0.0, 0.0), 0.5000)]),
+        encoding="utf-8",
+    )
+    np.testing.assert_allclose(exact_kpoint_weights(read_kpoint_table(path)), [0.5, 0.5])
+
+    path = tmp_path / "not-reduced"
+    path.write_text(
+        _kpoint_table_text([((0.0, 0.0, 0.0), 0.5), ((0.25, 0.0, 0.0), 0.5)]),
+        encoding="utf-8",
+    )
+    table = replace(read_kpoint_table(path), kpoint_count=8)
+    with pytest.raises(ValueError, match="cannot be rebuilt"):
+        exact_kpoint_weights(table)
+
+
+def test_atom_permutation_follows_the_operations(tmp_path):
+    (tmp_path / "STRU").write_text(SYMMETRIC_STRU, encoding="utf-8")
+    structure = AbacusSTRU.read(str(tmp_path / "STRU"))
+
+    assert atom_permutation(structure, np.eye(3), [0.0, 0.0, 0.0]) == (0, 1)
+    assert atom_permutation(structure, np.eye(3), [0.5, 0.5, 0.5]) == (1, 0)
+    assert atom_permutation(structure, np.eye(3), [0.25, 0.0, 0.0]) is None
+
+    permutations = {operation.permutation for operation in space_group_operations(structure)}
+    assert (0, 1) in permutations and (1, 0) in permutations
+
+
+def test_expanded_orders_average_the_star():
+    """Every star member contributes through the pair its operation maps onto."""
+    values = {0: {(0, 1): 1.0, (1, 2): 4.0, (0, 2): 7.0}}
+
+    def values_of(index, pairs):
+        return {pair: values[index][pair] for pair in pairs}
+
+    stars = {1: [(0, 1, 2), (1, 2, 0)]}
+    orders = expanded_orders(stars, (0.5,), values_of, [(0, 1)])
+
+    # The identity reaches the pair (0, 1), the three-cycle the pair (1, 2),
+    # and the star is averaged and weighted like one computed k-point.
+    assert orders[(0, 1)] == pytest.approx((1.0 + 4.0) / 2 / 0.5)
+
+
+def test_symmetry_reduced_kpoints_reproduce_the_full_mesh(tmp_path):
+    """A symmetry=1 run gives the bond order of the full k-mesh."""
+    reduced = tmp_path / "reduced"
+    full = tmp_path / "full"
+    _write_synthetic_job(reduced, reduced=True)
+    _write_synthetic_job(full, reduced=False)
+
+    with_reduction = analyze_mayer_bond_order(reduced, pairs="1-2")
+    with_full_mesh = analyze_mayer_bond_order(full, pairs="1-2")
+
+    assert len(read_kpoint_table(reduced / "OUT.ABACUS" / "kpoints").ibz) == 4
+    assert len(read_kpoint_table(full / "OUT.ABACUS" / "kpoints").ibz) == 8
+    assert with_reduction.pairs[0].bond_order == pytest.approx(
+        with_full_mesh.pairs[0].bond_order, rel=1e-9
+    )
+

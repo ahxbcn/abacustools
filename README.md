@@ -747,6 +747,22 @@ develop layout (`sk*_nao.txt` with `dm*_nao.txt`), including the gamma-only
 names that omit the k-point index. The develop density matrices are used
 directly, so no wavefunction reconstruction is needed there.
 
+A run that reduced the k-point mesh (`symmetry 1`) is analyzed on the full
+mesh. The analyzer reads the mesh and the irreducible k-points from
+`OUT.*/kpoints`, rebuilds the space-group operations from the structure, and
+evaluates every star member through the atom permutation of the operation that
+reaches it. A bond order is quadratic in the k-resolved density matrix, so the
+star cannot be folded into a k-point weight; expanding it is what makes a
+`symmetry 1` run agree with the `symmetry 0` and `symmetry -1` runs of the same
+calculation, which the analyzer reads directly. The weights are rebuilt from
+the star sizes as well, because the `kpoints` file prints them with four
+decimals only, which would bias the totals by about 0.2%.
+
+An output that does not record how the mesh was reduced - an older format, or a
+magnetic `symmetry 2`/`symmetry 3` run whose reduction is not the
+crystallographic one - cannot be expanded; the analyzer says so and asks for a
+`symmetry 0` or `symmetry -1` calculation instead.
+
 DDEC6 and DDEC3 net atomic charges, spin moments and bond orders are
 computed with the external [Chargemol](https://ddec.sourceforge.net) program,
 which partitions the valence density of a job:

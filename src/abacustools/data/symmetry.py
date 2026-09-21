@@ -10,12 +10,118 @@ from __future__ import annotations
 
 import sqlite3
 from collections import Counter
-from typing import Any, Optional, Union
+from dataclasses import dataclass
+from typing import Any, Optional, Sequence, Union
 
 import numpy as np
 
 from abacustools.data.dimensionality import classify_dimensionality
 from abacustools.io.stru import AbacusSTRU
+
+
+@dataclass(frozen=True)
+class SpaceGroupOperation:
+    """One space-group operation of a crystal.
+
+    Attributes:
+        rotation: Integer 3x3 matrix acting on fractional coordinates.
+        translation: Fractional translation vector of the operation.
+        permutation: Atom permutation, ``permutation[a]`` being the atom that
+            atom ``a`` is moved onto.
+    """
+
+    rotation: np.ndarray
+    translation: np.ndarray
+    permutation: tuple[int, ...]
+
+    def rotate_kpoint(self, direct: Sequence[float]) -> np.ndarray:
+        """Return the k-point that this operation maps ``direct`` onto.
+
+        The reciprocal-space rotation is the transpose of the direct-space
+        one, which is what ABACUS uses when it reduces a k-point mesh.
+        """
+        return np.asarray(direct, dtype=float) @ self.rotation
+
+
+def atom_permutation(
+    structure: AbacusSTRU,
+    rotation: Sequence[Sequence[float]],
+    translation: Sequence[float],
+    *,
+    tolerance: float = 0.05,
+) -> Optional[tuple[int, ...]]:
+    """Return the atom permutation of one operation, or None.
+
+    Args:
+        structure: Structure the operation acts on.
+        rotation: Integer 3x3 matrix in fractional coordinates.
+        translation: Fractional translation vector.
+        tolerance: Distance in Angstrom within which two positions count as
+            the same atom.
+
+    Returns:
+        ``permutation[a]`` with the atom that atom ``a`` is moved onto, or
+        None when the operation maps an atom onto no atom of the cell or maps
+        two atoms onto the same one.
+    """
+    cell = np.asarray(structure.cell, dtype=float)
+    positions = np.asarray(structure.coords_direct, dtype=float)
+    moved = positions @ np.asarray(rotation, dtype=float).T + np.asarray(translation, dtype=float)
+    permutation = []
+    for target in moved:
+        delta = positions - target
+        delta -= np.round(delta)
+        distances = np.linalg.norm(delta @ cell, axis=1)
+        index = int(np.argmin(distances))
+        if distances[index] > tolerance:
+            return None
+        permutation.append(index)
+    if len(set(permutation)) != len(permutation):
+        return None
+    return tuple(permutation)
+
+
+def space_group_operations(
+    structure: AbacusSTRU,
+    *,
+    symprec: float = 1e-4,
+    tolerance: float = 0.05,
+) -> list[SpaceGroupOperation]:
+    """Return the space-group operations of a structure.
+
+    Args:
+        structure: Structure to analyse.
+        symprec: Distance tolerance in Angstrom handed to spglib.
+        tolerance: Distance in Angstrom within which an operation has to map
+            atoms onto atoms.
+
+    Returns:
+        The operations, each with the atom permutation it induces. Operations
+        that differ only in the translation part are kept apart, because their
+        permutations differ.
+
+    Raises:
+        ValueError: If the cell is not periodic or spglib finds no symmetry.
+    """
+    import spglib
+
+    if _periodic_cell(structure) is None:
+        raise ValueError("a non-zero three-dimensional periodic cell is required")
+    dataset = spglib.get_symmetry_dataset(_spglib_cell(structure), symprec=symprec)
+    if dataset is None:
+        raise ValueError("spglib found no symmetry for the structure")
+    operations: list[SpaceGroupOperation] = []
+    seen: set[tuple[Any, ...]] = set()
+    for rotation, translation in zip(dataset.rotations, dataset.translations):
+        matrix = np.asarray(rotation, dtype=int)
+        shift = np.asarray(translation, dtype=float)
+        permutation = atom_permutation(structure, matrix, shift, tolerance=tolerance)
+        key = (tuple(matrix.flatten()), permutation)
+        if permutation is None or key in seen:
+            continue
+        seen.add(key)
+        operations.append(SpaceGroupOperation(matrix, shift, permutation))
+    return operations
 
 
 _DIRECTION_AXES = {"a": 0, "b": 1, "c": 2, "x": 0, "y": 1, "z": 2}
@@ -558,10 +664,13 @@ def layer_symmetry(
 
 
 __all__ = [
+    "SpaceGroupOperation",
+    "atom_permutation",
     "crystallographic_symmetry",
     "detect_aperiodic_direction",
     "layer_symmetry",
     "magnetic_ordering",
     "magnetic_symmetry",
     "site_symmetry_symbols",
+    "space_group_operations",
 ]
