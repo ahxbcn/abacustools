@@ -92,6 +92,9 @@ class OptimadeProvider:
     requires_api_key: bool = False
     api_key_environment_variables: tuple[str, ...] = ()
     note: str = ""
+    #: Search selectors the deployment actually answers, when that is less
+    #: than the ones every OPTIMADE API is supposed to implement.
+    selectors: Optional[tuple[str, ...]] = None
 
     def structures_urls(self) -> tuple[str, ...]:
         """Return the candidate URLs of the ``structures`` endpoint.
@@ -126,6 +129,11 @@ def _provider_from_record(record: Mapping[str, Any]) -> OptimadeProvider:
             str(name) for name in record.get("api_key_environment_variables") or ()
         ),
         note=str(record.get("note") or ""),
+        selectors=(
+            tuple(str(selector) for selector in record["selectors"])
+            if record.get("selectors")
+            else None
+        ),
     )
 
 
@@ -576,6 +584,8 @@ class OptimadeDatabase(StructureDatabase):
             self.description = provider.title or provider.name
             self.requires_api_key = provider.requires_api_key
             self.api_key_environment_variables = provider.api_key_environment_variables
+            if provider.selectors:
+                self.capabilities = frozenset(provider.selectors)
             self.aggregate = False
 
     def available(self) -> bool:
@@ -677,9 +687,9 @@ class OptimadeDatabase(StructureDatabase):
         params: dict[str, Any] = {"page_limit": min(query.limit, MAX_PAGE_LIMIT)}
         if provider.requires_api_key:
             params["token"] = api_key or ""
-        strategies = build_strategies(query)
         failure: Optional[DatabaseRequestError] = None
-        for index, strategy in enumerate(strategies):
+        empty_result: Optional[list[DatabaseSummary]] = None
+        for strategy in build_strategies(query):
             attempt = dict(params)
             if strategy.expression:
                 attempt["filter"] = strategy.expression
@@ -688,7 +698,13 @@ class OptimadeDatabase(StructureDatabase):
             try:
                 payload, url = self._request_structures(provider, attempt, transport=transport)
             except OptimadeHttpError as error:
-                if error.status in (400, 501):
+                # A rejected field moves on to the next strategy; a provider
+                # that breaks on a fallback must not turn a valid, empty
+                # answer into an error.
+                rejected = error.status in (400, 501) or (
+                    empty_result is not None and (error.status or 0) >= 500
+                )
+                if rejected:
                     failure = error
                     continue
                 raise
@@ -707,8 +723,12 @@ class OptimadeDatabase(StructureDatabase):
                     for summary in summaries
                     if formula_matches(summary.formula, query.formula or "")
                 ]
-            if summaries or index == len(strategies) - 1:
+            if summaries:
                 return summaries[: query.limit]
+            if empty_result is None:
+                empty_result = summaries
+        if empty_result is not None:
+            return empty_result[: query.limit]
         raise failure or DatabaseRequestError(f"{provider.name}: no filter strategy was accepted")
 
     def search(

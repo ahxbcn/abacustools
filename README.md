@@ -1540,6 +1540,7 @@ without it the default is `mp`.
 | `cod` | Crystallography Open Database: experimental structures | OPTIMADE |
 | `tcod` | Theoretical Crystallography Open Database | OPTIMADE |
 | `alexandria` | Alexandria materials database (PBE+SOL) | OPTIMADE |
+| `c2db` | Computational 2D Materials Database (DTU) | OPTIMADE |
 | `mc3d`, `mc2d` | Materials Cloud three- and two-dimensional crystals | OPTIMADE |
 | `twodmatpedia` | 2DMatPedia: 2D materials exfoliated from the Materials Project | OPTIMADE |
 | `matterverse` | Matterverse: machine-learning property predictions | OPTIMADE |
@@ -1559,7 +1560,9 @@ providers --refresh` prints the live list, and `--base-url` sends a query to an
 OPTIMADE endpoint that the catalogue does not contain. Providers differ in what
 they publish: `cod` and `tcod` report cell parameters but no atomic
 coordinates, so they answer searches while a download of one of their entries
-reports that there is no structure to write.
+reports that there is no structure to write; `c2db` ignores filters on the
+entry id, so search it by formula or elements and download the identifier the
+search reported.
 
 ### Materials Project
 

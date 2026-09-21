@@ -68,6 +68,22 @@
       "note": "the PBE endpoint returned HTTP 500 during the retrieval probe"
     },
     {
+      "name": "c2db",
+      "title": "Computational 2D Materials Database (C2DB)",
+      "base_url": "https://c2db.fysik.dtu.dk/optimade",
+      "homepage": "https://cmr.fysik.dtu.dk/c2db/c2db.html",
+      "description": "Two-dimensional materials from DTU with stability, band structure, elastic and magnetic properties.",
+      "aliases": [
+        "cmr-c2db"
+      ],
+      "note": "the endpoint ignores id filters; download by id still works",
+      "selectors": [
+        "formula",
+        "chemsys",
+        "elements"
+      ]
+    },
+    {
       "name": "mc3d",
       "title": "Materials Cloud three-dimensional crystals",
       "base_url": "https://optimade.materialscloud.org/main/mc3d-pbesol-v2",

@@ -261,8 +261,19 @@ class TestOptimadeCatalogue(unittest.TestCase):
         for provider in providers:
             self.assertTrue(provider.base_url.startswith("http"))
         names = [provider.name for provider in providers]
-        self.assertIn("aflow", names)
-        self.assertIn("cod", names)
+        for name in ("aflow", "c2db", "cod", "mc2d", "twodmatpedia"):
+            self.assertIn(name, names)
+
+    def test_a_provider_can_narrow_the_selectors_it_answers(self):
+        provider = optimade_provider_from_name("c2db")
+
+        self.assertEqual(provider.selectors, ("formula", "chemsys", "elements"))
+        database = get_database("c2db")
+        self.assertFalse(database.supports("identifiers"))
+        with self.assertRaises(DatabaseRequestError) as error:
+            database.search(DatabaseQuery(identifiers=("3680",)))
+
+        self.assertIn("identifiers", str(error.exception))
 
     def test_catalogue_records_where_it_came_from(self):
         source = optimade_catalogue_source()
@@ -455,6 +466,33 @@ class TestOptimadeSearch(unittest.TestCase):
         )
 
         self.assertEqual(summaries, [])
+
+    def test_a_broken_fallback_keeps_a_valid_empty_answer(self):
+        def responder(url):
+            filter_expression = _query(url).get("filter", [""])[0]
+            if "chemical_formula_reduced" in filter_expression:
+                return _response([])
+            raise OptimadeHttpError("internal error", status=500, url=url)
+
+        transport = RecordingTransport(responder)
+
+        summaries = self._database().search(
+            DatabaseQuery(formula="Fe2O3", limit=3), transport=transport
+        )
+
+        self.assertEqual(summaries, [])
+        self.assertEqual(len(transport.urls), 3)
+
+    def test_a_broken_filter_without_an_answer_is_reported(self):
+        def responder(url):
+            raise OptimadeHttpError(f"{url} returned HTTP 500", status=500, url=url)
+
+        transport = RecordingTransport(responder)
+
+        with self.assertRaises(DatabaseRequestError) as error:
+            self._database().search(DatabaseQuery(formula="Fe2O3"), transport=transport)
+
+        self.assertIn("500", str(error.exception))
 
     def test_a_missing_endpoint_falls_back_to_the_root_path(self):
         def responder(url):

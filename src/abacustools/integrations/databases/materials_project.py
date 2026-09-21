@@ -122,9 +122,7 @@ class MaterialsProjectDatabase(StructureDatabase):
         except MaterialsProjectApiKeyError as error:
             raise DatabaseApiKeyError(str(error)) from error
         except OSError as error:
-            raise DatabaseRequestError(
-                f"cannot reach the Materials Project: {error}"
-            ) from error
+            raise DatabaseRequestError(f"cannot reach the Materials Project: {error}") from error
         except RuntimeError as error:
             raise DatabaseRequestError(
                 f"the Materials Project refused the query: {error}"
@@ -147,9 +145,7 @@ class MaterialsProjectDatabase(StructureDatabase):
         except MaterialsProjectApiKeyError as error:
             raise DatabaseApiKeyError(str(error)) from error
         except OSError as error:
-            raise DatabaseRequestError(
-                f"cannot reach the Materials Project: {error}"
-            ) from error
+            raise DatabaseRequestError(f"cannot reach the Materials Project: {error}") from error
         except RuntimeError as error:
             raise DatabaseRequestError(
                 f"the Materials Project refused the query: {error}"
