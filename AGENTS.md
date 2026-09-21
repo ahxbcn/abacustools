@@ -10,9 +10,15 @@ toolkit for DFT calculations with [ABACUS](https://abacus.deepmodeling.com/).
 - Requires Python >= 3.9 (developed on 3.11).
 - Runtime dependencies: `numpy`, `rich`, `pymatgen`, `phonopy`, `seekpath`,
   `matplotlib`, `ase`, `pydantic`.
-- Four command families:
+- Command families:
   - `abacustools file ...` — convert/inspect `INPUT`, `STRU`, `KPT`, structures.
   - `abacustools job ...` — prepare, check, validate, and monitor jobs.
+  - `abacustools database ...` — search and download structures from external
+    databases (`list`, `fields`, `providers`, `search`, `download`); every
+    database is a `StructureDatabase` in `integrations/databases/`, registered
+    in that package's `__init__`, and `mp ...` is its Materials Project
+    spelling. Prefer OPTIMADE when a database speaks it; C2DB keeps its own
+    adapter because only its web query table publishes the computed properties.
   - `abacustools postprocess ...` — `result`, `band`, `dos`, `cohp`, `mayer`, `bader`.
   - `abacustools workflow ...` — multi-step workflows (elastic, phonon, ...).
 
