@@ -45,6 +45,13 @@ dependencies = [
 # every other command works without it.
 mp = ["mp-api"]
 
+# Bader charge partitioning with the `baderkit` library instead of the external
+# Henkelman program (`abacustools postprocess bader --backend baderkit`). The
+# library is imported lazily, so every other command works without it. Note that
+# baderkit pins pymatgen <= 2025.10.7, so installing this extra can downgrade
+# the pymatgen of an environment that already has a newer one.
+baderkit = ["baderkit"]
+
 # Electronic dielectric tensor of `abacustools workflow dielectric`, which
 # evaluates a Kubo-Greenwood sum over the ABACUS LCAO matrices. pyatb is
 # imported lazily and parallelises through mpi4py, so an MPI runtime from the
