@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from abacustools.commands.postprocess.bader import run
-from abacustools.core.constant import ANG_TO_BOHR
+from abacustools.core.constant import ANG_TO_BOHR, BOHR_TO_ANG
 from abacustools.data.bader import (
     BaderError,
     analyze_bader,
@@ -297,3 +297,23 @@ def test_analyze_bader_requires_charge_density(tmp_path: Path) -> None:
     )
     with pytest.raises(BaderError):
         analyze_bader(job, exe=str(_fake_bader(tmp_path)))
+
+
+def test_bader_atoms_are_reported_in_angstrom(tmp_path: Path) -> None:
+    """ACF.dat holds Bohr and Bohr**3; the analysis reports Angstrom."""
+    job = tmp_path / "job"
+    output = job / "OUT.ABACUS"
+    output.mkdir(parents=True)
+    (job / "INPUT").write_text(
+        "INPUT_PARAMETERS\nsuffix ABACUS\nnspin 1\n", encoding="utf-8"
+    )
+    _cube(output / "SPIN1_CHG.cube", np.ones((4, 4, 4)))
+
+    analysis = analyze_bader(job, exe=str(_fake_bader(tmp_path)))
+
+    # the cube puts the atoms at (0, 0, 0) and (2, 2, 2) Angstrom, and the fake
+    # program writes the 1.0 Bohr distance and 2.0 Bohr**3 volume of its rows
+    assert analysis.atoms[0].position == pytest.approx((0.0, 0.0, 0.0))
+    assert analysis.atoms[1].position == pytest.approx((2.0, 2.0, 2.0))
+    assert analysis.atoms[0].min_distance == pytest.approx(BOHR_TO_ANG)
+    assert analysis.atoms[0].atomic_volume == pytest.approx(2.0 * BOHR_TO_ANG**3)

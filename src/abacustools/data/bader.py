@@ -25,7 +25,7 @@ from typing import List, Optional, Sequence, Tuple
 from ase.data import chemical_symbols
 
 from abacustools.core.config import CONFIG
-from abacustools.core.constant import ANG_TO_BOHR
+from abacustools.core.constant import ANG_TO_BOHR, BOHR_TO_ANG
 from abacustools.data.charge import (
     ChargeDensityError,
     combine,
@@ -41,6 +41,7 @@ from abacustools.io.stru import AbacusSTRU
 
 
 A2BOHR = ANG_TO_BOHR
+BOHR3_TO_ANG3 = BOHR_TO_ANG**3
 
 class BaderError(RuntimeError):
     """Raised when a Bader analysis cannot be completed."""
@@ -48,7 +49,20 @@ class BaderError(RuntimeError):
 
 @dataclass
 class BaderAtom:
-    """Bader analysis result for a single atom."""
+    """Bader analysis result for a single atom.
+
+    Attributes:
+        index: One-based atom index.
+        element: Element symbol.
+        position: Cartesian position in Angstrom.
+        z_valence: Number of valence electrons of the pseudopotential.
+        bader_charge: Electrons inside the Bader volume of the atom.
+        min_distance: Distance from the atom to the nearest point of its Bader
+            surface in Angstrom, as reported by the backend.
+        atomic_volume: Volume of the Bader volume in Angstrom**3.
+        spin_moment: Up minus down electrons inside the Bader volume, ``None``
+            for ``nspin 1``.
+    """
 
     index: int
     element: str
@@ -122,7 +136,8 @@ def read_acf(path: str | os.PathLike) -> Tuple[List[dict], float, float, float]:
     Returns:
         A tuple ``(records, vacuum_charge, vacuum_volume, number_of_electrons)``
         where every record is a dict with ``index``, ``position``, ``charge``,
-        ``min_distance`` and ``atomic_volume``.
+        ``min_distance`` and ``atomic_volume``. The file stores lengths in Bohr
+        and volumes in Bohr**3; :func:`_build_atoms` converts them.
     """
     lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
     records: List[dict] = []
@@ -235,11 +250,13 @@ def _build_atoms(
             BaderAtom(
                 index=record["index"],
                 element=element or "",
-                position=record["position"],
+                position=tuple(
+                    float(value) * BOHR_TO_ANG for value in record["position"]
+                ),
                 z_valence=float(valence),
                 bader_charge=record["charge"],
-                min_distance=record["min_distance"],
-                atomic_volume=record["atomic_volume"],
+                min_distance=float(record["min_distance"]) * BOHR_TO_ANG,
+                atomic_volume=float(record["atomic_volume"]) * BOHR3_TO_ANG3,
             )
         )
     return atoms
