@@ -49,7 +49,7 @@ for index, x, y, z, value in rows:
     out.append(f"{index:5d} {x:11.6f} {y:11.6f} {z:11.6f} {value:11.6f} {1.0:11.6f} {2.0:11.6f}")
 out.append(" " + "-" * 80)
 out.append("    VACUUM CHARGE:               0.0000")
-out.append("    VACUUM VOLUME:               0.0000")
+out.append("    VACUUM VOLUME:               2.0000")
 out.append(f"    NUMBER OF ELECTRONS:      {sum(row[4] for row in rows):.4f}")
 with open("ACF.dat", "w") as handle:
     handle.write("\\n".join(out) + "\\n")
@@ -540,3 +540,4 @@ def test_bader_atoms_are_reported_in_angstrom(tmp_path: Path) -> None:
     assert analysis.atoms[1].position == pytest.approx((2.0, 2.0, 2.0))
     assert analysis.atoms[0].min_distance == pytest.approx(BOHR_TO_ANG)
     assert analysis.atoms[0].atomic_volume == pytest.approx(2.0 * BOHR_TO_ANG**3)
+    assert analysis.vacuum_volume == pytest.approx(2.0 * BOHR_TO_ANG**3)

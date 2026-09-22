@@ -140,7 +140,7 @@ def read_acf(path: str | os.PathLike) -> Tuple[List[dict], float, float, float]:
         A tuple ``(records, vacuum_charge, vacuum_volume, number_of_electrons)``
         where every record is a dict with ``index``, ``position``, ``charge``,
         ``min_distance`` and ``atomic_volume``. The file stores lengths in Bohr
-        and volumes in Bohr**3; :func:`_build_atoms` converts them.
+        and volumes in Bohr**3; the caller converts them.
     """
     lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
     records: List[dict] = []
@@ -419,6 +419,8 @@ def analyze_bader(
             extra_args=_vacuum_arguments(vacuum),
         )
         records, vacuum_charge, vacuum_volume, number_of_electrons = read_acf(work / "ACF.dat")
+        # the footer stores the vacuum volume in Bohr**3 like the atomic volumes
+        vacuum_volume *= BOHR3_TO_ANG3
         atoms = _build_atoms(records, density.elements, density.valences)
 
         if density.magnetization is not None:
