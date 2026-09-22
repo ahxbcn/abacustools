@@ -11,6 +11,7 @@ from abacustools.core.input_prep import (
     available_resource_libraries,
     parse_input_value,
 )
+from abacustools.core.submission import write_batch_config
 
 
 def _pairs(values, *, value_type=float) -> dict:
@@ -92,6 +93,24 @@ def register_parser(subparsers) -> None:
         ),
     )
     parser.add_argument("--override", "--overwrite", dest="override", action="store_true", help="Replace existing folders.")
+    submission = parser.add_mutually_exclusive_group()
+    submission.add_argument(
+        "--submit-config",
+        dest="generate_config",
+        action="store_true",
+        help="Write the configured batch submission file next to the prepared jobs.",
+    )
+    submission.add_argument(
+        "--no-submit-config",
+        dest="generate_config",
+        action="store_false",
+        help="Do not write the batch submission file, overriding the config default.",
+    )
+    parser.set_defaults(generate_config=None)
+    parser.add_argument(
+        "--abacus-command",
+        help="ABACUS command used in the batch submission file; otherwise use the config default.",
+    )
     parser.set_defaults(handler=run)
 
 
@@ -125,4 +144,17 @@ def run(args: argparse.Namespace) -> int:
     print("Prepared ABACUS jobs:")
     for job in jobs:
         print(f"  {job.path}  (source: {job.source})")
+    if jobs:
+        submission = write_batch_config(
+            jobs[0].path.parent,
+            [job.path for job in jobs],
+            job_type=args.job_type,
+            generate=args.generate_config,
+            abacus_command=args.abacus_command,
+        )
+        if submission is not None:
+            print(
+                f"  batch config: {jobs[0].path.parent / submission['config_file']}"
+                f"  ({submission['job_count']} jobs)"
+            )
     return 0

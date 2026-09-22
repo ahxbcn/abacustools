@@ -270,6 +270,38 @@ them from an f-string over `{x}` (the source file name) and `{i}` (the index),
 such as `{x[:-5]}` or `{i:03d}`; any other expression, conversion or path that
 escapes the output directory is rejected.
 
+A whole batch can be handed to a runner such as `abacustest` with one
+configuration file next to the generated directories:
+
+```text
+abacustools job prepare -f 'structures/*.cif' -o runs/ --submit-config
+abacustools job prepare -f 'structures/*.cif' -o runs/ --submit-config \
+    --abacus-command 'mpirun -np 32 abacus'
+```
+
+`--submit-config` writes `submission.batch.filename` (`job.json`) into the
+output directory, with the generated directory names listed in the `{examples}`
+placeholder, so the `run_dft` entry of an abacustest or Bohrium job points at
+exactly the directories that were prepared. The template is the inline
+`submission.batch.template`, or the file named by
+`submission.batch.template_file`:
+
+```yaml
+submission:
+  batch:
+    generate: false          # --submit-config turns it on for one run
+    filename: "job.json"
+    template_file: /path/to/my/abacustest.json
+```
+
+The placeholders are `{examples}` (the directory names as a JSON array),
+`{count}`, `{job_type}` and `{abacus_command}`. Braces that are not one of them,
+such as the ones of the JSON itself, are left alone, so a JSON template needs no
+escaping and an unknown placeholder is an error rather than a silently broken
+file. `--no-submit-config` overrides a configuration that enables the file. The
+packaged template is an abacustest job for Bohrium; review its image, machine
+type, account and command before submitting.
+
 Pseudopotential and orbital paths are configured through libraries rather than
 through command-line paths: `--library NAME` selects one entry of
 `resources.libraries`, and `~/.abacustools/config.yaml` can hold any number of
