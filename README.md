@@ -61,6 +61,8 @@ abacustools file info POSCAR --json
 abacustools file info structure.xyz --cell 10 0 0 0 10 0 0 0 10
 abacustools file info slab.STRU --coordination
 abacustools file info STRU --coordination voronoi --json
+abacustools file info *.vasp POSCAR --json
+abacustools file info STRU --summary
 ```
 
 The report includes cell parameters, volume, density, element and label counts,
@@ -110,6 +112,17 @@ with the CrystalNN nearest neighbours instead, and a note explains the choice.
 reported as unavailable instead of being replaced silently. The work-function
 workflow uses the same vacuum analysis to find the direction of the
 electrostatic vacuum.
+
+Several structures can be listed at once, which reports only the fields that
+make them comparable: the file, the formula, the number of atoms, the space
+group with its number, the crystal system and the cell parameters, with the
+lengths in Angstrom, the angles in degree and the volume in Angstrom^3.
+`--summary` asks for that listing for a single structure as well. The listing
+leaves the rest of the report out, so it does not pay for the Wyckoff
+positions, the point group, the Bravais lattice, the magnetic and layer
+symmetry, the dimensionality, the coordination or the per-atom table;
+`--coordination` and `--layer-direction` are rejected together with it, and
+`--json` returns one summary object per structure instead of a report.
 
 Structures can also be edited into a new file. Every action reads a structure,
 writes a separate OUTPUT (existing files are only replaced with `--override`)

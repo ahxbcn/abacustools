@@ -40,17 +40,46 @@ Si
 """
 
 
+CUBIC = """ATOMIC_SPECIES
+Na 22.98977 Na.upf
+Cl 35.453 Cl.upf
+
+LATTICE_CONSTANT
+1.889726125457828
+
+LATTICE_VECTORS
+5.64 0.0 0.0
+0.0 5.64 0.0
+0.0 0.0 5.64
+
+ATOMIC_POSITIONS
+Direct
+
+Na
+0.0
+1
+0.0 0.0 0.0
+
+Cl
+0.0
+1
+0.5 0.5 0.5
+"""
+
+
 def _arguments(
-    path: Path,
+    path,
     *,
     json: bool = False,
+    summary: bool = False,
     layer_direction=None,
     coordination=None,
     min_vacuum: float = 5.0,
 ) -> Namespace:
     """Build the namespace the ``file info`` handler expects."""
+    paths = [path] if isinstance(path, Path) else list(path)
     return Namespace(
-        filename=path,
+        filename=paths,
         input_format=None,
         cell=None,
         symprec=1e-5,
@@ -58,6 +87,7 @@ def _arguments(
         layer_direction=layer_direction,
         coordination=coordination,
         min_vacuum=min_vacuum,
+        summary=summary,
         json=json,
     )
 
@@ -381,6 +411,107 @@ class TestStructureInfo(unittest.TestCase):
         self.assertEqual(ordering["magnetic_sites"], 2)
         self.assertEqual(result["magnetic_symmetry"]["type"], "type III")
         self.assertIsNone(result["layer_symmetry"]["requested_direction"])
+
+    def test_lists_a_batch_of_structures(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            first = Path(temporary) / "Si.STRU"
+            first.write_text(STRU, encoding="utf-8")
+            second = Path(temporary) / "NaCl.STRU"
+            second.write_text(CUBIC, encoding="utf-8")
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(run(_arguments([first, second])), 0)
+            table = output.getvalue()
+
+        lines = table.splitlines()
+        self.assertIn("cell lengths in Angstrom", lines[0])
+        self.assertIn("space group", lines[1])
+        self.assertIn("Si.STRU", table)
+        self.assertIn("NaCl.STRU", table)
+        self.assertIn("Fd-3m (227)", table)
+        self.assertIn("221", table)
+        self.assertIn("cubic", table)
+        self.assertIn("3.8396", table)
+        self.assertIn("5.6400", table)
+        self.assertIn("60.000", table)
+        self.assertIn("179.406", table)
+        # the batch listing leaves the full report out
+        self.assertNotIn("point group", table)
+        self.assertNotIn("Wyckoff", table)
+        self.assertNotIn("prototype", table)
+
+    def test_json_lists_one_summary_per_structure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            first = Path(temporary) / "Si.STRU"
+            first.write_text(STRU, encoding="utf-8")
+            second = Path(temporary) / "NaCl.STRU"
+            second.write_text(CUBIC, encoding="utf-8")
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(run(_arguments([first, second], json=True)), 0)
+            summaries = json.loads(output.getvalue())
+
+        self.assertEqual(len(summaries), 2)
+        silicon, rock_salt = summaries
+        self.assertEqual(silicon["natoms"], 2)
+        self.assertEqual(silicon["formula"], "Si2")
+        self.assertEqual(silicon["element_counts"], {"Si": 2})
+        self.assertEqual(silicon["space_group"], "Fd-3m")
+        self.assertEqual(silicon["space_group_number"], 227)
+        self.assertEqual(silicon["crystal_system"], "cubic")
+        self.assertAlmostEqual(
+            silicon["cell"]["volume_angstrom3"], 5.43**3 / 4, places=2
+        )
+        for length in silicon["cell"]["lengths_angstrom"]:
+            self.assertAlmostEqual(length, 3.839585, places=6)
+        for length in rock_salt["cell"]["lengths_angstrom"]:
+            self.assertAlmostEqual(length, 5.64, places=6)
+        self.assertAlmostEqual(
+            rock_salt["cell"]["volume_angstrom3"], 5.64**3, places=3
+        )
+        self.assertEqual(rock_salt["formula"], "Na Cl")
+        self.assertEqual(rock_salt["space_group_number"], 221)
+        # a summary carries the main fields and nothing else
+        self.assertNotIn("symmetry", silicon)
+        self.assertNotIn("atoms", silicon)
+        self.assertNotIn("resources", silicon)
+
+    def test_summary_of_a_single_structure_skips_the_full_report(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "STRU"
+            path.write_text(STRU, encoding="utf-8")
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(run(_arguments(path, summary=True)), 0)
+            table = output.getvalue()
+
+        self.assertIn("Fd-3m (227)", table)
+        self.assertIn("cubic", table)
+        self.assertNotIn("point group", table)
+        self.assertNotIn("Wyckoff", table)
+        self.assertNotIn("atoms:", table)
+
+    def test_summary_reports_a_missing_cell_as_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "molecule.xyz"
+            path.write_text("1\nH molecule\nH 0 0 0\n", encoding="utf-8")
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(run(_arguments(path, summary=True)), 0)
+            table = output.getvalue()
+
+        row = next(line for line in table.splitlines() if "molecule.xyz" in line)
+        self.assertEqual(row.split()[:3], ["molecule.xyz", "H", "1"])
+        self.assertEqual(row.split()[3:], ["-"] * 9)
+
+    def test_summary_rejects_the_report_only_options(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "STRU"
+            path.write_text(STRU, encoding="utf-8")
+            for kwargs in ({"coordination": "auto"}, {"layer_direction": "c"}):
+                with self.subTest(**kwargs):
+                    with self.assertRaises(ValueError):
+                        run(_arguments(path, summary=True, **kwargs))
 
     def test_rejects_invalid_symmetry_tolerance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

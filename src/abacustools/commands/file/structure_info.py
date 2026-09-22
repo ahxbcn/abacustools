@@ -13,6 +13,7 @@ import numpy as np
 from abacustools.data.coordination import coordination_analysis
 from abacustools.data.composition import composition_summary
 from abacustools.data.dimensionality import classify_dimensionality
+from abacustools.data.structure_summary import structure_summary
 from abacustools.data.symmetry import (
     crystallographic_symmetry,
     layer_symmetry,
@@ -35,9 +36,15 @@ def register_parser(subparsers) -> None:
     parser = subparsers.add_parser(
         "info",
         aliases=["stru-info", "structure-info"],
-        help="Show basic crystallographic and ABACUS structure information.",
+        help="Show structure information; several files are listed as a table.",
     )
-    parser.add_argument("filename", type=_structure_file, metavar="STRUCTURE")
+    parser.add_argument(
+        "filename",
+        type=_structure_file,
+        nargs="+",
+        metavar="STRUCTURE",
+        help="Structure file; several files are listed as a summary table.",
+    )
     parser.add_argument(
         "--input-format",
         default=None,
@@ -85,6 +92,11 @@ def register_parser(subparsers) -> None:
         type=float,
         default=5.0,
         help="Empty span in Angstrom that counts as vacuum, default: 5.",
+    )
+    parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="List the main fields instead of the full report, also for a single structure.",
     )
     parser.add_argument("--json", action="store_true", help="Print JSON instead of a formatted report.")
     parser.set_defaults(handler=run)
@@ -541,10 +553,83 @@ def _print_report(result: dict[str, Any]) -> None:
     _print_table(*_atom_table(result["atoms"], result.get("coordination")))
 
 
+_SUMMARY_COLUMNS = (
+    "file",
+    "formula",
+    "atoms",
+    "space group",
+    "crystal system",
+    "a",
+    "b",
+    "c",
+    "alpha",
+    "beta",
+    "gamma",
+    "volume",
+)
+
+
+def _number_text(value: Optional[float], digits: int) -> str:
+    """Format a cell parameter, or a dash when the structure has none."""
+    return "-" if value is None else f"{float(value):.{digits}f}"
+
+
+def _summary_row(summary: dict[str, Any]) -> list[str]:
+    """Turn one structure summary into a row of the batch table."""
+    cell = summary["cell"]
+    lengths = cell["lengths_angstrom"] or [None, None, None]
+    angles = cell["angles_degree"] or [None, None, None]
+    space_group = summary["space_group"] or "-"
+    if summary["space_group"] and summary["space_group_number"] is not None:
+        space_group = f"{space_group} ({summary['space_group_number']})"
+    return [
+        Path(summary["file"]).name,
+        summary["formula"],
+        str(summary["natoms"]),
+        space_group,
+        summary["crystal_system"] or "-",
+        *(_number_text(value, 4) for value in lengths),
+        *(_number_text(value, 3) for value in angles),
+        _number_text(cell["volume_angstrom3"], 3),
+    ]
+
+
+def _print_summary(summaries: list[dict[str, Any]]) -> None:
+    """Print one row per structure with its main fields."""
+    print("cell lengths in Angstrom, angles in degree, volume in Angstrom^3")
+    _print_table(
+        list(_SUMMARY_COLUMNS),
+        [_summary_row(summary) for summary in summaries],
+    )
+
+
 def run(args: argparse.Namespace) -> int:
-    """Read a structure and print its basic information."""
+    """Read one or more structures and print their information."""
+    paths = list(args.filename)
+    _validate_inputs(args.symprec, args.angle_tolerance, args.min_vacuum)
+    if args.summary or len(paths) > 1:
+        if args.coordination is not None or args.layer_direction is not None:
+            raise ValueError(
+                "the coordination and layer analyses belong to the full report; "
+                "run file info on a single structure without --summary"
+            )
+        summaries = [
+            structure_summary(
+                path,
+                input_format=args.input_format,
+                cell=args.cell,
+                symprec=args.symprec,
+                angle_tolerance=args.angle_tolerance,
+            )
+            for path in paths
+        ]
+        if args.json:
+            print(json.dumps(summaries, indent=2, ensure_ascii=False))
+        else:
+            _print_summary(summaries)
+        return 0
     result = structure_information(
-        args.filename,
+        paths[0],
         input_format=args.input_format,
         cell=args.cell,
         symprec=args.symprec,
