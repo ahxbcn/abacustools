@@ -764,6 +764,42 @@ magnetic `symmetry 2`/`symmetry 3` run whose reduction is not the
 crystallographic one - cannot be expanded; the analyzer says so and asks for a
 `symmetry 0` or `symmetry -1` calculation instead.
 
+Bader charges are integrated over the Bader volumes of a job with the external
+[Henkelman](https://theory.cm.utexas.edu/henkelman/code/bader/) program or with
+the Python [baderkit](https://github.com/SWeavz/baderkit) library:
+
+```text
+abacustools postprocess bader -j JOB
+abacustools postprocess bader -j JOB --backend baderkit
+abacustools postprocess bader -j JOB --reference OTHER.cube --vacuum auto --keep-cubes
+abacustools postprocess bader -j JOB --json -o bader.json
+```
+
+Both backends partition the same density, which comes from the `SPIN*_CHG.cube`
+of `out_chg 1` or from the `*-CHARGE-DENSITY.restart` backup, converted from
+`rho(G)` with the FFT grid of the running log (`--grid NX NY NZ` overrides it)
+and the lattice constant of the STRU (`--lat0`). `--cube` selects another cube
+and `--reference` partitions with another density. `--vacuum off|auto|DENSITY`
+follows the flag of the external program, where `auto` is the 1e-3
+e/Angstrom^3 cutoff. An `nspin 2` job integrates the magnetization over the
+Bader volumes of the total density, which is what gives the per-atom spin
+moments in Bohr magneton.
+
+The external program is resolved from `--bader-exe`, the `BADER_EXE`
+environment variable or `bader.exe` in `~/.abacustools/config.yaml`, and writes
+its `ACF.dat` into the working directory that `--workdir` or `--keep-cubes`
+preserves. The `baderkit` backend needs the optional package
+(`pip install abacustools[baderkit]`) and runs the partition in the Python
+process instead, so it needs no executable. `--baderkit-method` selects one of
+its `neargrid`, `neargrid-weight`, `ongrid` and `weight` algorithms; the
+default `neargrid` is the partitioning the external program applies, which
+makes the two backends agree to a few 1e-3 e on the same cube.
+
+Charges are reported next to the valence electron count of the pseudopotential,
+so `net charge = z_valence - bader_charge` is positive for an electron-poor
+atom. Positions and distances are in Angstrom and volumes in Angstrom^3, for
+both backends.
+
 DDEC6 and DDEC3 net atomic charges, spin moments and bond orders are
 computed with the external [Chargemol](https://ddec.sourceforge.net) program,
 which partitions the valence density of a job:

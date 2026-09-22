@@ -36,6 +36,7 @@ from abacustools.data.charge import (
     total_charge,
     valence_electrons as _valence_electrons,
 )
+from abacustools.data.grid import Charge
 from abacustools.io.abacus import ReadInput
 from abacustools.io.stru import AbacusSTRU
 
@@ -92,6 +93,7 @@ class BaderAnalysis:
     workdir: Path
     bader_stdout: str = ""
     reference: Optional[Path] = None
+    backend: str = "bader"
 
     @property
     def total_net_charge(self) -> float:
@@ -105,6 +107,7 @@ class BaderAnalysis:
         return {
             "job": str(self.job),
             "nspin": self.nspin,
+            "backend": self.backend,
             "charge_source": self.charge_source,
             "reference": str(self.reference) if self.reference else None,
             "workdir": str(self.workdir),
@@ -262,22 +265,55 @@ def _build_atoms(
     return atoms
 
 
-def analyze_bader(
+@dataclass
+class BaderDensity:
+    """Charge density of one job, ready for a Bader partition.
+
+    Attributes:
+        total: Total density (up + down) that defines the partition.
+        magnetization: Up minus down density, ``None`` for ``nspin 1``.
+        elements: Element symbol of every atom.
+        valences: Number of valence electrons of every atom.
+        charge_source: Description of the files the density was read from.
+        nspin: Number of spin channels the job declares.
+    """
+
+    total: Charge
+    magnetization: Optional[Charge]
+    elements: List[str]
+    valences: List[float]
+    charge_source: str
+    nspin: int
+
+
+def read_bader_density(
     job: str | os.PathLike,
     *,
     cube: Optional[str] = None,
-    reference: Optional[str] = None,
-    exe: Optional[str] = None,
     grid_shape: Optional[Tuple[int, int, int]] = None,
     lat0: Optional[float] = None,
-    vacuum: Optional[object] = None,
-    workdir: Optional[str | os.PathLike] = None,
-    keep: bool = False,
-) -> BaderAnalysis:
-    """Run a full Bader analysis on an ABACUS job directory.
+) -> BaderDensity:
+    """Assemble the density that every Bader backend partitions.
 
-    The charge density is taken from ``SPIN*_CHG.cube`` when present, otherwise
-    from ``*-CHARGE-DENSITY.restart`` (which is converted with an inverse FFT).
+    The density is taken from ``SPIN*_CHG.cube`` when present, otherwise from
+    ``*-CHARGE-DENSITY.restart`` (which is converted with an inverse FFT). The
+    valence electron count of every atom comes from the cube header or, for a
+    restart file, from the pseudopotentials the STRU names.
+
+    Args:
+        job: ABACUS job directory.
+        cube: Explicit charge-density cube file or directory, relative to
+            ``job``.
+        grid_shape: FFT grid of a restart file, read from the log when omitted.
+        lat0: ``LATTICE_CONSTANT`` of the job in Bohr, taken from the STRU when
+            omitted.
+
+    Returns:
+        The assembled density.
+
+    Raises:
+        BaderError: If the job has no usable charge density or declares an
+            ``nspin`` that no Bader partition supports.
     """
     job_path = Path(job).expanduser().absolute()
     inputs = ReadInput(str(job_path / "INPUT"))
@@ -326,6 +362,39 @@ def analyze_bader(
     except ChargeDensityError as error:
         raise BaderError(str(error)) from error
 
+    return BaderDensity(
+        total=total,
+        magnetization=magnetization,
+        elements=elements,
+        valences=valences,
+        charge_source=charge_source,
+        nspin=nspin,
+    )
+
+
+def analyze_bader(
+    job: str | os.PathLike,
+    *,
+    cube: Optional[str] = None,
+    reference: Optional[str] = None,
+    exe: Optional[str] = None,
+    grid_shape: Optional[Tuple[int, int, int]] = None,
+    lat0: Optional[float] = None,
+    vacuum: Optional[object] = None,
+    workdir: Optional[str | os.PathLike] = None,
+    keep: bool = False,
+) -> BaderAnalysis:
+    """Run a full Bader analysis on an ABACUS job directory.
+
+    The charge density is taken from ``SPIN*_CHG.cube`` when present, otherwise
+    from ``*-CHARGE-DENSITY.restart`` (which is converted with an inverse FFT).
+    The partition itself is done by the external Henkelman ``bader`` program;
+    :func:`abacustools.integrations.baderkit.analyze_baderkit` runs the same
+    partition with the ``baderkit`` library instead.
+    """
+    job_path = Path(job).expanduser().absolute()
+    density = read_bader_density(job_path, cube=cube, grid_shape=grid_shape, lat0=lat0)
+
     if workdir is not None:
         work = Path(workdir).expanduser().absolute()
         work.mkdir(parents=True, exist_ok=True)
@@ -336,7 +405,7 @@ def analyze_bader(
 
     try:
         total_cube = work / "charge_total.cube"
-        total.save_cube(str(total_cube), format="abacus")
+        density.total.save_cube(str(total_cube), format="abacus")
         reference_path = None
         if reference is not None:
             reference_path = Path(reference)
@@ -350,11 +419,11 @@ def analyze_bader(
             extra_args=_vacuum_arguments(vacuum),
         )
         records, vacuum_charge, vacuum_volume, number_of_electrons = read_acf(work / "ACF.dat")
-        atoms = _build_atoms(records, elements, valences)
+        atoms = _build_atoms(records, density.elements, density.valences)
 
-        if magnetization is not None:
+        if density.magnetization is not None:
             spin_cube = work / "charge_spin.cube"
-            magnetization.save_cube(str(spin_cube), format="abacus")
+            density.magnetization.save_cube(str(spin_cube), format="abacus")
             run_bader(
                 spin_cube.name,
                 reference=total_cube.name,
@@ -371,13 +440,14 @@ def analyze_bader(
 
     return BaderAnalysis(
         job=job_path,
-        nspin=nspin,
+        nspin=density.nspin,
         atoms=atoms,
         vacuum_charge=vacuum_charge,
         vacuum_volume=vacuum_volume,
         number_of_electrons=number_of_electrons,
-        charge_source=charge_source,
+        charge_source=density.charge_source,
         workdir=work,
         bader_stdout=stdout,
         reference=reference_path,
+        backend="bader",
     )

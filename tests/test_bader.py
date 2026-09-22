@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import stat
+import tempfile
 from argparse import Namespace
 from pathlib import Path
 
@@ -12,6 +14,7 @@ import pytest
 from abacustools.commands.postprocess.bader import run
 from abacustools.core.constant import ANG_TO_BOHR, BOHR_TO_ANG
 from abacustools.data.bader import (
+    BaderAnalysis,
     BaderError,
     analyze_bader,
     fft_grid_from_log,
@@ -19,6 +22,8 @@ from abacustools.data.bader import (
     read_acf,
 )
 from abacustools.data.grid import Charge, RestartCharge
+from abacustools.integrations import baderkit as baderkit_backend
+from abacustools.integrations.baderkit import BaderkitResult, analyze_baderkit
 
 
 FAKE_BADER = '''#!/usr/bin/env python3
@@ -71,6 +76,8 @@ def _namespace(job: Path, **overrides) -> Namespace:
     values = dict(
         job=str(job),
         output=None,
+        backend="bader",
+        baderkit_method="neargrid",
         bader_exe=None,
         cube=None,
         reference=None,
@@ -297,6 +304,222 @@ def test_analyze_bader_requires_charge_density(tmp_path: Path) -> None:
     )
     with pytest.raises(BaderError):
         analyze_bader(job, exe=str(_fake_bader(tmp_path)))
+
+
+def _baderkit_job(tmp_path: Path, nspin: int = 1) -> Path:
+    job = tmp_path / "job"
+    output = job / "OUT.ABACUS"
+    output.mkdir(parents=True)
+    (job / "INPUT").write_text(
+        f"INPUT_PARAMETERS\nsuffix ABACUS\nnspin {nspin}\n", encoding="utf-8"
+    )
+    if nspin == 2:
+        _cube(output / "SPIN1_CHG.cube", np.full((4, 4, 4), 0.6))
+        _cube(output / "SPIN2_CHG.cube", np.full((4, 4, 4), 0.4))
+    else:
+        _cube(output / "SPIN1_CHG.cube", np.ones((4, 4, 4)))
+    return job
+
+
+def _fake_partition(monkeypatch, charges, spin=None):
+    """Replace the baderkit call of the integration with a canned result."""
+    calls = []
+
+    def partition(charge, *, reference=None, vacuum=None, valence_counts=None,
+                  method="neargrid"):
+        calls.append(
+            {
+                "charge": charge,
+                "reference": reference,
+                "vacuum": vacuum,
+                "method": method,
+            }
+        )
+        values = charges if reference is None or spin is None else spin
+        return BaderkitResult(
+            charges=list(values),
+            volumes=[1.0] * len(values),
+            min_distances=[0.5] * len(values),
+            vacuum_charge=0.0,
+            vacuum_volume=0.0,
+            number_of_electrons=float(sum(values)),
+            log="fake baderkit",
+        )
+
+    monkeypatch.setattr(baderkit_backend, "_partition", partition)
+    return calls
+
+
+def test_baderkit_analyze_cube_nspin1(tmp_path: Path, monkeypatch) -> None:
+    job = _baderkit_job(tmp_path, 1)
+    calls = _fake_partition(monkeypatch, [3.9, 3.8])
+
+    analysis = analyze_baderkit(job, method="ongrid")
+
+    assert analysis.backend == "baderkit"
+    assert analysis.nspin == 1
+    assert analysis.charge_source == "cube"
+    assert [atom.element for atom in analysis.atoms] == ["Si", "Si"]
+    assert analysis.atoms[0].bader_charge == pytest.approx(3.9)
+    assert analysis.atoms[0].net_charge == pytest.approx(0.1)
+    assert analysis.atoms[0].atomic_volume == pytest.approx(1.0)
+    assert analysis.atoms[0].spin_moment is None
+    assert analysis.number_of_electrons == pytest.approx(7.7)
+    assert len(calls) == 1
+    assert calls[0]["reference"] is None
+    assert calls[0]["method"] == "ongrid"
+
+
+def test_baderkit_analyze_nspin2_integrates_the_magnetization(
+    tmp_path: Path, monkeypatch
+) -> None:
+    job = _baderkit_job(tmp_path, 2)
+    calls = _fake_partition(monkeypatch, [3.9, 3.8], spin=[0.5, -0.5])
+
+    analysis = analyze_baderkit(job)
+
+    assert analysis.nspin == 2
+    assert [atom.spin_moment for atom in analysis.atoms] == pytest.approx([0.5, -0.5])
+    # the spin run partitions with the total density, not the magnetization
+    assert len(calls) == 2
+    assert calls[0]["reference"] is None
+    assert calls[1]["reference"] is not None
+    assert calls[1]["reference"].data.shape == calls[0]["charge"].data.shape
+
+
+def test_baderkit_analyze_partitions_with_a_reference_cube(
+    tmp_path: Path, monkeypatch
+) -> None:
+    job = _baderkit_job(tmp_path, 1)
+    _cube(job / "ref.cube", np.full((4, 4, 4), 0.5))
+    calls = _fake_partition(monkeypatch, [3.9, 3.8])
+
+    analysis = analyze_baderkit(job, reference="ref.cube")
+
+    assert analysis.reference == job / "ref.cube"
+    assert calls[0]["reference"] is not None
+    assert calls[0]["reference"].data.shape == (4, 4, 4)
+
+
+def test_baderkit_analyze_rejects_a_basin_count_mismatch(
+    tmp_path: Path, monkeypatch
+) -> None:
+    job = _baderkit_job(tmp_path, 1)
+    _fake_partition(monkeypatch, [3.9])
+
+    with pytest.raises(BaderError):
+        analyze_baderkit(job)
+
+
+def test_baderkit_vacuum_values_follow_the_external_flags() -> None:
+    translate = baderkit_backend._vacuum_tolerance
+    assert translate(None) is False
+    assert translate("off") is False
+    assert translate("auto") is True
+    assert translate("0.002") == pytest.approx(0.002)
+    assert translate(0.005) == pytest.approx(0.005)
+
+
+def test_bader_command_dispatches_to_baderkit(tmp_path: Path, monkeypatch) -> None:
+    job = _baderkit_job(tmp_path, 1)
+    seen = {}
+
+    def fake(job_arg, **kwargs):
+        seen["job"] = job_arg
+        seen.update(kwargs)
+        return BaderAnalysis(
+            job=Path(job_arg),
+            nspin=1,
+            atoms=[],
+            vacuum_charge=0.0,
+            vacuum_volume=0.0,
+            number_of_electrons=0.0,
+            charge_source="cube",
+            workdir=Path(job_arg),
+            backend="baderkit",
+        )
+
+    monkeypatch.setattr("abacustools.commands.postprocess.bader.analyze_baderkit", fake)
+
+    assert run(_namespace(job, backend="baderkit", baderkit_method="weight")) == 0
+    assert seen["job"] == job
+    assert seen["method"] == "weight"
+    assert seen["cube"] is None
+    assert seen["workdir"] is None
+
+
+def test_bader_command_reports_a_missing_baderkit(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    job = _baderkit_job(tmp_path, 1)
+
+    def fake(*args, **kwargs):
+        raise ImportError("the `baderkit` backend needs the optional `baderkit` package")
+
+    monkeypatch.setattr("abacustools.commands.postprocess.bader.analyze_baderkit", fake)
+
+    assert run(_namespace(job, backend="baderkit")) == 1
+    assert "baderkit" in capsys.readouterr().out
+
+
+def _real_baderkit():
+    """Import baderkit, or skip when the environment cannot run it."""
+    os.environ.setdefault("NUMBA_CACHE_DIR", tempfile.gettempdir())
+    try:
+        import baderkit
+    except ImportError:
+        pytest.skip("baderkit is not installed")
+    except RuntimeError as error:  # numba caches next to the installed package
+        pytest.skip(f"baderkit cannot be imported here: {error}")
+    return baderkit
+
+
+def test_baderkit_grid_keeps_the_axis_order_and_units() -> None:
+    """baderkit reverses the axes of a cube, so the grid is built by hand."""
+    baderkit = _real_baderkit()
+    shape = (4, 5, 6)
+    cell = np.diag([4.0, 5.0, 6.0])
+    data = np.zeros(shape)
+    data[1, 3, 2] = 2.5
+
+    grid = baderkit_backend._grid_from_charge(
+        Charge(data, cell, np.array([[0.0, 0.0, 0.0]]), [14], [4.0]), baderkit
+    )
+
+    assert tuple(grid.total.shape) == shape
+    assert np.unravel_index(np.argmax(grid.total), grid.total.shape) == (1, 3, 2)
+    assert grid.total[1, 3, 2] == pytest.approx(2.5 * abs(np.linalg.det(cell)))
+
+
+def test_baderkit_end_to_end_single_atom_keeps_its_electrons(tmp_path: Path) -> None:
+    _real_baderkit()
+    job = tmp_path / "job"
+    output = job / "OUT.ABACUS"
+    output.mkdir(parents=True)
+    (job / "INPUT").write_text(
+        "INPUT_PARAMETERS\nsuffix ABACUS\nnspin 1\n", encoding="utf-8"
+    )
+    n = 16
+    cell = np.diag([4.0, 4.0, 4.0])
+    position = np.array([[0.7, 1.1, 1.5]])
+    axis = np.arange(n) / n * 4.0
+    mesh = np.meshgrid(axis, axis, axis, indexing="ij")
+    squared = sum(
+        (component - position[0][index]) ** 2 for index, component in enumerate(mesh)
+    )
+    data = np.exp(-squared / (2 * 0.4**2))
+    data *= 4.0 / (data.sum() * (4.0 / n) ** 3)  # e/Angstrom**3, four electrons
+    Charge(data, cell, position, [14], [4.0]).save_cube(
+        str(output / "SPIN1_CHG.cube"), format="abacus"
+    )
+
+    analysis = analyze_baderkit(job)
+
+    assert analysis.backend == "baderkit"
+    assert len(analysis.atoms) == 1
+    assert analysis.atoms[0].bader_charge == pytest.approx(4.0, abs=1e-3)
+    assert analysis.atoms[0].atomic_volume == pytest.approx(64.0, abs=0.1)
+    assert analysis.atoms[0].position == pytest.approx((0.7, 1.1, 1.5))
 
 
 def test_bader_atoms_are_reported_in_angstrom(tmp_path: Path) -> None:
