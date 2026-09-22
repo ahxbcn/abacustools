@@ -374,6 +374,58 @@ def crystallographic_symmetry(
         }
 
 
+def space_group_summary(
+    structure: AbacusSTRU,
+    *,
+    symprec: float = 1e-5,
+    angle_tolerance: float = 5.0,
+) -> dict[str, Any]:
+    """Return the space group and crystal system of a structure.
+
+    This is the part of :func:`crystallographic_symmetry` that a caller listing
+    the main fields of many structures needs. It skips the Wyckoff positions,
+    the point group, the Bravais lattice and the conventional cell, which cost
+    the most and are only read by the full report.
+
+    Args:
+        structure: Structure to analyse.
+        symprec: Symmetry distance tolerance in Angstrom.
+        angle_tolerance: Symmetry angle tolerance in degrees.
+
+    Returns:
+        dict: Space group symbol and number with the crystal system, or
+        ``available=False`` with a reason.
+    """
+    unavailable = {
+        "available": False,
+        "space_group_symbol": None,
+        "space_group_number": None,
+        "crystal_system": None,
+    }
+    if _periodic_cell(structure) is None:
+        return {
+            **unavailable,
+            "error": "a non-zero three-dimensional periodic cell is required",
+        }
+    try:
+        from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+
+        analyzer = SpacegroupAnalyzer(
+            structure.to("pymatgen"),
+            symprec=symprec,
+            angle_tolerance=angle_tolerance,
+        )
+        return {
+            "available": True,
+            "error": None,
+            "space_group_symbol": analyzer.get_space_group_symbol(),
+            "space_group_number": int(analyzer.get_space_group_number()),
+            "crystal_system": analyzer.get_crystal_system(),
+        }
+    except Exception as error:
+        return {**unavailable, "error": f"symmetry analysis failed: {error}"}
+
+
 def site_symmetry_symbols(
     structure: AbacusSTRU,
     *,
