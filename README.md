@@ -656,6 +656,29 @@ the k-point weights come from the `dm*_nao.txt` density-matrix headers.
 This is an ABACUS-NAO COHP/COOP implementation and is not a standard LOBSTER
 pCOHP projection.
 
+An ABACUS LCAO wavefunction can be exported to the Molden format, for example
+to visualize the orbitals in Molden, Multiwfn or Avogadro:
+
+```text
+abacustools postprocess molden -j JOB
+abacustools postprocess molden -j JOB -o orbitals.molden --gto-primitives 8
+abacustools postprocess molden -j JOB --atoms-unit angstrom --json
+```
+
+The command reads the LCAO coefficients from `WFC_NAO_GAMMA*` (or the
+develop `wf*_nao.txt` names and the `WFC_NAO_K*` files), expands every
+numerical atomic orbital into a contracted Gaussian fit, and writes
+`wfc.molden` below `JOB`. Valence counts for the `[Nval]` block come from the
+pseudopotentials, and `[5D7F]`/`[9G]` are written whenever the basis reaches
+that angular momentum, so the pure spherical harmonics of ABACUS are kept.
+`nspin 2` jobs write both spin channels into one file.
+
+The Molden format stores a single real set of orbitals, so the job must be a
+`gamma_only 1` run, or a non-gamma run whose selected k-point is real; use
+`--kpoint` to pick one k-point of the latter. `--gto-primitives` sets the
+number of Gaussians per numerical orbital (default 6) and the printed report
+quotes the largest relative radial fit error.
+
 DOS and projected DOS can be processed from an ABACUS output directory:
 
 ```text
