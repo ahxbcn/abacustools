@@ -11,6 +11,12 @@ Coordinates of the ``[Atoms]`` block are written in Bohr (``[Atoms] AU``), the
 ``[Cell]`` block is written in Angstrom, and the ``[GTO]`` primitives are
 written as ``exponent coefficient`` pairs, the ordering Molden, Q-Chem and the
 ABACUS reference implementation use.
+
+The layout follows the CP2K flavor of the format that Multiwfn accepts
+directly: ``[GTO]`` blocks are introduced by their 1-based atom index, shell
+lines carry ``label nprim scale``, primitive lines carry ``exponent
+coefficient``, atom blocks are separated by a blank line, and the
+``[5D7F]``/``[9G]`` markers declare the pure spherical harmonics.
 """
 
 from __future__ import annotations

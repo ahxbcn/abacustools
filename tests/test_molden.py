@@ -276,3 +276,18 @@ def test_molden_requires_lcao(tmp_path: Path):
     (job / "INPUT").write_text("INPUT_PARAMETERS\nbasis_type pw\n", encoding="utf-8")
     with pytest.raises(ValueError, match="lcao"):
         convert_wfc_to_molden(job)
+
+
+def test_gto_atom_indices_are_one_based_and_match_atoms():
+    """The [GTO] atom index must be 1-based, as CP2K and Multiwfn write it."""
+
+    atoms = [
+        MoldenAtom("H", 1, (0.0, 0.0, -0.35), (MoldenShell(0, [1.0], [0.5]),)),
+        MoldenAtom("H", 1, (0.0, 0.0, 0.35), (MoldenShell(0, [1.0], [0.5]),)),
+    ]
+    text = format_molden([], atoms, {"H": 1.0}, [MoldenOrbital(0.0, "Alpha", 2.0, [0.7, 0.7])])
+    lines = text.splitlines()
+    gto = lines.index("[GTO]")
+    assert lines[gto + 1] == "1 0"
+    assert lines[gto + 4] == ""  # blank line separating the atom blocks
+    assert lines[gto + 5] == "2 0"
