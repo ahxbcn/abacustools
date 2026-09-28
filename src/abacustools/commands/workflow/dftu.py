@@ -18,11 +18,11 @@ from abacustools.data.dftu import (
 )
 from abacustools.data.versions import default_version
 from abacustools.core.submission import generate_workflow_submission
+from abacustools.core.job import read_job_structure
 
 from .common import (
     clear_generated_jobs,
     kpoint_filename,
-    read_job_structure,
     register_stages,
     write_abacus_job,
     write_manifest,

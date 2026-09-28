@@ -5,9 +5,12 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from abacustools.io.abacus import IsEnabled, KnownInputKeywords, ReadInput
+
+if TYPE_CHECKING:
+    from abacustools.io.stru import AbacusSTRU
 
 
 @dataclass(frozen=True)
@@ -208,6 +211,52 @@ def _input_summary(
     if resources is not None:
         summary["resources"] = resources
     return summary
+
+
+def read_job_input(job: Path) -> dict[str, Any]:
+    """Read an ABACUS job's INPUT file with a consistent error message.
+
+    Args:
+        job: ABACUS calculation directory that holds ``INPUT``.
+
+    Returns:
+        The parsed INPUT parameters.
+
+    Raises:
+        FileNotFoundError: When the directory has no ``INPUT`` file.
+    """
+    job = Path(job)
+    input_path = job / "INPUT"
+    if not input_path.is_file():
+        raise FileNotFoundError(f"Could not find INPUT in ABACUS job: {input_path}")
+    return ReadInput(input_path)
+
+
+def read_job_structure(job: Path) -> tuple[dict[str, Any], str, AbacusSTRU]:
+    """Read an ABACUS job's INPUT and the structure it references.
+
+    Args:
+        job: ABACUS calculation directory that holds ``INPUT`` and ``STRU``.
+
+    Returns:
+        A ``(inputs, stru_filename, structure)`` tuple: the parsed INPUT
+        parameters, the structure filename named by ``stru_file``, and the
+        parsed structure.
+
+    Raises:
+        FileNotFoundError: When the directory has no ``INPUT`` file.
+        RuntimeError: When the referenced structure file cannot be read.
+    """
+    from abacustools.io.stru import AbacusSTRU
+
+    job = Path(job)
+    inputs = read_job_input(job)
+    stru_filename = str(inputs.get("stru_file", "STRU"))
+    stru_path = job / stru_filename
+    structure = AbacusSTRU.read(stru_path)
+    if structure is None:
+        raise RuntimeError(f"failed to read structure: {stru_path}")
+    return inputs, stru_filename, structure
 
 
 def check_input(job_dir: Path, *, strict: bool = False) -> InputCheck:

@@ -42,11 +42,11 @@ from abacustools.data.phonon import (
     validate_supercell,
 )
 from abacustools.data.versions import default_version
+from abacustools.core.job import read_job_structure
 
 from .common import (
     clear_generated_jobs,
     kpoint_filename,
-    read_job_structure,
     read_manifest,
     register_stages,
     resolve_output,
