@@ -8,6 +8,7 @@ from . import ddec as ddec_command
 from . import dos as dos_command
 from . import mayer as mayer_command
 from . import md as md_command
+from . import molden as molden_command
 from . import result as result_command
 
 
@@ -32,4 +33,5 @@ def register_parser(subparsers) -> None:
     dos_command.register_parser(postprocess_subparsers)
     mayer_command.register_parser(postprocess_subparsers)
     md_command.register_parser(postprocess_subparsers)
+    molden_command.register_parser(postprocess_subparsers)
     result_command.register_parser(postprocess_subparsers)
