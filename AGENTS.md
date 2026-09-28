@@ -9,17 +9,20 @@ toolkit for DFT calculations with [ABACUS](https://abacus.deepmodeling.com/).
   script (`abacustools.main:main`). No compiled extensions.
 - Requires Python >= 3.9 (developed on 3.11).
 - Runtime dependencies: `numpy`, `rich`, `pymatgen`, `phonopy`, `seekpath`,
-  `matplotlib`, `ase`, `pydantic`.
+  `matplotlib`, `ase`, `pydantic`, `spglib`.
 - Command families:
   - `abacustools file ...` — convert/inspect `INPUT`, `STRU`, `KPT`, structures.
   - `abacustools job ...` — prepare, check, validate, and monitor jobs.
   - `abacustools database ...` — search and download structures from external
     databases (`list`, `fields`, `providers`, `search`, `download`); every
     database is a `StructureDatabase` in `integrations/databases/`, registered
-    in that package's `__init__`, and `mp ...` is its Materials Project
-    spelling. Prefer OPTIMADE when a database speaks it; C2DB keeps its own
-    adapter because only its web query table publishes the computed properties.
-  - `abacustools postprocess ...` — `result`, `band`, `dos`, `cohp`, `mayer`, `bader`.
+    in that package's `__init__`. Prefer OPTIMADE when a database speaks it;
+    C2DB keeps its own adapter because only its web query table publishes the
+    computed properties.
+  - `abacustools mp ...` — the Materials Project spelling of
+    `abacustools database --database mp`.
+  - `abacustools postprocess ...` — `result`, `band`, `dos`, `cohp`, `mayer`,
+    `bader`, `chg`, `ddec`, `md`, `molden`.
   - `abacustools workflow ...` — multi-step workflows (elastic, phonon, ...).
 
 ## Environment setup
@@ -47,28 +50,32 @@ ruff format src tests                     # format
 
 ```text
 src/abacustools/
-  main.py            # argparse entry point; registers the four families
+  main.py            # argparse entry point; registers the command families
   version.py         # __version__
   commands/          # CLI layer (thin): <family>/<command>.py
-    file/ job/ postprocess/ workflow/
+    file/ job/ database/ mp/ postprocess/ workflow/
   data/              # parsing/analysis of ABACUS outputs -> arrays/dataclasses
-  io/                # read/write file formats (STRU, INPUT, KPT, pseudo, NAO)
+  io/                # read/write file formats (STRU, INPUT, KPT, pseudo,
+                     # NAO, Molden, xyz)
   core/              # config, constants, job/process handling, submission
   integrations/      # adapters to external tools (e.g. abacuslite)
   menu/              # interactive multi-level menu (argparse reflection)
 tests/               # pytest suite (test_*.py)
 ```
 
-Layering: `commands/` may import `data/`, `io/`, and `core/`; `data/` and `io/`
-must not import `commands/`. Keep the CLI layer thin — argument parsing and
-rendering only.
+Layering: `commands/` may import `data/`, `io/`, and `core/`; `data/`, `io/`,
+`core/`, and `integrations/` must not import `commands/`. Keep the CLI layer
+thin — argument parsing and rendering only. A helper used by more than one
+command module lives in `data/`, `io/`, or `core/` (for example the job
+readers in `core/job.py`), never in a sibling command module.
 
 ## Adding or changing a command
 
 1. Implement the logic in `data/` (or `io/`, `core/`), not in the command file.
    Draw the module boundary along the computation, not along the commands: when
    two command modules need the same helper — a phonopy object, a force reader,
-   a polarization conversion — give it a public home in `data/`. A command
+   a polarization conversion — give it a public home in `data/`, `io/`, or
+   `core/`. A command
    module must never import a private name out of a sibling command module, and
    shared helpers must not be copied into a second one.
 2. Create `commands/<family>/<name>.py` containing:

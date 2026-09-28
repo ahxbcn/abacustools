@@ -55,6 +55,47 @@ HESSIAN_TO_ENERGY = HBAR / np.sqrt(
 )
 
 
+def validate_stepsize(stepsize: float) -> None:
+    """Validate a finite positive Cartesian displacement.
+
+    Args:
+        stepsize: Displacement in Angstrom.
+
+    Raises:
+        ValueError: When the step is not a positive finite number.
+    """
+    if not np.isfinite(stepsize) or stepsize <= 0:
+        raise ValueError("stepsize must be a positive finite number")
+
+
+def selected_atom_indices(selected_atoms: Any, natoms: int) -> list[int]:
+    """Validate one-based CLI atom indices and return zero-based indices.
+
+    Args:
+        selected_atoms: One-based atom indices from the command line, or None
+            to select every atom.
+        natoms: Number of atoms in the structure.
+
+    Returns:
+        Sorted zero-based atom indices.
+
+    Raises:
+        ValueError: When the selection is empty, out of range, or repeated.
+    """
+    if selected_atoms is None:
+        return list(range(natoms))
+    if not selected_atoms:
+        raise ValueError("selected atom indices must not be empty")
+    if any(isinstance(index, bool) for index in selected_atoms):
+        raise ValueError("atom indices must be positive integers")
+    indices = [int(index) for index in selected_atoms]
+    if any(index < 1 or index > natoms for index in indices):
+        raise ValueError(f"atom indices must be between 1 and {natoms}")
+    if len(set(indices)) != len(indices):
+        raise ValueError("atom indices must not contain duplicates")
+    return sorted(index - 1 for index in indices)
+
+
 def frequency_values(frequencies: Sequence[complex]) -> list[float]:
     """Represent imaginary frequencies as negative real values.
 

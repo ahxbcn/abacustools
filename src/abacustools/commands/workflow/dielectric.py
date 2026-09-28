@@ -33,11 +33,11 @@ from abacustools.data.dielectric import (
     prepare_matrix_output,
 )
 from abacustools.integrations.pyatb import dielectric_tensor
+from abacustools.core.job import read_job_structure
 
 from .common import (
     clear_generated_jobs,
     kpoint_filename,
-    read_job_structure,
     read_manifest,
     register_stages,
     workflow_manifest_path,

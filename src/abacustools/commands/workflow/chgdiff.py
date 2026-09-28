@@ -12,11 +12,11 @@ from abacustools.data.charge import (
     validate_same_grid,
 )
 from abacustools.data.versions import default_version
+from abacustools.core.job import read_job_structure
 
 from .common import (
     clear_generated_jobs,
     kpoint_filename,
-    read_job_structure,
     read_manifest,
     register_stages,
     write_abacus_job,

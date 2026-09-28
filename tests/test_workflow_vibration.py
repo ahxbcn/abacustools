@@ -19,13 +19,16 @@ from abacustools.commands.workflow.vibration import (
     _write_modes_ase,
     _write_modes_builtin,
     postprocess,
-    _selected_atoms,
     _temperatures,
     prepare,
 )
 from abacustools.core.constant import BOLTZMANN_CONSTANT_EV_PER_K, INV_CM_TO_EV
 from abacustools.core.submission import generate_workflow_submission, resolve_submission
-from abacustools.data.vibration import HarmonicVibration, frequency_values
+from abacustools.data.vibration import (
+    HarmonicVibration,
+    frequency_values,
+    selected_atom_indices,
+)
 from abacustools.integrations.ase_vibration import AseVibrationData
 from abacustools.io.stru import AbacusSTRU
 
@@ -139,11 +142,11 @@ H
             self.assertTrue((job / "submit_vibration.sh").stat().st_mode & 0o111)
 
     def test_selected_atoms_and_temperatures(self) -> None:
-        self.assertEqual(_selected_atoms([3, 1], 3), [0, 2])
+        self.assertEqual(selected_atom_indices([3, 1], 3), [0, 2])
         self.assertEqual(_temperatures([100, 300, 3]), [100.0, 200.0, 300.0])
         self.assertEqual(frequency_values(np.array([1 + 0j, 2j])), [1.0, -2.0])
         with self.assertRaises(ValueError):
-            _selected_atoms([1, 1], 3)
+            selected_atom_indices([1, 1], 3)
         with self.assertRaises(ValueError):
             _temperatures([100, 300])
 

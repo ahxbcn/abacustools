@@ -20,16 +20,20 @@ from abacustools.core.constant import (
 from abacustools.core.submission import generate_workflow_submission
 from abacustools.data.versions import default_version
 from abacustools.data.phonon import read_forces
-from abacustools.data.vibration import HarmonicVibration
+from abacustools.data.vibration import (
+    HarmonicVibration,
+    selected_atom_indices,
+    validate_stepsize,
+)
 from abacustools.integrations.ase_vibration import AseVibrationData
 from abacustools.io.stru import write_poscar
 from abacustools.io.xyz import write_extxyz
+from abacustools.core.job import read_job_structure
 
 from .common import (
     clear_generated_jobs,
     kpoint_filename,
     read_manifest,
-    read_job_structure,
     register_stages,
     write_abacus_job,
     write_manifest,
@@ -199,12 +203,6 @@ def _register_postprocess_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _validate_stepsize(stepsize: float) -> None:
-    """Validate a finite positive Cartesian displacement."""
-    if not np.isfinite(stepsize) or stepsize <= 0:
-        raise ValueError("stepsize must be a positive finite number")
-
-
 def _element_mass_overrides(values: Any) -> dict[str, float]:
     """Parse ``ELEMENT=MASS`` assignments into relative atomic mass overrides.
 
@@ -241,22 +239,6 @@ def _element_mass_overrides(values: Any) -> dict[str, float]:
     return overrides
 
 
-def _selected_atoms(selected_atoms: Any, natoms: int) -> list[int]:
-    """Validate one-based CLI atom indices and return zero-based indices."""
-    if selected_atoms is None:
-        return list(range(natoms))
-    if not selected_atoms:
-        raise ValueError("selected atom indices must not be empty")
-    if any(isinstance(index, bool) for index in selected_atoms):
-        raise ValueError("atom indices must be positive integers")
-    indices = [int(index) for index in selected_atoms]
-    if any(index < 1 or index > natoms for index in indices):
-        raise ValueError(f"atom indices must be between 1 and {natoms}")
-    if len(set(indices)) != len(indices):
-        raise ValueError("atom indices must not contain duplicates")
-    return sorted(index - 1 for index in indices)
-
-
 def _displacement_tasks(selected_atoms: list[int]) -> list[dict[str, Any]]:
     """Return the task metadata for all central finite differences."""
     tasks = []
@@ -281,10 +263,10 @@ def prepare(args: argparse.Namespace) -> int:
     job = Path(args.job).absolute()
     if not job.is_dir():
         raise RuntimeError(f"job directory does not exist: {job}")
-    _validate_stepsize(args.stepsize)
+    validate_stepsize(args.stepsize)
 
     inputs, stru_filename, structure = read_job_structure(job)
-    selected_atoms = _selected_atoms(args.selected_atoms, structure.natoms)
+    selected_atoms = selected_atom_indices(args.selected_atoms, structure.natoms)
     vibration_inputs = deepcopy(inputs)
     vibration_inputs["calculation"] = "scf"
     vibration_inputs["cal_force"] = 1
@@ -769,10 +751,10 @@ def postprocess(args: argparse.Namespace) -> int:
     manifest = read_manifest(job, "vibration", [_EQUILIBRIUM_TASK])
     try:
         stepsize = float(manifest["stepsize"])
-        selected_atoms = _selected_atoms(manifest["selected_atoms"], structure.natoms)
+        selected_atoms = selected_atom_indices(manifest["selected_atoms"], structure.natoms)
     except (KeyError, TypeError, ValueError) as error:
         raise RuntimeError("vibration workflow manifest has invalid metadata") from error
-    _validate_stepsize(stepsize)
+    validate_stepsize(stepsize)
     displacement_tasks = manifest.get("displacements")
     if not isinstance(displacement_tasks, list) or len(displacement_tasks) != 6 * len(selected_atoms):
         raise RuntimeError("vibration workflow manifest has invalid displacements")

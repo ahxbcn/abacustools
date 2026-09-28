@@ -29,12 +29,12 @@ from abacustools.data.elastic import (
 from abacustools.data.dimensionality import classify_dimensionality
 from abacustools.data.symmetry import crystallographic_symmetry
 from abacustools.data.versions import default_version
+from abacustools.core.job import read_job_structure
 
 from .common import (
     clear_generated_jobs,
     kpoint_filename,
     read_manifest,
-    read_job_structure,
     register_stages,
     write_abacus_job,
     write_manifest,
