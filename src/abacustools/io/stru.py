@@ -544,8 +544,17 @@ def _guess_format(path: str) -> str:
     return None
 
 
-def _normalize_structure_format(fmt: Optional[str], filename: str) -> str:
-    """Normalize a structure format name, using the filename when needed."""
+def normalize_structure_format(fmt: Optional[str], filename: str) -> str:
+    """Return the canonical format a read or write will use.
+
+    Args:
+        fmt: Explicit format name, or ``None`` to guess it from the filename.
+        filename: Structure file the format belongs to.
+
+    Returns:
+        str: Canonical format name: ``stru``, ``poscar``, ``cif``, ``xyz``,
+        ``extxyz`` or ``xsf``.
+    """
     if fmt is None:
         fmt = _guess_format(filename) or "stru"
     fmt = fmt.lower()
@@ -629,7 +638,7 @@ def conversion_loss_report(structure: "AbacusSTRU", target_format: str) -> List[
     silently incomplete structure, especially for calculations where masses,
     constraints, or magnetic moments affect the result.
     """
-    target = _normalize_structure_format(target_format, target_format)
+    target = normalize_structure_format(target_format, target_format)
     if target in ("stru", "abacus/stru"):
         return []
 
@@ -1083,7 +1092,7 @@ class AbacusSTRU:
         if not os.path.exists(filename):
             print(f"Error: file '{filename}' does not exist.")
             return None
-        fmt = _normalize_structure_format(fmt, filename)
+        fmt = normalize_structure_format(fmt, filename)
         try:
             if fmt in ["stru", "abacus/stru"]:
                 stru_data = read_stru_file(stru=filename)
@@ -1175,7 +1184,7 @@ class AbacusSTRU:
         Returns:
             bool: True if write succeeded, False otherwise.
         """
-        fmt = _normalize_structure_format(fmt, filename)
+        fmt = normalize_structure_format(fmt, filename)
         _warn_conversion_losses(
             conversion_loss_report(self, fmt),
             "STRU",

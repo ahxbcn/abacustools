@@ -71,8 +71,8 @@ formula, space group, crystal system, point group with its Schoenflies symbol,
 Bravais lattice with the Pearson symbol, inversion symmetry, polar point group,
 the symmetry tolerances that were used, symmetry operation count, per-atom
 Wyckoff positions with their multiplicity and site symmetry, a separate list of
-symmetry-inequivalent atomic positions, and the ABACUS pseudopotential and
-orbital file of every label. The inequivalent list contains one representative
+symmetry-inequivalent atomic positions, and, when the input is read as an
+ABACUS `STRU`, the ABACUS pseudopotential and orbital file of every label. The inequivalent list contains one representative
 atom per symmetry-equivalent group together with the equivalent atom indices
 and multiplicity; when no two atoms are related by symmetry, as in `P1`, the
 list only repeats the per-atom table and is left out of the report.

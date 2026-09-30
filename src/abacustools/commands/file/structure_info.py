@@ -21,7 +21,7 @@ from abacustools.data.symmetry import (
     magnetic_symmetry,
     site_symmetry_symbols,
 )
-from abacustools.io.stru import AbacusSTRU
+from abacustools.io.stru import AbacusSTRU, normalize_structure_format
 
 
 def _structure_file(value: str) -> Path:
@@ -160,9 +160,10 @@ def structure_information(
 ) -> dict[str, Any]:
     """Read a structure and return JSON-compatible basic information."""
     _validate_inputs(symprec, angle_tolerance, min_vacuum)
+    resolved_format = normalize_structure_format(input_format, str(filename))
     structure = AbacusSTRU.read(
         filename,
-        fmt=input_format,
+        fmt=resolved_format,
         cell=None if cell is None else np.asarray(cell, dtype=float).reshape(3, 3),
     )
     if structure is None:
@@ -257,7 +258,7 @@ def structure_information(
 
     return {
         "file": str(Path(filename).absolute()),
-        "format": input_format,
+        "format": resolved_format,
         "natoms": structure.natoms,
         "formula": " ".join(f"{element}{count if count != 1 else ''}" for element, count in Counter(elements).items()),
         "element_counts": dict(Counter(elements)),
@@ -270,10 +271,16 @@ def structure_information(
             "angles_degree": None if lengths_angles is None else _round_values(lengths_angles[3:]),
             "periodic": volume is not None and volume > 1e-12,
         },
-        "resources": {
-            "pseudopotentials": _resource_by_label(structure, "pp"),
-            "orbitals": _resource_by_label(structure, "orb"),
-        },
+        # The pseudopotential and orbital file names live in the ATOMIC_SPECIES
+        # and NUMERICAL_ORBITAL blocks, which only the ABACUS STRU format has.
+        "resources": (
+            {
+                "pseudopotentials": _resource_by_label(structure, "pp"),
+                "orbitals": _resource_by_label(structure, "orb"),
+            }
+            if resolved_format == "stru"
+            else None
+        ),
         "symmetry": symmetry,
         "magnetic_symmetry": magnetic,
         "magnetic_ordering": ordering,
@@ -537,18 +544,20 @@ def _print_report(result: dict[str, Any]) -> None:
     if len(positions) != result["natoms"]:
         print("symmetry-inequivalent positions:")
         _print_table(*_inequivalent_table(positions))
-    print("resources:")
-    _print_table(
-        ["label", "pseudopotential", "orbital"],
-        [
+    resources = result.get("resources")
+    if resources:
+        print("resources:")
+        _print_table(
+            ["label", "pseudopotential", "orbital"],
             [
-                str(label),
-                _display_value(result["resources"]["pseudopotentials"].get(label)),
-                _display_value(result["resources"]["orbitals"].get(label)),
-            ]
-            for label in result["label_counts"]
-        ],
-    )
+                [
+                    str(label),
+                    _display_value(resources["pseudopotentials"].get(label)),
+                    _display_value(resources["orbitals"].get(label)),
+                ]
+                for label in result["label_counts"]
+            ],
+        )
     print("atoms:")
     _print_table(*_atom_table(result["atoms"], result.get("coordination")))
 
