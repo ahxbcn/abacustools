@@ -40,6 +40,19 @@ Si
 """
 
 
+POSCAR = """Si
+1.0
+5.1306 0.0 0.0
+0.0 5.1306 0.0
+0.0 0.0 5.1306
+Si
+2
+Direct
+0.0 0.0 0.0
+0.25 0.25 0.25
+"""
+
+
 CUBIC = """ATOMIC_SPECIES
 Na 22.98977 Na.upf
 Cl 35.453 Cl.upf
@@ -72,6 +85,7 @@ def _arguments(
     *,
     json: bool = False,
     summary: bool = False,
+    input_format=None,
     layer_direction=None,
     coordination=None,
     min_vacuum: float = 5.0,
@@ -80,7 +94,7 @@ def _arguments(
     paths = [path] if isinstance(path, Path) else list(path)
     return Namespace(
         filename=paths,
-        input_format=None,
+        input_format=input_format,
         cell=None,
         symprec=1e-5,
         angle_tolerance=5.0,
@@ -261,6 +275,35 @@ class TestStructureInfo(unittest.TestCase):
             end = header.index(column) + len(column)
             self.assertEqual(row[end - len(value) : end].strip(), value)
         self.assertEqual(len(header), len(row))
+
+    def test_hides_resources_for_non_abacus_input(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "POSCAR"
+            path.write_text(POSCAR, encoding="utf-8")
+            result = structure_information(path)
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(run(_arguments(path)), 0)
+            report = output.getvalue()
+
+        self.assertEqual(result["format"], "poscar")
+        self.assertIsNone(result["resources"])
+        self.assertNotIn("resources:", report)
+        self.assertNotIn("pseudopotential", report)
+        self.assertIn("atoms:", report)
+
+    def test_resources_follow_the_explicit_stru_format(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "structure.txt"
+            path.write_text(STRU, encoding="utf-8")
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(run(_arguments(path, input_format="stru")), 0)
+            report = output.getvalue()
+
+        self.assertIn("resources:", report)
+        self.assertIn("Si.upf", report)
+        self.assertIn("Si.orb", report)
 
     def test_json_cli_output_and_xyz_without_cell(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
