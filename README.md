@@ -143,6 +143,7 @@ abacustools file editstru cartesian STRU -o CART
 abacustools file editstru primitive   STRU -o PRIM
 abacustools file editstru conventional STRU -o CONV
 abacustools file editstru standardize STRU -o STD --to-primitive
+abacustools file editstru symmetrize  STRU -o CLEAN --symprec 0.001
 abacustools file editstru all-slabs   STRU --miller 1 1 0 --output-prefix SLAB
 ```
 
@@ -191,6 +192,16 @@ optionally reducing it with `--to-primitive`. `--no-idealize` keeps small
 deviations of the standardize action instead of rounding them away, and
 `--symprec`/`--angle-tolerance` set the tolerances of the symmetry search.
 Pseudopotential, orbital and magnetic data travel with the atoms.
+
+`symmetrize` cleans up a structure instead of changing its cell setting. spglib
+finds the space group, the atomic positions are averaged with their symmetry
+images and the lattice is strained onto the metric that space group requires, so
+the small numerical errors disappear and the symmetry of the result is exact.
+The cell setting, the number and order of the atoms and every atom attribute are
+kept, which distinguishes the action from `standardize` and `conventional`.
+`--symprec` sets which deviations count as noise, so raise it above the errors
+you want to remove (1e-5 would round away almost nothing), and `--keep-cell`
+idealizes the positions only and leaves the lattice as it is.
 
 `all-slabs` asks pymatgen for every symmetrically distinct termination of one
 set of Miller indices, which matters for polar or mixed-terminated surfaces
