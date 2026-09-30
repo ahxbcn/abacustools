@@ -15,8 +15,10 @@ class FakeContext:
     def __init__(self, answers: list[str]) -> None:
         self._answers = list(answers)
         self.messages: list[tuple[object, ...]] = []
+        self.transcript: list[str] = []
 
     def ask(self, prompt: str) -> str:
+        self.transcript.append(prompt)
         if not self._answers:
             raise EOFError
         return self._answers.pop(0)
@@ -31,6 +33,7 @@ class FakeContext:
 
     def write(self, *objects: object) -> None:
         self.messages.append(objects)
+        self.transcript.extend(str(obj) for obj in objects)
 
 
 def _child(node, name):
@@ -88,6 +91,15 @@ class TestPrompt(unittest.TestCase):
         parser.add_argument("--mode", choices=["a", "b", "c"])
         parser.set_defaults(handler=lambda ns: 0)
         self.assertEqual(prompt_argv(parser, FakeContext(["2"])), ["--mode", "b"])
+
+    def test_choice_lists_question_before_options(self) -> None:
+        parser = argparse.ArgumentParser(prog="demo")
+        parser.add_argument("--mode", choices=["a", "b", "c"], help="Pick a mode.")
+        parser.set_defaults(handler=lambda ns: 0)
+        ctx = FakeContext(["2"])
+        self.assertEqual(prompt_argv(parser, ctx), ["--mode", "b"])
+        transcript = "\n".join(ctx.transcript)
+        self.assertLess(transcript.index("--mode"), transcript.index("1) a"))
 
     def test_mutually_exclusive_prompts_only_one(self) -> None:
         parser = argparse.ArgumentParser(prog="demo")
