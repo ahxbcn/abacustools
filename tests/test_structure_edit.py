@@ -20,6 +20,12 @@ from abacustools.data.structure import (
     symmetrize_structure,
     with_vacuum,
 )
+from abacustools.core.config import CONFIG
+from abacustools.data.doping import (
+    SubstitutionError,
+    resolve_dopant_resources,
+    substitute_atoms,
+)
 from abacustools.io.stru import AbacusATOM, AbacusSTRU
 from abacustools.main import main
 
@@ -856,3 +862,183 @@ def test_editstru_standardize_cli(tmp_path):
     result = main()
     assert result == 0
     assert output_file.exists()
+
+
+# Tests for substituting atoms and choosing the dopant resources
+
+
+def _host_structure() -> AbacusSTRU:
+    """Return a Si2O structure whose atoms carry resources and moments."""
+    return AbacusSTRU(
+        cell=[[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]],
+        atoms=[
+            AbacusATOM(
+                label="Si", element="Si", coord=(0.0, 0.0, 0.0),
+                pp="Si.upf", orb="Si.orb", mag=0.5, angle1=90.0,
+            ),
+            AbacusATOM(
+                label="Si", element="Si", coord=(2.0, 2.0, 2.0),
+                pp="Si.upf", orb="Si.orb",
+            ),
+            AbacusATOM(
+                label="O", element="O", coord=(1.0, 1.0, 1.0),
+                pp="O.upf", orb="O.orb",
+            ),
+        ],
+        metadata={"atom_type": "cartesian"},
+    )
+
+
+def _dopant_library(tmp_path: Path) -> Path:
+    """Return a library directory holding iron files."""
+    library = tmp_path / "library"
+    library.mkdir()
+    (library / "Fe.upf").write_text("pseudo", encoding="utf-8")
+    (library / "Fe_gga_7au_100Ry_2s2p1d.orb").write_text("orb", encoding="utf-8")
+    return library
+
+
+def _configure_library(monkeypatch, library: Path) -> None:
+    """Point the default resource library at a temporary directory."""
+    monkeypatch.setitem(
+        CONFIG,
+        "resources",
+        {
+            "default": "test",
+            "orb_variant": "DZP",
+            "libraries": {"test": {"pp": str(library), "orb": str(library)}},
+        },
+    )
+
+
+def test_substitute_reuses_the_files_of_an_element_in_the_structure() -> None:
+    host = _host_structure()
+
+    resources = resolve_dopant_resources(host, "O")
+
+    assert resources.pp == "O.upf"
+    assert resources.orb == "O.orb"
+    assert resources.pp_source == "structure"
+    assert resources.orb_source == "structure"
+    assert "already present" in resources.pp_reason
+    assert "reused" in resources.orb_reason
+
+    edited = substitute_atoms(host, element="O", indices=[0], resources=resources)
+
+    assert edited.atoms[0].element == "O"
+    assert edited.atoms[0].label == "O"
+    assert edited.atoms[0].pp == "O.upf"
+    assert edited.atoms[0].orb == "O.orb"
+    assert edited.atoms[0].mass == pytest.approx(15.999, abs=1e-3)
+    assert edited.atoms[2].pp == "O.upf"
+    assert host.atoms[0].element == "Si"
+
+
+def test_substitute_uses_the_configured_library_for_a_missing_element(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _configure_library(monkeypatch, _dopant_library(tmp_path))
+    host = _host_structure()
+
+    resources = resolve_dopant_resources(host, "Fe")
+
+    assert resources.pp == "Fe.upf"
+    assert resources.orb == "Fe_gga_7au_100Ry_2s2p1d.orb"
+    assert resources.pp_source == "library"
+    assert resources.orb_source == "library"
+    assert resources.library == "test"
+    assert "not present" in resources.pp_reason
+    assert "'test'" in resources.orb_reason
+    assert "DZP" in resources.orb_reason
+
+    edited = substitute_atoms(host, element="Fe", indices=[0, 1], resources=resources)
+
+    assert [atom.element for atom in edited.atoms] == ["Fe", "Fe", "O"]
+    assert {atom.label for atom in edited.atoms} == {"Fe", "O"}
+    assert edited.atoms[0].pp == "Fe.upf"
+    assert edited.atoms[0].mass == pytest.approx(55.845, abs=1e-3)
+
+
+def test_substitute_clears_the_moments_unless_they_are_kept() -> None:
+    host = _host_structure()
+    resources = resolve_dopant_resources(host, "O")
+
+    cleared = substitute_atoms(host, element="O", indices=[0], resources=resources)
+    assert cleared.atoms[0].mag is None
+    assert cleared.atoms[0].angle1 is None
+    assert cleared.atoms[0].type_mag == 0.0
+
+    kept = substitute_atoms(
+        host, element="O", indices=[0], resources=resources, keep_moments=True
+    )
+    assert kept.atoms[0].mag == 0.5
+    assert kept.atoms[0].angle1 == 90.0
+
+
+def test_substitute_rejects_an_element_with_several_resources() -> None:
+    host = _host_structure()
+    host.atoms[1].pp = "Si_other.upf"
+
+    with pytest.raises(SubstitutionError, match="several pp"):
+        resolve_dopant_resources(host, "Si")
+
+
+def test_substitute_rejects_a_label_that_belongs_to_another_element() -> None:
+    host = _host_structure()
+    resources = resolve_dopant_resources(host, "O")
+
+    with pytest.raises(SubstitutionError, match="already belongs"):
+        substitute_atoms(
+            host, element="O", indices=[0], resources=resources, label="Si"
+        )
+
+
+def test_editstru_substitute_explains_the_choice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    _configure_library(monkeypatch, _dopant_library(tmp_path))
+    source = tmp_path / "STRU"
+    assert _host_structure().write(str(source))
+    output = tmp_path / "doped.STRU"
+
+    assert main([
+        "file", "editstru", "substitute", str(source),
+        "-o", str(output), "--element", "Fe", "--indices", "1",
+    ]) == 0
+    report = capsys.readouterr().out
+
+    assert "Fe is not present in the input structure" in report
+    assert "configured resource library 'test'" in report
+    assert "pseudopotential: Fe.upf" in report
+    assert "orbital: Fe_gga_7au_100Ry_2s2p1d.orb" in report
+
+    doped = AbacusSTRU.read(str(output))
+    assert doped is not None
+    assert doped.atoms[0].element == "Fe"
+    assert doped.atoms[0].pp == "Fe.upf"
+    assert doped.atoms[0].orb == "Fe_gga_7au_100Ry_2s2p1d.orb"
+    assert doped.atoms[1].pp == "Si.upf"
+
+
+def test_editstru_substitute_accepts_explicit_files(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "STRU"
+    assert _host_structure().write(str(source))
+    output = tmp_path / "doped.STRU"
+
+    assert main([
+        "file", "editstru", "substitute", str(source), "-o", str(output),
+        "--element", "Fe", "--elements", "Si",
+        "--pp", "MY.upf", "--orb", "MY.orb", "--json",
+    ]) == 0
+    stdout = capsys.readouterr().out
+    payload = json.loads(stdout[stdout.index("{"):])
+
+    assert payload["dopant"] == "Fe"
+    assert payload["pseudopotential"] == "MY.upf"
+    assert payload["pseudopotential_source"] == "command line"
+    assert payload["orbital"] == "MY.orb"
+    assert payload["substituted_atoms"] == [1, 2]
+
+    doped = AbacusSTRU.read(str(output))
+    assert doped is not None
+    assert [atom.pp for atom in doped.atoms] == ["MY.upf", "MY.upf", "O.upf"]

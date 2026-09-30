@@ -638,6 +638,144 @@ def available_resource_libraries() -> tuple[str, ...]:
     return tuple(sorted(libraries))
 
 
+def configured_library(name: Optional[str]) -> Mapping[str, Any]:
+    """Return one configured resource library and validate its name.
+
+    Args:
+        name: Library name from ``resources.libraries``, or ``None``.
+
+    Returns:
+        Mapping: The configured ``pp``/``orb`` paths and their options, empty
+        for ``None``.
+
+    Raises:
+        ValueError: When the name is unknown or the configuration is malformed.
+    """
+    libraries = CONFIG.get("resources", {}).get("libraries", {})
+    if name is None:
+        return {}
+    if name not in libraries:
+        available = ", ".join(sorted(libraries)) or "none"
+        raise ValueError(
+            f"unsupported resource library: {name}; available libraries: {available}"
+        )
+    configured = libraries[name]
+    if not isinstance(configured, Mapping):
+        raise ValueError(f"invalid resource library configuration: resources.libraries.{name}")
+    return configured
+
+
+@dataclass(frozen=True)
+class ResolvedResource:
+    """One pseudopotential or orbital file resolved from a configured library.
+
+    Attributes:
+        element: Element symbol of the resource.
+        kind: ``pp`` or ``orb``.
+        path: Resolved file.
+        library: Configured library the file came from.
+        variant: Orbital variant that was honoured, when one applies.
+    """
+
+    element: str
+    kind: str
+    path: Path
+    library: Optional[str] = None
+    variant: Optional[str] = None
+
+    @property
+    def filename(self) -> str:
+        """Return the file name written into the STRU."""
+        return self.path.name
+
+
+def resolve_library_resource(
+    element: str,
+    kind: str,
+    *,
+    library: Optional[str] = None,
+    variant: Optional[str] = None,
+    pp_path: Optional[PathLike] = None,
+    orb_path: Optional[PathLike] = None,
+) -> ResolvedResource:
+    """Resolve the pseudopotential or orbital file of one element.
+
+    The library, its orbital variant and the fallback environment variables are
+    read exactly as :class:`InputPreparer` reads them, so a structure edited
+    with this helper and a job prepared from it agree on the files.
+
+    Args:
+        element: Element symbol, such as ``Fe``.
+        kind: ``pp`` for a pseudopotential or ``orb`` for a numerical orbital.
+        library: Configured library name, the default when omitted.
+        variant: Orbital variant such as ``DZP``; ignored for a pseudopotential.
+        pp_path: Explicit pseudopotential directory, overriding the library.
+        orb_path: Explicit orbital directory, overriding the library.
+
+    Returns:
+        ResolvedResource: The file and where it came from.
+
+    Raises:
+        ValueError: When the kind or the library name is unknown.
+        InputPreparationError: When no path is configured or the library has no
+            file for the element.
+    """
+    kind = str(kind).lower()
+    if kind not in ("pp", "orb"):
+        raise ValueError(f"unknown resource kind: {kind!r}; use 'pp' or 'orb'")
+    symbol = str(element).strip().capitalize()
+
+    name = library or CONFIG.get("resources", {}).get("default")
+    configured = configured_library(name)
+    override = pp_path if kind == "pp" else orb_path
+    legacy = library is None
+    legacy_env = (
+        os.environ.get("ABACUS_PP_PATH" if kind == "pp" else "ABACUS_ORB_PATH")
+        if legacy
+        else None
+    )
+    root = override if override is not None else configured.get(kind) or legacy_env
+    if root is None:
+        raise InputPreparationError(
+            f"no {kind} path is configured for library {name!r}; set "
+            f"resources.libraries.{name}.{kind} in ~/.abacustools/config.yaml"
+            if name is not None
+            else f"no {kind} path is configured; set resources.default and "
+            "resources.libraries in ~/.abacustools/config.yaml"
+        )
+
+    mapped_variants = configured.get("orb_variants")
+    mapped_variants = mapped_variants if isinstance(mapped_variants, Mapping) else {}
+    selected_variant = None
+    if kind == "orb":
+        configured_variant = (
+            variant
+            if variant is not None
+            else configured.get("orb_variant") or CONFIG.get("resources", {}).get("orb_variant")
+        )
+        if configured_variant is not None:
+            selected_variant = str(configured_variant)
+            root = mapped_variants.get(selected_variant.lower(), root)
+
+    resources = _collect_library(
+        root,
+        kind,
+        variant=selected_variant,
+        elements=[symbol],
+        variant_required=variant is not None
+        and (selected_variant or "").lower() not in mapped_variants,
+    )
+    path = resources.get(symbol)
+    if path is None:
+        raise InputPreparationError(
+            f"library {name!r} has no {kind} for {symbol} below {root}; "
+            "install the file, pick another library or pass --pp/--orb explicitly"
+        )
+    return ResolvedResource(
+        element=symbol, kind=kind, path=path, library=name, variant=selected_variant
+    )
+
+
 class InputPreparer:
     """Generate complete ABACUS input directories from structure files.
 
@@ -728,18 +866,7 @@ class InputPreparer:
     @staticmethod
     def _resource_library(name: Optional[str]) -> Mapping[str, Any]:
         """Return one configured resource library and validate its name."""
-        libraries = CONFIG.get("resources", {}).get("libraries", {})
-        if name is None:
-            return {}
-        if name not in libraries:
-            available = ", ".join(sorted(libraries)) or "none"
-            raise ValueError(
-                f"unsupported resource library: {name}; available libraries: {available}"
-            )
-        configured = libraries[name]
-        if not isinstance(configured, Mapping):
-            raise ValueError(f"invalid resource library configuration: resources.libraries.{name}")
-        return configured
+        return configured_library(name)
 
     def _validate_options(self) -> None:
         if self.job_type not in available_job_types():

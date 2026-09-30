@@ -158,6 +158,7 @@ abacustools file editstru slab      STRU -o SLAB  --miller 1 0 0 --layers 3 --va
 abacustools file editstru slab      STRU -o SLAB  --miller 1 1 0 --layers 4 --fix
 abacustools file editstru select    STRU -o SUB   --elements Si O
 abacustools file editstru select    STRU -o FREE  --indices 1 3 --remove
+abacustools file editstru substitute STRU -o DOPED --element Fe --elements Si
 abacustools file editstru fix       STRU -o FIXED --coords 0 0.2 --direction c --direct
 abacustools file editstru fix       STRU -o FIXED --elements O --move x y --free-others
 abacustools file editstru direct    STRU -o DIRECT
@@ -179,6 +180,20 @@ Selections are additive filters (an atom must match every filter), while
 `--indices` are one-based, as in the other abacustools commands. `--coords`
 uses Cartesian coordinates unless `--direct` requests fractional ones, and
 `--direction` accepts `a`/`b`/`c` or `x`/`y`/`z`.
+
+`substitute` replaces the atoms selected by `--indices`, `--elements` or
+`--coords`/`--direction` with `--element`. The new atoms take the mass of that
+element, and their pseudopotential and orbital are chosen in a fixed order: when
+the input structure already contains the element, the files that element uses
+there are reused, so a doped cell stays consistent with its host; otherwise they
+come from the configured resource library of `job prepare` (`--library` and
+`--variant` select it, with the `ABACUS_PP_PATH`/`ABACUS_ORB_PATH` fallbacks),
+and `--pp`/`--orb` override either choice. `--basis auto|lcao|pw` decides
+whether an orbital is needed at all; `auto` follows the input structure, and a
+plane-wave structure drops the orbital. The command reports the chosen
+pseudopotential and orbital together with the reason for each, `--label` names
+the new species, and `--keep-moments` keeps the magnetic moments of the
+replaced atoms, which are cleared otherwise.
 
 `direct` and `cartesian` rewrite the same structure with an
 `ATOMIC_POSITIONS Direct` or `ATOMIC_POSITIONS Cartesian` block. Atoms, cell and
