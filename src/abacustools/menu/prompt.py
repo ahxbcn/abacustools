@@ -82,11 +82,12 @@ def _question(
     action: argparse.Action,
     prompt: Optional[str] = None,
     show_choices: bool = True,
+    show_default: bool = True,
 ) -> str:
     suffix = ""
     if show_choices and action.choices:
         suffix += " {" + ", ".join(str(choice) for choice in action.choices) + "}"
-    if action.default is not None and not action.required:
+    if show_default and action.default is not None and not action.required:
         suffix += f" [default: {action.default}]"
     return f"{prompt or _label(action)}{suffix}"
 
@@ -107,8 +108,14 @@ def _prompt_choice(action: argparse.Action, ctx: MenuContext, multiple: bool) ->
         question = f"{_label(action)} (numbers/values, blank to finish)"
     else:
         question = f"{_label(action)} (number or value)"
-    options = "\n".join(f"  {index}) {choice}" for index, choice in enumerate(choices, start=1))
-    prompt = "\n".join((_question(action, question, show_choices=False), options, "Select"))
+    default = action.default if action.default in choices else None
+    mark = not multiple and default is not None
+    options = "\n".join(
+        f"  {index}) {choice}" + (" (default)" if mark and choice == default else "")
+        for index, choice in enumerate(choices, start=1)
+    )
+    question_text = _question(action, question, show_choices=False, show_default=not mark)
+    prompt = "\n".join((question_text, options, "Select"))
     raw = ctx.ask(prompt).strip()
     if not raw:
         return []

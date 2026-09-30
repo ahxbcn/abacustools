@@ -101,6 +101,34 @@ class TestPrompt(unittest.TestCase):
         transcript = "\n".join(ctx.transcript)
         self.assertLess(transcript.index("--mode"), transcript.index("1) a"))
 
+    def test_choice_marks_default_entry_in_list(self) -> None:
+        parser = argparse.ArgumentParser(prog="demo")
+        parser.add_argument("--mode", choices=["a", "b", "c"], default="b", help="Pick a mode.")
+        parser.set_defaults(handler=lambda ns: 0)
+        ctx = FakeContext([""])
+        self.assertEqual(prompt_argv(parser, ctx), [])
+        transcript = "\n".join(ctx.transcript)
+        self.assertIn("  2) b (default)", transcript)
+        self.assertNotIn("[default: b]", transcript)
+
+    def test_choice_without_default_marks_nothing(self) -> None:
+        parser = argparse.ArgumentParser(prog="demo")
+        parser.add_argument("--mode", choices=["a", "b", "c"], help="Pick a mode.")
+        parser.set_defaults(handler=lambda ns: 0)
+        ctx = FakeContext([""])
+        self.assertEqual(prompt_argv(parser, ctx), [])
+        transcript = "\n".join(ctx.transcript)
+        self.assertNotIn("(default)", transcript)
+
+    def test_value_prompt_keeps_default_annotation(self) -> None:
+        parser = argparse.ArgumentParser(prog="demo")
+        parser.add_argument("--tol", type=float, default=1e-5, help="Tolerance.")
+        parser.set_defaults(handler=lambda ns: 0)
+        ctx = FakeContext([""])
+        self.assertEqual(prompt_argv(parser, ctx), [])
+        transcript = "\n".join(ctx.transcript)
+        self.assertIn("[default: 1e-05]", transcript)
+
     def test_mutually_exclusive_prompts_only_one(self) -> None:
         parser = argparse.ArgumentParser(prog="demo")
         group = parser.add_mutually_exclusive_group()
