@@ -146,6 +146,28 @@ direction pinned to `k = 0`, and a wire uses the single periodic direction.
 default), and `--path-mode auto|bulk|slab|wire` forces one of them; a
 zero-dimensional structure has no band path and is rejected.
 
+Two structures can be stacked into a heterojunction interface with pymatgen's
+coherent interface builder, which searches the Zur-McGuire lattice matches of
+the two surfaces and strains the film onto the substrate:
+
+```text
+abacustools file interface FILM SUBSTRATE -o HET --film-miller 0 0 1 --substrate-miller 0 0 1
+abacustools file interface FILM SUBSTRATE --list --max-strain 0.03 --max-area 200
+abacustools file interface FILM SUBSTRATE -o HET --film-thickness 3 --substrate-thickness 3 --gap 2.5 --vacuum 15
+```
+
+`--list` prints the candidate lattice matches (supercell area, length and angle
+mismatch, supercell size) without writing anything; otherwise the best match
+that satisfies `--max-atoms` is written. `--film-thickness` and
+`--substrate-thickness` size the two films in layers, or in Angstrom with
+`--in-angstrom`, `--gap` and `--vacuum` place the stack, `--termination` picks
+one of the surface terminations, and `--max-strain`, `--max-angle` and
+`--max-area` bound the lattice search. The film sits on top of the substrate
+along `c`. The pseudopotential and orbital of every element are inherited from
+the structure that contains it, film or substrate, with the configured resource
+library as the fallback, and the report names each file together with the reason
+for choosing it.
+
 Structures can also be edited into a new file. Every action reads a structure,
 writes a separate OUTPUT (existing files are only replaced with `--override`)
 and keeps the atom attributes it does not touch, such as pseudopotential and
