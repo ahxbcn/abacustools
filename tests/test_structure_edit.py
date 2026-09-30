@@ -17,6 +17,7 @@ from abacustools.data.structure import (
     select_atoms,
     select_indices,
     set_coordinate_mode,
+    symmetrize_structure,
     with_vacuum,
 )
 from abacustools.io.stru import AbacusATOM, AbacusSTRU
@@ -630,6 +631,156 @@ def test_standardize_cell_to_primitive(tmp_path):
     standardized = standardize_cell(structure, to_primitive=True)
     # Should have fewer atoms than original
     assert standardized.natoms <= structure.natoms
+
+
+def _rutile(noise: float = 0.0, seed: int = 3) -> AbacusSTRU:
+    """Return a rutile-like tetragonal cell, perturbed when ``noise`` is set."""
+    lattice = np.diag([4.594, 4.594, 2.959]).astype(float)
+    u = 0.3053
+    fractional = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.5, 0.5, 0.5],
+            [u, u, 0.0],
+            [-u, -u, 0.0],
+            [0.5 + u, 0.5 - u, 0.5],
+            [0.5 - u, 0.5 + u, 0.5],
+        ]
+    )
+    if noise:
+        generator = np.random.default_rng(seed)
+        lattice = lattice + generator.normal(0.0, noise, lattice.shape)
+        fractional = fractional + generator.normal(0.0, noise, fractional.shape)
+    atoms = [
+        AbacusATOM(
+            label=symbol,
+            element=symbol,
+            coord=(0.0, 0.0, 0.0),
+            pp=f"{symbol}.upf",
+            orb=f"{symbol}.orb",
+            move=(True, True, True),
+        )
+        for symbol in ("Ti", "Ti", "O", "O", "O", "O")
+    ]
+    structure = AbacusSTRU(
+        cell=lattice.tolist(), atoms=atoms, metadata={"atom_type": "direct"}
+    )
+    structure.coords_direct = fractional.tolist()
+    return structure
+
+
+def _space_group_number(structure: AbacusSTRU, symprec: float) -> int:
+    """Return the spglib space group number of a structure."""
+    import spglib
+    from ase.data import atomic_numbers
+
+    numbers = [
+        int(atomic_numbers[str(atom.element or atom.label).capitalize()])
+        for atom in structure.atoms
+    ]
+    dataset = spglib.get_symmetry_dataset(
+        (
+            np.asarray(structure.cell, dtype=float),
+            np.asarray(structure.coords_direct, dtype=float),
+            numbers,
+        ),
+        symprec=symprec,
+    )
+    return 0 if dataset is None else int(dataset.number)
+
+
+def test_symmetrize_removes_small_errors_and_keeps_the_atoms(tmp_path):
+    """Noise below symprec is averaged away and the symmetry becomes exact."""
+    noisy = _rutile(noise=1e-4)
+    assert _space_group_number(noisy, symprec=1e-8) == 1
+    before = np.asarray(noisy.coords_direct, dtype=float)
+
+    clean = symmetrize_structure(noisy, symprec=1e-2)
+
+    assert _space_group_number(clean, symprec=1e-8) == 136
+    metric = np.asarray(clean.cell, dtype=float) @ np.asarray(clean.cell, dtype=float).T
+    assert metric[0, 0] == pytest.approx(metric[1, 1])
+    assert metric[0, 1] == pytest.approx(0.0, abs=1e-10)
+    assert metric[1, 2] == pytest.approx(0.0, abs=1e-10)
+    assert clean.natoms == noisy.natoms
+    assert clean.labels == noisy.labels
+    assert clean.atoms[0].pp == "Ti.upf"
+    assert clean.atoms[0].orb == "Ti.orb"
+    assert clean.atoms[0].move == (True, True, True)
+    # The recipe copies the structure instead of editing it in place.
+    assert np.array_equal(np.asarray(noisy.coords_direct, dtype=float), before)
+
+
+def test_symmetrize_keep_cell_leaves_the_lattice_alone():
+    noisy = _rutile(noise=1e-4)
+
+    clean = symmetrize_structure(noisy, symprec=1e-2, keep_cell=True)
+
+    assert np.array_equal(np.asarray(clean.cell, dtype=float), np.asarray(noisy.cell, dtype=float))
+    shift = np.asarray(clean.coords_direct, dtype=float) - np.asarray(
+        noisy.coords_direct, dtype=float
+    )
+    shift -= np.rint(shift)
+    assert np.max(np.abs(shift)) > 0
+
+
+def test_symmetrize_leaves_an_ideal_structure_unchanged():
+    ideal = _rutile()
+
+    clean = symmetrize_structure(ideal)
+
+    shift = np.asarray(clean.coords_direct, dtype=float) - np.asarray(
+        ideal.coords_direct, dtype=float
+    )
+    shift -= np.rint(shift)
+    assert np.allclose(shift, 0.0, atol=1e-12)
+    assert np.allclose(np.asarray(clean.cell, dtype=float), np.asarray(ideal.cell, dtype=float))
+
+
+def test_symmetrize_needs_a_periodic_cell():
+    structure = _rutile()
+    structure.cell = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+
+    with pytest.raises(StructureEditError, match="periodic cell"):
+        symmetrize_structure(structure)
+
+
+def test_editstru_symmetrize_writes_a_clean_file(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "noisy.STRU"
+    assert _rutile(noise=1e-4).write(str(source))
+    output = tmp_path / "clean.STRU"
+
+    assert main([
+        "file", "editstru", "symmetrize", str(source),
+        "-o", str(output), "--symprec", "0.01", "--json",
+    ]) == 0
+
+    stdout = capsys.readouterr().out
+    payload = json.loads(stdout[stdout.index("{"):])
+    assert payload["action"] == "symmetrize"
+    assert payload["space_group_number"] == 136
+    assert payload["space_group"] == "P4_2/mnm"
+    assert payload["cell_idealized"] is True
+    assert payload["max_displacement_angstrom"] > 0
+    assert payload["atoms_before"] == payload["atoms_after"] == 6
+
+    clean = AbacusSTRU.read(str(output))
+    assert clean is not None
+    assert _space_group_number(clean, symprec=1e-8) == 136
+
+
+def test_editstru_symmetrize_notes_a_p1_result(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "noisy.STRU"
+    assert _rutile(noise=1e-4).write(str(source))
+    output = tmp_path / "clean.STRU"
+
+    assert main([
+        "file", "editstru", "symmetrize", str(source), "-o", str(output),
+    ]) == 0
+
+    stdout = capsys.readouterr().out
+    assert "P1 (No. 1)" in stdout
+    assert "raise --symprec" in stdout
 
 
 def test_editstru_primitive_cli(tmp_path):
