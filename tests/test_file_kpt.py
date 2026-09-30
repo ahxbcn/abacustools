@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
 
-from abacustools.data.kpt import mesh_from_spacing, read_kpt
+from abacustools.data.kpt import band_path, mesh_from_spacing, read_kpt
 from abacustools.io.abacus import WriteKpt
-from abacustools.io.stru import AbacusSTRU
+from abacustools.io.stru import AbacusATOM, AbacusSTRU
 from abacustools.main import main
 
 
@@ -147,3 +148,113 @@ def test_generation_refuses_to_overwrite(tmp_path: Path) -> None:
     ]) == 0
     values, _ = read_kpt(output)
     assert [int(value) for value in values[:3]] == [4, 4, 4]
+
+
+HEXAGONAL_SLAB = [
+    [3.0, 0.0, 0.0],
+    [-1.5, 3.0 * math.sqrt(3.0) / 2.0, 0.0],
+    [0.0, 0.0, 20.0],
+]
+SQUARE_SLAB = [[3.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 20.0]]
+RECTANGULAR_SLAB = [[3.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 20.0]]
+WIRE_ALONG_C = [[20.0, 0.0, 0.0], [0.0, 20.0, 0.0], [0.0, 0.0, 3.0]]
+MOLECULE = [[20.0, 0.0, 0.0], [0.0, 20.0, 0.0], [0.0, 0.0, 20.0]]
+
+
+SLAB_STRU = """\
+ATOMIC_SPECIES
+Si 28.0855 Si.upf
+
+LATTICE_CONSTANT
+1.0
+
+LATTICE_VECTORS
+6 0 0
+-3 5.196152423 0
+0 0 30
+
+ATOMIC_POSITIONS
+Cartesian
+
+Si
+0.0
+1
+0 0 0
+"""
+
+
+def _one_atom_structure(cell) -> AbacusSTRU:
+    """Return a one-atom structure with the given cell in Angstrom."""
+    return AbacusSTRU(
+        cell=cell,
+        atoms=[AbacusATOM(label="Si", element="Si", coord=(0.0, 0.0, 0.0), pp="Si.upf")],
+        metadata={"atom_type": "cartesian"},
+    )
+
+
+@pytest.mark.parametrize(
+    ("cell", "dimensionality", "labels", "method"),
+    [
+        (HEXAGONAL_SLAB, "slab", ["G", "M", "K", "G"], "2D hexagonal"),
+        (SQUARE_SLAB, "slab", ["G", "X", "M", "G"], "2D square"),
+        (RECTANGULAR_SLAB, "slab", ["G", "X", "S", "Y", "G"], "2D rectangular"),
+        (WIRE_ALONG_C, "wire", ["G", "Z"], "1D along c"),
+    ],
+)
+def test_band_path_follows_the_dimensionality(cell, dimensionality, labels, method) -> None:
+    path = band_path(_one_atom_structure(cell), npoints=4)
+
+    assert path.dimensionality == dimensionality
+    assert path.labels == labels
+    assert path.method == method
+    assert path.points == 4 * (len(path.nodes) - 1) + 1
+    assert int(path.nodes[-1][3]) == 1
+    assert path.segments[0][0] == "G"
+
+
+def test_band_path_keeps_the_vacuum_direction_at_zero() -> None:
+    cell = [[3.0, 0.0, 0.0], [0.0, 20.0, 0.0], [0.0, 0.0, 4.0]]
+
+    path = band_path(_one_atom_structure(cell), npoints=4)
+
+    assert path.dimensionality == "slab"
+    assert path.periodic_directions == ["a", "c"]
+    assert path.method == "2D rectangular"
+    assert all(node[1] == 0.0 for node in path.nodes)
+    assert any(abs(node[0]) > 0 or abs(node[2]) > 0 for node in path.nodes)
+
+
+def test_band_path_rejects_a_zero_dimensional_structure() -> None:
+    with pytest.raises(ValueError, match="no band path"):
+        band_path(_one_atom_structure(MOLECULE))
+
+
+def test_band_path_rejects_a_forced_mode_that_does_not_fit() -> None:
+    with pytest.raises(ValueError, match="exactly one periodic direction"):
+        band_path(_one_atom_structure(SQUARE_SLAB), path_mode="wire")
+
+    with pytest.raises(ValueError, match="unknown path mode"):
+        band_path(_one_atom_structure(SQUARE_SLAB), path_mode="bogus")
+
+
+def test_band_path_cli_uses_a_two_dimensional_path(tmp_path: Path, capsys) -> None:
+    structure_file = tmp_path / "SLAB.STRU"
+    structure_file.write_text(SLAB_STRU, encoding="utf-8")
+    output = tmp_path / "KPT"
+
+    assert main([
+        "file", "kpt", "--structure", str(structure_file), "--path",
+        "-o", str(output), "--npoints", "4", "--json",
+    ]) == 0
+    report = _json_output(capsys.readouterr().out)
+
+    assert report["dimensionality"] == "slab"
+    assert report["dimensionality_label"] == "2D slab"
+    assert report["path_method"] == "2D hexagonal"
+    assert report["periodic_directions"] == ["a", "b"]
+    assert report["labels"] == ["G", "M", "K", "G"]
+
+    values, model = read_kpt(output)
+    assert model == "line"
+    # The vacuum runs along c, so every node stays in the a-b plane.
+    assert all(abs(float(node[2])) < 1e-12 for node in values)

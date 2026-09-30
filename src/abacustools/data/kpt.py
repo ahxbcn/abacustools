@@ -10,12 +10,14 @@ line mode.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, Sequence, Tuple
 
 import numpy as np
 
 from abacustools.core.constant import ANG_TO_BOHR, BOHR_TO_ANG
+from abacustools.data.dimensionality import DIMENSIONALITY_LABELS, classify_dimensionality
 from abacustools.io.abacus import (
     FormatKpt,
     ReadKpt,
@@ -176,37 +178,116 @@ def spacing_from_mesh(structure, mesh: Sequence[int]) -> list[Optional[float]]:
     ]
 
 
-def band_path_nodes(
-    structure,
-    *,
-    npoints: int = 20,
-    with_time_reversal: bool = True,
-    recipe: str = "hpkot",
-    symprec: float = 1e-5,
-    angle_tolerance: float = -1.0,
-) -> Tuple[list[list[Any]], list[list[str]]]:
-    """Return the seekpath band path of a structure as line-mode KPT nodes.
+def mesh_from_job(job: str | Path, inputs: dict[str, Any], structure) -> Tuple[list[float], str]:
+    """Return the regular k-point mesh an ABACUS job uses.
 
     Args:
-        structure: Structure the path is built for.
-        npoints: Number of points sampled in every segment.
-        with_time_reversal: Passed to seekpath.
-        recipe: seekpath recipe, ``hpkot`` by default.
-        symprec: Symmetry tolerance in Angstrom.
-        angle_tolerance: Angle tolerance in degrees; negative lets seekpath
-            estimate it.
+        job: Job directory holding the ``INPUT`` and any explicit ``KPT`` file.
+        inputs: Parsed ``INPUT`` of the job.
+        structure: Structure the mesh belongs to.
 
     Returns:
-        The KPT node list, one ``[x, y, z, count, label]`` group per node, and
-        the high-symmetry segments the nodes come from.
+        The six mesh values and the KPT model, ``"gamma"`` or ``"mp"``.
 
     Raises:
-        ValueError: When the number of points is invalid or seekpath cannot
-            find a path for the structure.
+        ValueError: When neither an input mesh nor a valid KPT file is found.
     """
-    if not isinstance(npoints, int) or isinstance(npoints, bool) or npoints < 1:
-        raise ValueError("npoints must be a positive integer")
+    job = Path(job)
+    try:
+        if float(inputs.get("gamma_only", 0)) > 0:
+            return [1.0, 1.0, 1.0, 0.0, 0.0, 0.0], "gamma"
+    except (TypeError, ValueError):
+        pass
 
+    kspacing = inputs.get("kspacing")
+    if kspacing not in (None, 0, "0", "0.0"):
+        cell_bohr = np.asarray(structure.cell, dtype=float) * ANG_TO_BOHR
+        mesh = kspacing2kpt(kspacing, cell_bohr)
+        return [float(value) for value in mesh] + [0.0, 0.0, 0.0], "gamma"
+
+    parsed = ReadKpt(str(job))
+    if parsed is None:
+        raise ValueError(f"could not read a KPT file below {job}")
+    kpt_data, model = parsed
+    values = [float(value) for value in list(kpt_data)[:6]]
+    if model not in MESH_MODELS or len(values) != 6:
+        raise ValueError(f"the KPT file below {job} does not define a regular mesh")
+    return values, model
+
+
+#: High-symmetry paths of the 2D Bravais lattices, in fractional coordinates
+#: of the two periodic lattice vectors. The hexagonal and square lattices use
+#: the conventional paths; the remaining lattices use the loop through the two
+#: reciprocal-direction midpoints ``X``/``Y`` and their sum, which covers the
+#: irreducible wedge without ever stepping into the vacuum direction.
+_TWO_DIMENSIONAL_PATHS: dict[str, list[tuple[str, tuple[float, float]]]] = {
+    "hexagonal": [("G", (0.0, 0.0)), ("M", (0.5, 0.0)), ("K", (1.0 / 3.0, 1.0 / 3.0)), ("G", (0.0, 0.0))],
+    "square": [("G", (0.0, 0.0)), ("X", (0.5, 0.0)), ("M", (0.5, 0.5)), ("G", (0.0, 0.0))],
+    "rectangular": [
+        ("G", (0.0, 0.0)),
+        ("X", (0.5, 0.0)),
+        ("S", (0.5, 0.5)),
+        ("Y", (0.0, 0.5)),
+        ("G", (0.0, 0.0)),
+    ],
+    "oblique": [
+        ("G", (0.0, 0.0)),
+        ("X", (0.5, 0.0)),
+        ("M", (0.5, 0.5)),
+        ("Y", (0.0, 0.5)),
+        ("G", (0.0, 0.0)),
+    ],
+}
+
+#: Label of the zone boundary along each lattice direction.
+_AXIS_BOUNDARY_LABELS = {"a": "X", "b": "Y", "c": "Z"}
+
+_DIRECTION_INDEX = {"a": 0, "b": 1, "c": 2}
+
+_PATH_MODES = ("auto", "bulk", "slab", "wire")
+
+
+@dataclass(frozen=True)
+class BandPath:
+    """A band path chosen for the dimensionality of a structure.
+
+    Attributes:
+        nodes: Line-mode KPT nodes, one ``[x, y, z, count, label]`` group each.
+        segments: High-symmetry segments the nodes follow.
+        dimensionality: ``bulk``, ``slab`` or ``wire``.
+        label: Human-readable dimensionality such as ``2D slab``.
+        method: How the path was chosen, such as ``seekpath`` or ``2D rectangular``.
+        periodic_directions: Lattice directions the path samples.
+    """
+
+    nodes: list[list[Any]]
+    segments: list[list[str]]
+    dimensionality: str
+    label: str
+    method: str
+    periodic_directions: list[str]
+
+    @property
+    def labels(self) -> list[str]:
+        """Return the high-symmetry labels of the nodes."""
+        return [str(node[4]) for node in self.nodes]
+
+    @property
+    def points(self) -> int:
+        """Return the number of k-points the path samples."""
+        return int(sum(int(node[3]) for node in self.nodes))
+
+
+def _three_dimensional_path(
+    structure,
+    *,
+    npoints: int,
+    with_time_reversal: bool,
+    recipe: str,
+    symprec: float,
+    angle_tolerance: float,
+) -> tuple[list[list[Any]], list[list[str]]]:
+    """Return the seekpath path of a bulk structure."""
     point_coords, segments = structure.get_kline(
         with_time_reversal=with_time_reversal,
         recipe=recipe,
@@ -228,3 +309,181 @@ def band_path_nodes(
         raise ValueError("the seekpath band path has fewer than two nodes")
     nodes[-1][3] = 1
     return nodes, [[start, end] for start, end in segments]
+
+
+def _two_dimensional_lattice(
+    length_a: float,
+    length_b: float,
+    gamma: float,
+    *,
+    symprec: float,
+    angle_tolerance: float,
+) -> str:
+    """Classify the in-plane lattice of a slab."""
+    tolerance = angle_tolerance if angle_tolerance and angle_tolerance > 0 else 1.0
+    equal_lengths = abs(length_a - length_b) <= symprec
+    if equal_lengths and min(abs(gamma - 120.0), abs(gamma - 60.0)) <= tolerance:
+        return "hexagonal"
+    if equal_lengths and abs(gamma - 90.0) <= tolerance:
+        return "square"
+    if abs(gamma - 90.0) <= tolerance:
+        return "rectangular"
+    return "oblique"
+
+
+def _two_dimensional_path(
+    structure,
+    periodic_directions: list[str],
+    *,
+    npoints: int,
+    symprec: float,
+    angle_tolerance: float,
+) -> tuple[list[list[Any]], list[list[str]], str]:
+    """Return the in-plane path of a slab with the vacuum direction at k=0."""
+    axes = [_DIRECTION_INDEX[direction] for direction in periodic_directions]
+    cell = np.asarray(structure.cell, dtype=float)
+    vector_a, vector_b = cell[axes[0]], cell[axes[1]]
+    length_a = float(np.linalg.norm(vector_a))
+    length_b = float(np.linalg.norm(vector_b))
+    cosine = float(np.dot(vector_a, vector_b) / (length_a * length_b))
+    gamma = float(np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0))))
+    lattice = _two_dimensional_lattice(
+        length_a, length_b, gamma, symprec=symprec, angle_tolerance=angle_tolerance
+    )
+
+    nodes: list[list[Any]] = []
+    for label, (first, second) in _TWO_DIMENSIONAL_PATHS[lattice]:
+        fractional = [0.0, 0.0, 0.0]
+        fractional[axes[0]] = first
+        fractional[axes[1]] = second
+        nodes.append([*fractional, npoints, label])
+    nodes[-1][3] = 1
+    segments = [
+        [nodes[index][4], nodes[index + 1][4]] for index in range(len(nodes) - 1)
+    ]
+    return nodes, segments, f"2D {lattice}"
+
+
+def _one_dimensional_path(
+    periodic_directions: list[str], npoints: int
+) -> tuple[list[list[Any]], list[list[str]], str]:
+    """Return the path along the periodic axis of a wire."""
+    axis = _DIRECTION_INDEX[periodic_directions[0]]
+    boundary = [0.0, 0.0, 0.0]
+    boundary[axis] = 0.5
+    label = _AXIS_BOUNDARY_LABELS[periodic_directions[0]]
+    nodes = [[0.0, 0.0, 0.0, npoints, "G"], [*boundary, 1, label]]
+    return nodes, [["G", label]], f"1D along {periodic_directions[0]}"
+
+
+def band_path(
+    structure,
+    *,
+    npoints: int = 20,
+    min_vacuum: float = 5.0,
+    path_mode: str = "auto",
+    with_time_reversal: bool = True,
+    recipe: str = "hpkot",
+    symprec: float = 1e-5,
+    angle_tolerance: float = -1.0,
+) -> BandPath:
+    """Choose the band path that fits the dimensionality of a structure.
+
+    The vacuum analysis of :mod:`abacustools.data.dimensionality` decides how
+    many lattice directions are still periodic: a bulk keeps the seekpath path,
+    a slab samples only the two periodic directions with the vacuum direction
+    pinned to ``k = 0``, and a wire samples the single periodic direction. A
+    zero-dimensional structure has no path and is rejected, because its bands
+    are flat and a Gamma-point calculation describes it completely.
+
+    Args:
+        structure: Structure the path is built for.
+        npoints: Number of points sampled in every segment.
+        min_vacuum: Empty span in Angstrom that counts as vacuum.
+        path_mode: ``auto`` follows the detected dimensionality; ``bulk``,
+            ``slab`` or ``wire`` forces one.
+        with_time_reversal: Passed to seekpath for a bulk.
+        recipe: seekpath recipe, ``hpkot`` by default.
+        symprec: Symmetry tolerance in Angstrom, which also decides whether two
+            in-plane lattice vectors count as equally long.
+        angle_tolerance: Angle tolerance in degrees; a negative value lets
+            seekpath estimate it and a default of 1 degree classify a slab.
+
+    Returns:
+        BandPath: The nodes, the segments and the dimensionality they follow.
+
+    Raises:
+        ValueError: When the number of points or the mode is invalid, when a
+            forced mode does not match the structure, or when the structure is
+            zero-dimensional.
+    """
+    if not isinstance(npoints, int) or isinstance(npoints, bool) or npoints < 1:
+        raise ValueError("npoints must be a positive integer")
+    if path_mode not in _PATH_MODES:
+        raise ValueError(f"unknown path mode: {path_mode!r}; use one of {list(_PATH_MODES)}")
+
+    dimension = classify_dimensionality(structure, min_vacuum=min_vacuum)
+    periodic = list(dimension["periodic_directions"])
+    name = dimension["dimensionality"] if path_mode == "auto" else path_mode
+
+    if name == "bulk":
+        nodes, segments = _three_dimensional_path(
+            structure,
+            npoints=npoints,
+            with_time_reversal=with_time_reversal,
+            recipe=recipe,
+            symprec=symprec,
+            angle_tolerance=angle_tolerance,
+        )
+        method = "seekpath"
+    elif name == "slab":
+        if len(periodic) != 2:
+            raise ValueError(
+                "path mode slab needs exactly two periodic directions, "
+                f"but the structure has {len(periodic)}"
+            )
+        nodes, segments, method = _two_dimensional_path(
+            structure,
+            periodic,
+            npoints=npoints,
+            symprec=symprec,
+            angle_tolerance=angle_tolerance,
+        )
+    elif name == "wire":
+        if len(periodic) != 1:
+            raise ValueError(
+                "path mode wire needs exactly one periodic direction, "
+                f"but the structure has {len(periodic)}"
+            )
+        nodes, segments, method = _one_dimensional_path(periodic, npoints)
+    else:
+        raise ValueError(
+            f"a {DIMENSIONALITY_LABELS[name]} has no band path; its bands are flat, "
+            "so calculate the Gamma point or a DOS mesh instead"
+        )
+
+    return BandPath(
+        nodes=nodes,
+        segments=segments,
+        dimensionality=name,
+        label=DIMENSIONALITY_LABELS[name],
+        method=method,
+        periodic_directions=periodic,
+    )
+
+
+def band_path_nodes(
+    structure,
+    **kwargs,
+) -> Tuple[list[list[Any]], list[list[str]]]:
+    """Return the nodes and segments of :func:`band_path`.
+
+    Args:
+        structure: Structure the path is built for.
+        **kwargs: Forwarded to :func:`band_path`.
+
+    Returns:
+        The KPT node list and the high-symmetry segments.
+    """
+    path = band_path(structure, **kwargs)
+    return path.nodes, path.segments
