@@ -1,6 +1,7 @@
 """The ``abacustools file`` command family."""
 
 from . import input as input_command
+from . import interface as interface_command
 from . import kpt as kpt_command
 from . import stru as stru_command
 from . import traj as traj_command
@@ -23,6 +24,7 @@ def register_parser(subparsers) -> None:
 
     input_command.register_parser(file_subparsers)
     stru_command.register_parser(file_subparsers)
+    interface_command.register_parser(file_subparsers)
     editstru_command.register_parser(file_subparsers)
     structure_info_command.register_parser(file_subparsers)
     kpt_command.register_parser(file_subparsers)
