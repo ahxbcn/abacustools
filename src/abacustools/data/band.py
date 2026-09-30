@@ -14,6 +14,51 @@ from abacustools.io.abacus import ReadInput, ReadKpt
 from abacustools.io.stru import AbacusSTRU
 
 
+def _report_scalar(value: Any) -> Optional[float]:
+    """Return a JSON-compatible float or ``None``."""
+    return None if value is None else float(value)
+
+
+def _edge_report(edge: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the k-point and band of one band edge."""
+    band_index = edge.get("band_index")
+    if isinstance(band_index, dict):
+        band_index = {str(spin): list(bands) for spin, bands in band_index.items()}
+    return {
+        "energy": _report_scalar(edge.get("energy")),
+        "kpoint_index": list(edge.get("kpoint_index", [])),
+        "kpoint_labels": list(edge.get("kpoint_labels", [])),
+        "kpoint_coord": [list(map(float, coord)) for coord in edge.get("kpoint_coord", [])],
+        "band_index": band_index,
+    }
+
+
+def band_gap_report(band: "BandData", spin_resolved: bool = False) -> Dict[str, Any]:
+    """Return the band gap and its edges of a band structure.
+
+    Args:
+        band: Band data read from an ABACUS band calculation.
+        spin_resolved: Also report the gap of every spin channel.
+
+    Returns:
+        dict: ``is_metal``, the ``band_gap`` in eV, whether the gap is
+        ``direct``, the ``vbm`` and ``cbm`` with their k-points and bands, and,
+        when requested, the ``spin_resolved_band_gap``.
+    """
+    vbm = band.get_vbm(spin_resolved=False)
+    cbm = band.get_cbm(spin_resolved=False)
+    report: Dict[str, Any] = {
+        "is_metal": bool(band.is_metal()),
+        "band_gap": _report_scalar(band.get_band_gap(spin_resolved=False)),
+        "direct": bool(set(vbm.get("kpoint_index", [])) & set(cbm.get("kpoint_index", []))),
+        "vbm": _edge_report(vbm),
+        "cbm": _edge_report(cbm),
+    }
+    if spin_resolved:
+        report["spin_resolved_band_gap"] = band.get_band_gap(spin_resolved=True)
+    return report
+
+
 class BandData:
     """Class for managing band data from ABACUS band calculations."""
 

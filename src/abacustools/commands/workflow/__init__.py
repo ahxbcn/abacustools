@@ -1,5 +1,6 @@
 """The ``abacustools workflow`` command family."""
 
+from . import band as band_workflow
 from . import bsse as bsse_workflow
 from . import bec as bec_workflow
 from . import chgdiff as chgdiff_workflow
@@ -34,6 +35,7 @@ def register_parser(subparsers) -> None:
         title="workflow commands",
         required=True,
     )
+    band_workflow.register_parser(workflow_subparsers)
     bsse_workflow.register_parser(workflow_subparsers)
     bec_workflow.register_parser(workflow_subparsers)
     chgdiff_workflow.register_parser(workflow_subparsers)

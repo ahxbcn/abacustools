@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
-from abacustools.data.band import BandData, ProjBandData
+from abacustools.data.band import BandData, ProjBandData, band_gap_report
 
 
 _FAT_BAND_MODES = ("species", "species-shell", "species-orbital", "atoms")
@@ -125,34 +125,6 @@ def _scalar(value: Any) -> Optional[float]:
     return None if value is None else float(value)
 
 
-def _edge_report(edge: dict[str, Any]) -> dict[str, Any]:
-    band_index = edge.get("band_index")
-    if isinstance(band_index, dict):
-        band_index = {str(spin): list(bands) for spin, bands in band_index.items()}
-    return {
-        "energy": _scalar(edge.get("energy")),
-        "kpoint_index": list(edge.get("kpoint_index", [])),
-        "kpoint_labels": list(edge.get("kpoint_labels", [])),
-        "kpoint_coord": [list(map(float, coord)) for coord in edge.get("kpoint_coord", [])],
-        "band_index": band_index,
-    }
-
-
-def _gap_report(band: BandData, spin_resolved: bool) -> dict[str, Any]:
-    vbm = band.get_vbm(spin_resolved=False)
-    cbm = band.get_cbm(spin_resolved=False)
-    report = {
-        "is_metal": bool(band.is_metal()),
-        "band_gap": _scalar(band.get_band_gap(spin_resolved=False)),
-        "direct": bool(set(vbm.get("kpoint_index", [])) & set(cbm.get("kpoint_index", []))),
-        "vbm": _edge_report(vbm),
-        "cbm": _edge_report(cbm),
-    }
-    if spin_resolved:
-        report["spin_resolved_band_gap"] = band.get_band_gap(spin_resolved=True)
-    return report
-
-
 def _effective_mass_report(band: BandData, args: argparse.Namespace) -> list[dict[str, Any]]:
     if not args.direction:
         raise ValueError("--direction START END is required with --effective-mass")
@@ -233,7 +205,7 @@ def run(args: argparse.Namespace) -> int:
         band_data = BandData.ReadFromAbacusJob(str(job), efermi=args.efermi)
         report: dict[str, Any] = {}
         if args.gap:
-            report["band_gap"] = _gap_report(band_data, args.spin_resolved)
+            report["band_gap"] = band_gap_report(band_data, args.spin_resolved)
         if args.effective_mass is not None:
             report["effective_mass"] = _effective_mass_report(band_data, args)
         _print_report(report, args.json)

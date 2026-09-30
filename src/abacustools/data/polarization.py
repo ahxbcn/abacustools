@@ -15,8 +15,8 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from abacustools.core.constant import ANG_TO_BOHR, BOHR_TO_ANG
-from abacustools.io.abacus import kspacing2kpt
+from abacustools.core.constant import BOHR_TO_ANG
+from abacustools.data.kpt import mesh_from_job
 
 
 #: Berry phase logs of the three Cartesian directions, in the order ABACUS
@@ -39,7 +39,9 @@ def kpoint_mesh(
     """Return the regular k-point mesh a Berry phase step needs.
 
     A Berry phase calculation needs an explicit mesh rather than a spacing,
-    so the spacing of the source job is expanded into a mesh here.
+    so the spacing of the source job is expanded into a mesh here. This is a
+    thin wrapper around :func:`abacustools.data.kpt.mesh_from_job`, which the
+    band workflow uses as well.
 
     Args:
         job: Job directory holding the ``INPUT`` and any explicit ``KPT`` file.
@@ -52,28 +54,7 @@ def kpoint_mesh(
     Raises:
         ValueError: When neither an input mesh nor a valid KPT file is found.
     """
-    from abacustools.io.abacus import ReadKpt
-
-    try:
-        if float(inputs.get("gamma_only", 0)) > 0:
-            return [1, 1, 1, 0.0, 0.0, 0.0], "gamma"
-    except (TypeError, ValueError):
-        pass
-
-    kspacing = inputs.get("kspacing")
-    if kspacing not in (None, 0, "0", "0.0"):
-        cell_bohr = np.asarray(structure.cell, dtype=float) * ANG_TO_BOHR
-        mesh = kspacing2kpt(kspacing, cell_bohr)
-        return [*mesh, 0.0, 0.0, 0.0], "gamma"
-
-    parsed = ReadKpt(str(job))
-    if parsed is None:
-        raise ValueError(f"could not read a KPT file below {job}")
-    kpt_data, model = parsed
-    values = [float(value) for value in list(kpt_data)[:6]]
-    if model not in {"gamma", "mp"} or len(values) != 6:
-        raise ValueError(f"KPT file below {job} does not define a regular mesh")
-    return values, model
+    return mesh_from_job(job, inputs, structure)
 
 
 def read_berry_polarization(log_path: Path) -> Dict[str, Any]:

@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 
 from abacustools.data.kpt import (
-    band_path_nodes,
+    band_path,
     mesh_from_spacing,
     model_report,
     read_kpt,
@@ -64,7 +64,15 @@ def register_parser(subparsers) -> None:
     )
     parser.add_argument(
         "--path", action="store_true",
-        help="Write the seekpath high-symmetry path of --structure in line mode.",
+        help="Write the high-symmetry path of --structure in line mode.",
+    )
+    parser.add_argument(
+        "--path-mode", choices=["auto", "bulk", "slab", "wire"], default="auto",
+        help="How --path picks the path: follow the dimensionality of the structure, or force one; default: auto.",
+    )
+    parser.add_argument(
+        "--min-vacuum", type=float, default=5.0, metavar="ANGSTROM",
+        help="Empty span that counts as vacuum when --path-mode is auto, default: 5.",
     )
     parser.add_argument(
         "--npoints", type=int, default=20,
@@ -116,6 +124,10 @@ def _print_report(report: dict[str, Any], as_json: bool) -> None:
 
     print(f"  kpt: {report['file']}")
     print(f"  model: {report['model']}")
+    if report.get("dimensionality_label"):
+        method = report.get("path_method")
+        suffix = "" if method is None else f", {method}"
+        print(f"  dimensionality: {report['dimensionality_label']}{suffix}")
     if "mesh" in report:
         print(
             f"  mesh: {' '.join(str(value) for value in report['mesh'])} "
@@ -160,25 +172,30 @@ def _generate(args: argparse.Namespace) -> int:
     if args.path:
         if structure is None:
             raise ValueError("--path needs --structure")
-        nodes, segments = band_path_nodes(
+        path = band_path(
             structure,
             npoints=args.npoints,
+            min_vacuum=args.min_vacuum,
+            path_mode=args.path_mode,
             symprec=args.symprec,
             angle_tolerance=args.angle_tolerance,
         )
-        output = _write(nodes, "line", args.output, args.override)
+        output = _write(path.nodes, "line", args.output, args.override)
         report = {
             "file": str(output.absolute()),
             "model": "line",
-            "nodes": len(nodes),
-            "points_total": int(sum(int(node[3]) for node in nodes)),
-            "labels": [str(node[4]) for node in nodes],
-            "segments": segments,
+            "nodes": len(path.nodes),
+            "points_total": path.points,
+            "labels": path.labels,
+            "segments": path.segments,
             "npoints": args.npoints,
+            "dimensionality": path.dimensionality,
+            "dimensionality_label": path.label,
+            "path_method": path.method,
+            "periodic_directions": path.periodic_directions,
+            "natoms": structure.natoms,
             "valid": True,
         }
-        if structure is not None:
-            report["natoms"] = structure.natoms
         _print_report(report, args.json)
         return 0
 

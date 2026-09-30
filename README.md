@@ -138,6 +138,14 @@ abacustools file kpt --structure STRU --spacing 0.03 -o KPT.scf
 abacustools file kpt --structure STRU --path --npoints 20 -o KPT.band
 ```
 
+The path follows the dimensionality of the structure: a bulk uses the seekpath
+high-symmetry path, a slab uses the in-plane path of its 2D Bravais lattice
+(hexagonal, square, rectangular or a generic oblique loop) with the vacuum
+direction pinned to `k = 0`, and a wire uses the single periodic direction.
+`--min-vacuum` sets the empty span that counts as vacuum (5 Angstrom by
+default), and `--path-mode auto|bulk|slab|wire` forces one of them; a
+zero-dimensional structure has no band path and is rejected.
+
 Structures can also be edited into a new file. Every action reads a structure,
 writes a separate OUTPUT (existing files are only replaced with `--override`)
 and keeps the atom attributes it does not touch, such as pseudopotential and
@@ -577,6 +585,26 @@ abacustools workflow kspacing postprocess -j JOB
 The postprocessing stage reports total energy per atom, convergence deltas,
 incomplete tasks, a recommended first value within the tolerance, a JSON
 report, and a convergence plot.
+
+A band structure along the seekpath high-symmetry path is prepared from a
+reference input directory:
+
+```text
+abacustools workflow band prepare -j JOB --npoints 20
+abacustools workflow band postprocess -j JOB
+```
+
+The prepare stage writes `band_scf/`, an SCF job that also stores the charge
+density, and `band_nscf/`, an NSCF job whose line-mode KPT follows the path and
+which reads the SCF density back and writes `BANDS_1.dat`; run the SCF first.
+`--nbands` sets the number of bands of the NSCF step. The path itself follows
+the dimensionality of the structure as in `file kpt --path`: seekpath for a 3D
+bulk, the in-plane path of the 2D lattice for a slab with the vacuum direction
+at `k = 0`, and the periodic axis for a 1D wire. `--min-vacuum` and
+`--path-mode auto|bulk|slab|wire` control that choice, and the workflow manifest
+records the dimensionality and the method that produced the path. The postprocess stage
+reports the band gap with its VBM and CBM, writes `band_results.json` next to
+the workflow manifest, and plots the bands to `band.png`.
 
 The equation of state can be fitted from volume-scaled calculations:
 
