@@ -124,6 +124,20 @@ symmetry, the dimensionality, the coordination or the per-atom table;
 `--coordination` and `--layer-direction` are rejected together with it, and
 `--json` returns one summary object per structure instead of a report.
 
+`file kpt` inspects a KPT file, or writes a new one. Without `--output` it
+reports the model, the mesh or the k-point list, and validates the values;
+adding `--structure` also reports the k-spacing in 1/Angstrom that the mesh
+realizes. With `--output` it writes a mesh (`--mesh 9 9 9`, or `--spacing 0.03`
+together with `--structure`, which expands the target spacing into a mesh the
+way ABACUS does) or, with `--path` and `--structure`, the seekpath
+high-symmetry path as a line-mode KPT with `--npoints` points per segment:
+
+```text
+abacustools file kpt KPT --structure STRU
+abacustools file kpt --structure STRU --spacing 0.03 -o KPT.scf
+abacustools file kpt --structure STRU --path --npoints 20 -o KPT.band
+```
+
 Structures can also be edited into a new file. Every action reads a structure,
 writes a separate OUTPUT (existing files are only replaced with `--override`)
 and keeps the atom attributes it does not touch, such as pseudopotential and
