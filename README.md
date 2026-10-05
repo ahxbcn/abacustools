@@ -508,6 +508,28 @@ largest cutoff encoded in their file names (such as the `150Ry` of
 orbital with a 100 Ry one gets 150 Ry. An explicitly requested `ecutwfc` is
 kept, but a value below the orbital cutoff is reported as a warning.
 
+An existing job can be moved to another library, or to another orbital variant
+of the same library, without preparing it again. `job setpporb`
+re-resolves every element of the job's `STRU` from the selected library,
+rewrites the `ATOMIC_SPECIES` pseudopotential name and the `NUMERICAL_ORBITAL`
+entry of each species, installs the new files, and drops the resource files the
+`STRU` no longer references:
+
+```text
+abacustools job setpporb JOB --library sg15
+abacustools job setpporb JOB1 JOB2 --library apns --variant precision
+abacustools job setpporb JOB --library sg15 --variant SZ --copy-resources
+abacustools job setpporb JOB --library sg15 --dry-run
+```
+
+`--library` and `--variant` read the same `resources` configuration as
+`job prepare`, and `--dry-run` reports the resolved names and the files it would
+install or remove without writing anything. New files are copied when the job
+already held copies and symlinked when it held symlinks; `--copy-resources` and
+`--symlink` force either. Only files whose name the old `STRU` referenced are
+removed, and when the new numerical orbitals carry a higher plane-wave cutoff
+than the job's `ecutwfc`, a warning reports the shortfall.
+
 Both the top-level parser and each subcommand provide their own help text:
 
 ```text
