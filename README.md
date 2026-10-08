@@ -1029,6 +1029,28 @@ abacustools postprocess hirshfeld -j JOB
 abacustools postprocess hirshfeld -j JOB --no-cm5
 ```
 
+Hirshfeld-I (Bultinck, Van Alsenoy, Ayers and Carbo-Dorca, *J. Chem. Phys.*
+2007, 126, 144111) makes the promolecule self-consistent instead of fixing it
+to the neutral atoms.  Each iteration rebuilds every atomic reference density at
+the population the previous iteration assigned to the atom, which removes the
+dependence on an arbitrary reference and gives charges that track the
+electrostatic-potential ones much better.  The reference densities at integer
+populations come from the pseudo-atomic wavefunctions (`PP_PSWFC`) of the
+pseudopotentials, filled by Aufbau around the neutral configuration and summed
+over lattice images like the plain promolecule:
+
+```text
+abacustools postprocess hirshfeld -j JOB --hirshfeld-i
+abacustools postprocess hirshfeld -j JOB --hirshfeld-i --json
+abacustools postprocess hirshfeld -j JOB --hirshfeld-i --max-iter 300 --tol 1e-4
+```
+
+A pseudopotential without `PP_PSWFC` (many ONCV files) has no charged reference
+states, so pass a directory of reference densities with `--references DIR`
+instead.  Every `<element>_<population>.dat` file there holds two columns, `r`
+in Angstrom and `rho(r)` in `e/Angstrom^3`, with one file per integer valence
+population the iteration may need.
+
 DDEC6 and DDEC3 net atomic charges, spin moments and bond orders are
 computed with the external [Chargemol](https://ddec.sourceforge.net) program,
 which partitions the valence density of a job:
