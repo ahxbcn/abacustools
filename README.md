@@ -217,6 +217,13 @@ pseudopotential and orbital together with the reason for each, `--label` names
 the new species, and `--keep-moments` keeps the magnetic moments of the
 replaced atoms, which are cleared otherwise.
 
+The STRU reader follows the newer ABACUS conventions as well: the
+`Cartesian_angstrom`, `Cartesian_au` and
+`Cartesian_angstrom_center_{xy,xz,yz,xyz}` coordinate modes, `#` comment
+annotations after the block keywords, the per-atom force field
+(`f`/`force`/`forces`, in eV/Angstrom) and the `pp_type` column of
+`ATOMIC_SPECIES` are all parsed, kept on the atoms and written back.
+
 `direct` and `cartesian` rewrite the same structure with an
 `ATOMIC_POSITIONS Direct` or `ATOMIC_POSITIONS Cartesian` block. Atoms, cell and
 every other attribute stay untouched, so converting forth and back returns the
