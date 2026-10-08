@@ -1,5 +1,26 @@
 Collection of tools used for performing DFT calculation with ABACUS.
 
+## Python data types
+
+The core data types are importable straight from the package, so a script can
+work with structures, inputs and results without reaching into the `io`/`data`
+submodules:
+
+```python
+from abacustools import AbacusSTRU, AbacusATOM, ReadInput, Unitcell, UPF
+
+structure = AbacusSTRU.read("STRU")
+inputs = ReadInput("INPUT")
+```
+
+The exported set covers the file-handling types: the structures
+(`AbacusSTRU`, `AbacusATOM`, `AbacusAtomType`, `StructureConversionWarning`),
+the cell helper `Unitcell`, `INPUT` (`ReadInput`, `WriteInput`), the
+pseudopotential and orbital readers (`UPF`, `AbacusNAO`) and the Molden types
+(`MoldenShell`, `MoldenAtom`, `MoldenOrbital`). The names resolve lazily, so
+`import abacustools` stays cheap and a defining module is loaded only when its
+name is first used; `dir(abacustools)` lists the whole set.
+
 ## Command-line subcommands
 
 Subcommands are registered in the package with Python's
