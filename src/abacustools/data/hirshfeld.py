@@ -11,18 +11,20 @@ calculation used; for a periodic cell they are summed over lattice images so
 the promolecule is periodic too.
 
 CM5 (Marenich, Jerome, Cramer and Truhlar, *J. Chem. Theory Comput.* **2012**,
-8, 527) is the Hirshfeld charge plus a pairwise correction,
+8, 527) maps the Hirshfeld charges onto class IV charges with
 
-``q_k^CM5 = q_k^Hirshfeld + sum_{k' != k} T_{k k'}``.
+``q_k^CM5 = q_k^Hirshfeld + sum_{k' != k} T_{k k'} B_{k k'}``,
 
-The correction parameters are element-pair specific and must be supplied as a
-JSON table (see :func:`read_cm5_parameters`); the values published in the CM5
-paper are not bundled here.
+where ``B_{k k'} = exp[-alpha (r_{k k'} - R_{Zk} - R_{Zk'})]`` is Pauling's bond
+order, built from the covalent radii ``R_Z`` and the interatomic distance, and
+``T_{k k'} = D_{Zk Zk'}`` for the H/C/N/O pairs (antisymmetric, zero for equal
+atoms) or ``T_{k k'} = D_{Zk} - D_{Zk'}`` otherwise.  The parameters of Table 1
+of the paper (``D_Z``, ``D_{Z Z'}``, ``alpha = 2.474 1/Angstrom``) are bundled
+here; the covalent radii are the Cordero single-bond values used by the paper.
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Optional, Sequence
@@ -93,29 +95,78 @@ def _proatom(job: Path, inputs: Mapping, structure: AbacusSTRU, element: str):
     raise ValueError(f"no atom of element {element} found for the proatom density")
 
 
-def read_cm5_parameters(path: str | Path) -> dict[tuple[str, str], float]:
-    """Read a CM5 parameter table.
+#: Table 1 of the CM5 paper: atom-wise parameters D_Z (dimensionless).
+CM5_ATOMIC_PARAMETERS: dict[str, float] = {
+    "H": 0.0056, "He": -0.1543, "Li": 0.0, "Be": 0.0333, "B": -0.1030,
+    "C": -0.0446, "N": -0.1072, "O": -0.0802, "F": -0.0629, "Ne": -0.1088,
+    "Na": 0.0184, "Mg": 0.0, "Al": -0.0726, "Si": -0.0790, "P": -0.0756,
+    "S": -0.0565, "Cl": -0.0444, "Ar": -0.0767, "K": 0.0130, "Ca": 0.0,
+    "Zn": 0.0, "Ge": -0.0557, "As": -0.0533, "Se": -0.0399, "Br": -0.0313,
+    "I": -0.0220,
+}
 
-    The file is JSON mapping element pairs to the correction coefficient, for
-    example ``{"C-H": 0.1234, "H-C": 0.1234}``.  Both orders of a pair are
-    looked up, so listing one is enough.
+#: Table 1 of the CM5 paper: pairwise parameters D_{Z Z'} for the H/C/N/O pairs.
+#: The order is the one the table lists; D_{Z Z'} = -D_{Z' Z}.
+CM5_PAIR_PARAMETERS: dict[tuple[str, str], float] = {
+    ("H", "C"): 0.0502, ("H", "N"): 0.1747, ("H", "O"): 0.1671,
+    ("C", "N"): 0.0556, ("C", "O"): 0.0234, ("N", "O"): -0.0346,
+}
 
-    Args:
-        path: JSON file with the CM5 coefficients.
+#: Exponent of Pauling's bond order, in 1/Angstrom.
+CM5_ALPHA = 2.474
 
-    Returns:
-        The parameter table, keyed by ``(element_a, element_b)``.
-    """
-    raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    table: dict[tuple[str, str], float] = {}
-    for key, value in raw.items():
-        if isinstance(key, (list, tuple)) and len(key) == 2:
-            first, second = str(key[0]), str(key[1])
-        else:
-            first, second = (part.strip() for part in str(key).replace("_", "-").split("-", 1))
-        table[(first, second)] = float(value)
-        table.setdefault((second, first), float(value))
-    return table
+#: Elements whose pairs use the tabulated D_{Z Z'} instead of D_Z - D_Z'.
+CM5_PAIR_ELEMENTS = frozenset({"H", "C", "N", "O"})
+
+#: Single-bond covalent radii in Angstrom (Cordero et al., the values behind
+#: the CRC table the CM5 paper cites for R_Z).
+CM5_COVALENT_RADII: dict[str, float] = {
+    "H": 0.31, "He": 0.28, "Li": 1.28, "Be": 0.96, "B": 0.84, "C": 0.76,
+    "N": 0.71, "O": 0.66, "F": 0.57, "Ne": 0.58, "Na": 1.66, "Mg": 1.41,
+    "Al": 1.21, "Si": 1.11, "P": 1.07, "S": 1.05, "Cl": 1.02, "Ar": 1.06,
+    "K": 2.03, "Ca": 1.76, "Zn": 1.22, "Ge": 1.20, "As": 1.19, "Se": 1.20,
+    "Br": 1.20, "I": 1.39,
+}
+
+
+def _cm5_pair_parameter(first: str, second: str) -> float:
+    """Return ``D_{first second}`` with the antisymmetry of the table."""
+    if first == second:
+        return 0.0
+    if (first, second) in CM5_PAIR_PARAMETERS:
+        return CM5_PAIR_PARAMETERS[(first, second)]
+    if (second, first) in CM5_PAIR_PARAMETERS:
+        return -CM5_PAIR_PARAMETERS[(second, first)]
+    raise KeyError(f"no CM5 pair parameter for {first}-{second}")
+
+
+def _cm5_charges(
+    elements: Sequence[str],
+    positions: np.ndarray,
+    cell: np.ndarray,
+    charges: np.ndarray,
+) -> np.ndarray:
+    """Apply the CM5 pairwise correction to Hirshfeld charges."""
+    corrected = np.array(charges, dtype=float)
+    natom = len(elements)
+    for k in range(natom):
+        for other in range(natom):
+            if k == other:
+                continue
+            first, second = elements[k], elements[other]
+            delta = positions[other] - positions[k]
+            # Minimum-image distance for the periodic cell.
+            fractional = np.linalg.solve(cell.T, delta)
+            fractional -= np.round(fractional)
+            distance = float(np.linalg.norm(fractional @ cell))
+            radius = CM5_COVALENT_RADII[first] + CM5_COVALENT_RADII[second]
+            bond_order = float(np.exp(-CM5_ALPHA * (distance - radius)))
+            if first in CM5_PAIR_ELEMENTS and second in CM5_PAIR_ELEMENTS:
+                coefficient = _cm5_pair_parameter(first, second)
+            else:
+                coefficient = CM5_ATOMIC_PARAMETERS[first] - CM5_ATOMIC_PARAMETERS[second]
+            corrected[k] += coefficient * bond_order
+    return corrected
 
 
 def hirshfeld_charges(
@@ -124,7 +175,7 @@ def hirshfeld_charges(
     images: int = 1,
     grid_shape: Optional[Sequence[int]] = None,
     lat0: Optional[float] = None,
-    cm5_parameters: Optional[Mapping[tuple[str, str], float]] = None,
+    cm5: bool = True,
 ) -> HirshfeldResult:
     """Compute Hirshfeld charges of an ABACUS job.
 
@@ -133,8 +184,7 @@ def hirshfeld_charges(
         images: Lattice images of the proatoms to sum over, in each direction.
         grid_shape: FFT grid, when the density has to be rebuilt from a restart.
         lat0: Lattice constant, when the density has to be rebuilt from a restart.
-        cm5_parameters: Optional CM5 correction table; when given, CM5 charges
-            are computed as well.
+        cm5: Also compute the CM5 charges (default ``True``).
 
     Returns:
         The Hirshfeld charges, volumes and, when possible, the CM5 charges.
@@ -196,18 +246,7 @@ def hirshfeld_charges(
     volumes = (promolecule / denominator).sum(axis=1) * volume_element
     charges = valence - populations
 
-    cm5 = None
-    if cm5_parameters is not None:
-        cm5 = np.array(charges, dtype=float)
-        for atom in range(natom):
-            for other in range(natom):
-                if atom == other:
-                    continue
-                key = (elements[atom], elements[other])
-                coefficient = cm5_parameters.get(key)
-                if coefficient is None:
-                    raise KeyError(f"no CM5 parameter for the pair {key}")
-                cm5[atom] += coefficient * (charges[atom] - charges[other])
+    cm5 = _cm5_charges(elements, positions, cell, charges) if cm5 else None
 
     return HirshfeldResult(
         job=str(job_path),
@@ -220,4 +259,4 @@ def hirshfeld_charges(
     )
 
 
-__all__ = ["HirshfeldResult", "hirshfeld_charges", "read_cm5_parameters"]
+__all__ = ["HirshfeldResult", "hirshfeld_charges"]

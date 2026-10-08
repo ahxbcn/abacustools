@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from abacustools.core.constant import ANG_TO_BOHR
-from abacustools.data.hirshfeld import hirshfeld_charges, read_cm5_parameters
+from abacustools.data.hirshfeld import hirshfeld_charges
 
 # A radial grid in Bohr with PP_RHOATOM integrated to z_valence = 1.
 _UPF = """\
@@ -131,20 +130,11 @@ def test_hirshfeld_of_a_proatom_is_neutral(tmp_path: Path) -> None:
     assert result.volumes[0] > 0.0
 
 
-def test_read_cm5_parameters(tmp_path: Path) -> None:
-    path = tmp_path / "cm5.json"
-    path.write_text(json.dumps({"C-H": 0.12, "O-O": 0.0}), encoding="utf-8")
-    table = read_cm5_parameters(path)
-    assert table[("C", "H")] == pytest.approx(0.12)
-    assert table[("H", "C")] == pytest.approx(0.12)
-    assert table[("O", "O")] == pytest.approx(0.0)
-
-
 def test_cm5_correction_shifts_charge(tmp_path: Path) -> None:
     job = tmp_path / "job"
     _write_job(job)
     base = hirshfeld_charges(job)
-    corrected = hirshfeld_charges(job, cm5_parameters={("H", "H"): 0.5})
-    assert corrected.cm5 is not None
-    # A single atom has no partner, so the correction leaves it unchanged.
-    assert corrected.cm5[0] == pytest.approx(base.charges[0], abs=1e-9)
+    assert base.cm5 is not None
+    # A single atom has no partner, so the CM5 correction leaves it unchanged.
+    assert base.cm5[0] == pytest.approx(base.charges[0], abs=1e-9)
+    assert hirshfeld_charges(job, cm5=False).cm5 is None

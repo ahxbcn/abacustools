@@ -1020,11 +1020,13 @@ abacustools postprocess hirshfeld -j JOB --json
 The density is read from the charge-density cube or the `*-CHARGE-DENSITY.restart`
 file, and the proatoms are summed over lattice images so the promolecule is
 periodic. CM5 charges (Marenich, Jerome, Cramer and Truhlar, *J. Chem. Theory
-Comput.* 2012, 8, 527) add a pairwise correction to the Hirshfeld charges; the
-element-pair coefficients are supplied as a JSON table and are not bundled:
+Comput.* 2012, 8, 527) add Pauling-bond-order weighted pairwise corrections to
+the Hirshfeld charges; the parameters of the paper's Table 1 and its covalent
+radii are built in, so no extra file is needed:
 
 ```text
-abacustools postprocess hirshfeld -j JOB --cm5-params cm5.json
+abacustools postprocess hirshfeld -j JOB
+abacustools postprocess hirshfeld -j JOB --no-cm5
 ```
 
 DDEC6 and DDEC3 net atomic charges, spin moments and bond orders are

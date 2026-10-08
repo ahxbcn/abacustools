@@ -6,7 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
-from abacustools.data.hirshfeld import hirshfeld_charges, read_cm5_parameters
+from abacustools.data.hirshfeld import hirshfeld_charges
 
 
 def _job_directory(value: str) -> Path:
@@ -23,8 +23,8 @@ def _register_arguments(parser: argparse.ArgumentParser) -> None:
         help="ABACUS job directory with a converged charge density.",
     )
     parser.add_argument(
-        "--cm5-params", default=None,
-        help="JSON table of CM5 element-pair coefficients; enables CM5 charges.",
+        "--no-cm5", action="store_true",
+        help="Only report the Hirshfeld charges, without the CM5 correction.",
     )
     parser.add_argument(
         "--grid", type=int, nargs=3, default=None, metavar=("NX", "NY", "NZ"),
@@ -61,18 +61,11 @@ def _report(result) -> dict:
 
 
 def run(args: argparse.Namespace) -> int:
-    parameters = None
-    if args.cm5_params:
-        path = Path(args.cm5_params)
-        if not path.is_absolute():
-            path = Path(args.job) / path
-        parameters = read_cm5_parameters(path)
-
     result = hirshfeld_charges(
         args.job,
         grid_shape=tuple(args.grid) if args.grid else None,
         lat0=args.lat0,
-        cm5_parameters=parameters,
+        cm5=not args.no_cm5,
     )
 
     if args.json:
