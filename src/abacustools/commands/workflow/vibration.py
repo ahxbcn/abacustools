@@ -24,6 +24,7 @@ from abacustools.data.vibration import (
     HarmonicVibration,
     selected_atom_indices,
     validate_stepsize,
+    write_gaussian_frequency_log,
 )
 from abacustools.integrations.ase_vibration import AseVibrationData
 from abacustools.io.stru import write_poscar
@@ -35,6 +36,7 @@ from .common import (
     kpoint_filename,
     read_manifest,
     register_stages,
+    resolve_output,
     write_abacus_job,
     write_manifest,
 )
@@ -195,6 +197,21 @@ def _register_postprocess_arguments(parser: argparse.ArgumentParser) -> None:
         help="Relative atomic mass of one or more elements, such as "
         "--mass H=2.014 or --mass H=2.014 O=18.0, which accounts for isotope "
         "effects. By default the masses of the ATOMIC_SPECIES block are used.",
+    )
+    parser.add_argument(
+        "--gaussian-log",
+        nargs="?",
+        const="gaussian_fake.log",
+        default=None,
+        metavar="FILE",
+        help="Write a fake Gaussian frequency log that GaussView can open. "
+        "FILE defaults to gaussian_fake.log below JOB; omit the option to skip it.",
+    )
+    parser.add_argument(
+        "--no-cell",
+        action="store_true",
+        help="Leave the cell out of the fake Gaussian log, which is written as "
+        "Gaussian translation vectors by default.",
     )
     parser.add_argument(
         "-o", "--output",
@@ -725,6 +742,20 @@ def _write_modes_builtin(
             print(f"  structure for mode {mode_number} ({label} cm^-1): {path}")
 
 
+def _equilibrium_energy(job: Path, version: str) -> float | None:
+    """Return the electronic energy of the equilibrium job in eV, or None."""
+    from abacustools.data.abacus_result import get_result_from_job
+
+    try:
+        result = get_result_from_job(
+            str(job / _EQUILIBRIUM_TASK), param_names=["energy"], version=version
+        )
+    except Exception:
+        return None
+    energy = result.get("energy")
+    return None if energy is None else float(energy)
+
+
 def postprocess(args: argparse.Namespace) -> int:
     """Calculate harmonic frequencies and thermochemistry of prepared force jobs.
 
@@ -816,6 +847,23 @@ def postprocess(args: argparse.Namespace) -> int:
         extra = {"modes": vibration.summary()}
 
     per_atom_masses = all_masses if all_masses is not None else structure.masses
+    if getattr(args, "gaussian_log", None):
+        mode_array = (
+            ase_vibration.modes() if backend == "ase" else vibration.modes_all_atoms()
+        )
+        path = write_gaussian_frequency_log(
+            resolve_output(job, args.gaussian_log),
+            structure,
+            frequencies,
+            mode_array,
+            masses=per_atom_masses,
+            temperature=temperatures[0],
+            electronic_energy=_equilibrium_energy(job, args.version),
+            zero_point_energy=zero_point_energy,
+            thermo=thermo_corr.get(f"{temperatures[0]:g}K"),
+            periodic=not getattr(args, "no_cell", False),
+        )
+        print(f"  fake Gaussian log: {path}")
     result = {
         "selected_atoms": [index + 1 for index in selected_atoms],
         "masses": [float(per_atom_masses[index]) for index in selected_atoms],

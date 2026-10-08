@@ -1451,6 +1451,27 @@ the entropy and the free energy. In both backends the reported zero-point
 energy keeps the convention of adding the magnitude of an imaginary mode, while
 the thermochemistry of a temperature is evaluated from the stable modes only.
 
+`--gaussian-log [FILE]` writes a fake Gaussian frequency output next to the
+results (`gaussian_fake.log` by default), in the spirit of OfakeG and
+CP2KfakeG, so that GaussView can open the file and animate the modes:
+
+```text
+abacustools workflow vibration postprocess -j JOB --gaussian-log
+abacustools workflow vibration postprocess -j JOB --gaussian-log modes.log --no-cell
+```
+
+Because an ABACUS structure is periodic, the geometry follows Gaussian's
+periodic convention: an `Input orientation` block whose last three centers are
+the translation vectors of the cell, written as atomic-number `-2` pseudo-atoms
+and followed by the `Lengths of translation vectors` and `Angles of translation
+vectors` lines, which is how GaussView reads the unit cell. `--no-cell` leaves
+the cell out and writes a plain `Standard orientation` block instead. The
+frequency block carries the signed frequencies in `cm^-1`, the reduced masses
+in `amu`, the force constants in `mDyne/Angstrom` and the Cartesian normal
+coordinates of every atom. The IR intensities are written as zero, because the
+workflow does not compute the dipole derivatives, and the thermal section is
+filled from the zero-point energy and the thermochemistry of the results.
+
 Workflow submission scripts can be generated from `~/.abacustools/config.yaml`.
 The packaged defaults support local execution and Slurm, PBS, and LSF
 submission. Script generation is disabled by default; enable it globally with

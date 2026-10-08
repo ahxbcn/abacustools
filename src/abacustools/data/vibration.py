@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import cached_property
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional, Sequence, Union
 
 import numpy as np
@@ -34,6 +35,7 @@ from abacustools.core.constant import (
     ANGSTROM_TO_METRE,
     BOLTZMANN_CONSTANT_EV_PER_K,
     ELEMENTARY_CHARGE,
+    EV_TO_HARTREE,
     HBAR,
     INV_CM_TO_EV,
 )
@@ -519,3 +521,376 @@ class HarmonicVibration:
             }
             for index in range(self.n_modes)
         ]
+
+
+#: Speed of light in cm/s, the unit of the Gaussian frequencies.
+_SPEED_OF_LIGHT_CM_PER_S = 2.99792458e10
+
+#: Header of the Gaussian harmonic-frequency section.
+_GAUSSIAN_FREQUENCY_HEADER = (
+    " Harmonic frequencies (cm**-1), IR intensities (KM/Mole), Raman scattering",
+    " activities (A**4/AMU), depolarization ratios for plane and unpolarized",
+    " incident light, reduced masses (AMU), force constants (mDyne/A),",
+    " and normal coordinates:",
+)
+
+#: Separator of the Gaussian orientation and frequency blocks.
+_GAUSSIAN_RULE = " " + "-" * 69
+
+#: The Gaussian "Standard orientation" banner, with the trailing spaces the
+#: real output carries.
+_GAUSSIAN_STANDARD_ORIENTATION = (
+    "                         Standard orientation:                         "
+)
+
+#: The Gaussian "Input orientation" banner, which a periodic calculation uses
+#: because the translation vectors turn the point-group symmetry off.
+_GAUSSIAN_INPUT_ORIENTATION = (
+    "                          Input orientation:                          "
+)
+
+#: Atomic number Gaussian gives the translation-vector pseudo-atoms that carry
+#: the unit cell of a periodic structure.
+_GAUSSIAN_TRANSLATION_VECTOR_NUMBER = -2
+
+#: Labels of the per-mode lines, each exactly 15 characters wide.
+_GAUSSIAN_FREQUENCY_LABEL = " Frequencies --"
+_GAUSSIAN_REDUCED_MASS_LABEL = " Red. masses --"
+_GAUSSIAN_FORCE_CONSTANT_LABEL = " Frc consts  --"
+_GAUSSIAN_IR_LABEL = " IR Inten    --"
+
+
+def _gaussian_atomic_numbers(elements: Sequence[str]) -> list[int]:
+    """Return the atomic numbers of the elements, through the ASE table."""
+    from ase.data import atomic_numbers
+
+    numbers = []
+    for element in elements:
+        symbol = str(element)
+        if symbol not in atomic_numbers:
+            raise ValueError(f"unknown element symbol: {symbol}")
+        numbers.append(int(atomic_numbers[symbol]))
+    return numbers
+
+
+def _cell_lengths_and_angles(cell: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Return the cell lengths in Angstrom and the three cell angles in degrees."""
+    vectors = np.asarray(cell, dtype=float)
+    lengths = np.linalg.norm(vectors, axis=1)
+    angles = []
+    for first, second in ((1, 2), (0, 2), (0, 1)):
+        cosine = float(
+            np.dot(vectors[first], vectors[second]) / (lengths[first] * lengths[second])
+        )
+        angles.append(float(np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0)))))
+    return lengths, np.asarray(angles)
+
+
+def _gaussian_orientation_lines(
+    structure: "AbacusSTRU", *, periodic: bool = True
+) -> list[str]:
+    """Render the Gaussian orientation block of a structure.
+
+    A periodic structure follows the Gaussian PBC convention: the block is an
+    ``Input orientation`` whose last three centers are the translation vectors,
+    written as pseudo-atoms with atomic number ``-2``, and the lengths and
+    angles of those vectors follow the coordinates.  GaussView reads that cell.
+    A non-periodic structure keeps the usual ``Standard orientation``.
+
+    The column widths follow a real Gaussian output so that GaussView reads the
+    geometry without a special case.
+    """
+    coords = np.asarray(structure.coords, dtype=float)
+    numbers = _gaussian_atomic_numbers([str(element) for element in structure.elements])
+    cell = np.asarray(structure.cell, dtype=float) if periodic else None
+    if cell is not None and abs(float(np.linalg.det(cell))) < 1.0e-8:
+        cell = None
+    banner = (
+        _GAUSSIAN_INPUT_ORIENTATION if cell is not None else _GAUSSIAN_STANDARD_ORIENTATION
+    )
+    lines = [
+        "",
+        banner,
+        _GAUSSIAN_RULE,
+        " Center     Atomic      Atomic             Coordinates (Angstroms)",
+        " Number     Number       Type             X           Y           Z",
+        _GAUSSIAN_RULE,
+    ]
+    for center, (number, xyz) in enumerate(zip(numbers, coords), start=1):
+        lines.append(
+            f"{center:7d}{number:11d}{0:12d}"
+            f"{xyz[0]:16.6f}{xyz[1]:12.6f}{xyz[2]:12.6f}"
+        )
+    if cell is not None:
+        for offset, vector in enumerate(cell, start=len(numbers) + 1):
+            lines.append(
+                f"{offset:7d}{_GAUSSIAN_TRANSLATION_VECTOR_NUMBER:11d}{0:12d}"
+                f"{vector[0]:16.6f}{vector[1]:12.6f}{vector[2]:12.6f}"
+            )
+    lines.append(_GAUSSIAN_RULE)
+    if cell is not None:
+        lengths, angles = _cell_lengths_and_angles(cell)
+        lines.append(
+            " Lengths of translation vectors:"
+            + f"{lengths[0]:>14.6f}{lengths[1]:>12.6f}{lengths[2]:>12.6f}"
+        )
+        lines.append(
+            "  Angles of translation vectors:"
+            + f"{angles[0]:>14.6f}{angles[1]:>12.6f}{angles[2]:>12.6f}"
+        )
+        lines.append(_GAUSSIAN_RULE)
+    return lines
+
+
+def _gaussian_value_line(label: str, values: Sequence[float]) -> str:
+    """Render one ``Frequencies``/``Red. masses`` style line of up to three modes."""
+    line = label
+    line += f"{values[0]:>12.4f}"
+    for value in values[1:]:
+        line += f"{value:>23.4f}"
+    return line
+
+
+def _gaussian_mode_columns(
+    frequencies: Sequence[float],
+    modes: np.ndarray,
+    masses: Sequence[float],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return the printed displacements, reduced masses and force constants.
+
+    Gaussian prints the Cartesian normal coordinates normalized to
+    ``sum_i |u_i|^2 = 1``; the reduced mass is then ``mu = sum_i m_i |u_i|^2``
+    and the force constant follows from ``k = mu omega^2``, in mDyne/Angstrom.
+    """
+    array = np.asarray(modes, dtype=float)
+    frequencies = np.asarray(frequencies, dtype=float)
+    masses = np.asarray(masses, dtype=float)
+    squared = np.sum(array ** 2, axis=(1, 2))
+    if np.any(squared <= 0.0):
+        raise ValueError("a normal mode has no displacement to print")
+    weighted = np.sum(array ** 2 * masses[np.newaxis, :, np.newaxis], axis=(1, 2))
+    reduced = weighted / squared
+    # omega = 2 pi c nu; the imaginary mode keeps the sign of its frequency.
+    omega = 2.0 * np.pi * _SPEED_OF_LIGHT_CM_PER_S * frequencies
+    constants = reduced * AMU_TO_KG * omega * np.abs(omega) / 100.0
+    displacements = array / np.sqrt(squared)[:, np.newaxis, np.newaxis]
+    return displacements, reduced, constants
+
+
+def _gaussian_frequency_block(
+    frequencies: np.ndarray,
+    displacements: np.ndarray,
+    reduced: np.ndarray,
+    constants: np.ndarray,
+    numbers: Sequence[int],
+) -> list[str]:
+    """Render the Gaussian harmonic-frequency block, three modes per group."""
+    lines = list(_GAUSSIAN_FREQUENCY_HEADER)
+    n_modes = len(frequencies)
+    natoms = displacements.shape[1]
+    for start in range(0, n_modes, 3):
+        block = list(range(start, min(start + 3, n_modes)))
+        lines.append("".join(f"{index + 1:>23d}" for index in block))
+        lines.append("".join(f"{'A':>23}" for _ in block))
+        lines.append(
+            _gaussian_value_line(_GAUSSIAN_FREQUENCY_LABEL, [frequencies[i] for i in block])
+        )
+        lines.append(
+            _gaussian_value_line(_GAUSSIAN_REDUCED_MASS_LABEL, [reduced[i] for i in block])
+        )
+        lines.append(
+            _gaussian_value_line(_GAUSSIAN_FORCE_CONSTANT_LABEL, [constants[i] for i in block])
+        )
+        lines.append(_gaussian_value_line(_GAUSSIAN_IR_LABEL, [0.0 for _ in block]))
+        lines.append(
+            "  Atom  AN" + "  ".join("".join(f"{axis:>7}" for axis in "XYZ") for _ in block)
+        )
+        for atom in range(natoms):
+            row = f"{atom + 1:6d}{numbers[atom]:4d}  "
+            for index in block:
+                xyz = displacements[index, atom]
+                row += f"{xyz[0]:7.2f}{xyz[1]:7.2f}{xyz[2]:7.2f}  "
+            lines.append(row)
+    return lines
+
+
+def _gaussian_thermal_line(label: str, value: float, end: int) -> str:
+    """Render one ``label`` + value line of the thermal section."""
+    return f"{label}{value:>{end + 1 - len(label)}.6f}"
+
+
+def _gaussian_thermal_lines(
+    temperature: float,
+    zero_point_energy: Optional[float],
+    electronic_energy: Optional[float],
+    thermo: Optional[dict[str, Any]],
+) -> list[str]:
+    """Render the thermochemistry section, with only the values that exist.
+
+    The workflow reports the vibrational internal and free energies relative to
+    the electronic energy, which is exactly what the Gaussian thermal
+    corrections are, so no reference shift is applied.
+    """
+    thermo = thermo or {}
+    lines = [
+        "",
+        f" Temperature   {temperature:7.3f} Kelvin.  Pressure   1.00000 Atm.",
+    ]
+    zpe = None if zero_point_energy is None else float(zero_point_energy) * EV_TO_HARTREE
+    if zpe is not None:
+        lines.append(
+            _gaussian_thermal_line(" Zero-point correction=", zpe, 57) + " Hartree"
+        )
+    rt = BOLTZMANN_CONSTANT_EV_PER_K * temperature * EV_TO_HARTREE
+    correction_energy = None
+    if thermo.get("internal_energy") is not None:
+        correction_energy = float(thermo["internal_energy"]) * EV_TO_HARTREE
+        lines.append(
+            _gaussian_thermal_line(" Thermal correction to Energy=", correction_energy, 57)
+        )
+        lines.append(
+            _gaussian_thermal_line(
+                " Thermal correction to Enthalpy=", correction_energy + rt, 57
+            )
+        )
+    correction_gibbs = None
+    if thermo.get("free_energy") is not None:
+        correction_gibbs = float(thermo["free_energy"]) * EV_TO_HARTREE + rt
+        lines.append(
+            _gaussian_thermal_line(
+                " Thermal correction to Gibbs Free Energy=", correction_gibbs, 57
+            )
+        )
+    energy = None if electronic_energy is None else float(electronic_energy) * EV_TO_HARTREE
+    if energy is not None:
+        lines.append(_gaussian_thermal_line(" Electronic energy=", energy, 64))
+        if zpe is not None:
+            lines.append(
+                _gaussian_thermal_line(
+                    " Sum of electronic and zero-point Energies=", energy + zpe, 64
+                )
+            )
+        if correction_energy is not None:
+            lines.append(
+                _gaussian_thermal_line(
+                    " Sum of electronic and thermal Energies=",
+                    energy + correction_energy,
+                    64,
+                )
+            )
+            lines.append(
+                _gaussian_thermal_line(
+                    " Sum of electronic and thermal Enthalpies=",
+                    energy + correction_energy + rt,
+                    64,
+                )
+            )
+        if correction_gibbs is not None:
+            lines.append(
+                _gaussian_thermal_line(
+                    " Sum of electronic and thermal Free Energies=",
+                    energy + correction_gibbs,
+                    64,
+                )
+            )
+    return lines
+
+
+def gaussian_frequency_log(
+    structure: "AbacusSTRU",
+    frequencies: Sequence[float],
+    modes: np.ndarray,
+    *,
+    masses: Optional[Sequence[float]] = None,
+    periodic: bool = True,
+    temperature: float = 298.15,
+    electronic_energy: Optional[float] = None,
+    zero_point_energy: Optional[float] = None,
+    thermo: Optional[dict[str, Any]] = None,
+) -> str:
+    """Render a fake Gaussian harmonic-frequency log of a vibration analysis.
+
+    The text follows the layout of a Gaussian frequency job closely enough that
+    GaussView opens it and animates the normal modes, in the spirit of OfakeG
+    and CP2KfakeG.  The frequencies are the signed wavenumbers in cm^-1, the
+    modes are the Cartesian displacements of every atom of ``structure`` as a
+    ``(n_modes, natoms, 3)`` array, and the thermochemistry is optional.
+
+    Args:
+        structure: Equilibrium structure the modes belong to.
+        frequencies: Signed frequencies in cm^-1, negative for unstable modes.
+        modes: Cartesian displacement modes of every atom.
+        masses: Atomic masses in amu; defaults to the masses of the structure.
+        periodic: Write the cell as Gaussian translation vectors, so that a
+            periodic ABACUS structure is shown as a unit cell in GaussView.
+        temperature: Temperature of the thermal section in Kelvin.
+        electronic_energy: Electronic energy of the reference job in eV.
+        zero_point_energy: Zero-point energy in eV.
+        thermo: Thermal corrections in eV, with the keys ``internal_energy`` and
+            ``free_energy`` as far as they are available.
+
+    Returns:
+        The complete fake Gaussian log as one string.
+    """
+    array = np.asarray(modes, dtype=float)
+    frequencies = np.asarray(frequencies, dtype=float)
+    if array.ndim != 3 or array.shape[1] != structure.natoms or array.shape[2] != 3:
+        raise ValueError(
+            "modes must be a (n_modes, natoms, 3) array over the structure atoms"
+        )
+    if array.shape[0] != frequencies.size:
+        raise ValueError("frequencies and modes must describe the same number of modes")
+    per_atom_masses = (
+        np.asarray(structure.masses, dtype=float) if masses is None else np.asarray(masses, dtype=float)
+    )
+    if per_atom_masses.shape != (structure.natoms,):
+        raise ValueError("masses must hold one value per structure atom")
+
+    displacements, reduced, constants = _gaussian_mode_columns(
+        frequencies, array, per_atom_masses
+    )
+    numbers = _gaussian_atomic_numbers([str(element) for element in structure.elements])
+
+    lines = [
+        " ! This file was generated by abacustools for viewing in GaussView",
+        " ! abacustools workflow vibration postprocess --gaussian-log",
+        "",
+        " 0 basis functions",
+        " 0 alpha electrons",
+        " 0 beta electrons",
+        "GradGradGradGradGradGradGradGradGradGradGradGradGradGradGradGradGradGrad",
+        "GradGradGradGradGradGradGradGradGradGradGradGradGradGradGradGradGradGrad",
+    ]
+    lines.extend(_gaussian_orientation_lines(structure, periodic=periodic))
+    if electronic_energy is not None:
+        lines.append("")
+        lines.append(
+            " SCF Done:  E(ABACUS) = {:>18.12E} A.U. after    1 cycles".format(
+                float(electronic_energy) * EV_TO_HARTREE
+            )
+        )
+    lines.append("")
+    lines.extend(_gaussian_frequency_block(frequencies, displacements, reduced, constants, numbers))
+    lines.extend(
+        _gaussian_thermal_lines(temperature, zero_point_energy, electronic_energy, thermo)
+    )
+    lines.append("")
+    lines.append(" Normal termination of Gaussian")
+    return "\n".join(lines) + "\n"
+
+
+def write_gaussian_frequency_log(
+    path: Path,
+    structure: "AbacusSTRU",
+    frequencies: Sequence[float],
+    modes: np.ndarray,
+    **options: Any,
+) -> Path:
+    """Write :func:`gaussian_frequency_log` to ``path`` and return the path."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        gaussian_frequency_log(structure, frequencies, modes, **options),
+        encoding="utf-8",
+    )
+    return path
