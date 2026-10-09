@@ -14,7 +14,7 @@ controls.
 | `md_dumpfreq` | 10-100 | how often a frame is written |
 | `md_restartfreq` | 50-500 | how often a restart structure is written |
 | `dump_force` / `dump_vel` / `dump_virial` | 1 | needed for a useful trajectory |
-| `ecutwfc`/`kspacing`/smearing | as for scf | |
+| `mixing_*`, `smearing_*`, `scf_thr`, `scf_nmax` | as for scf | shipped template: broyden 0.8, gaussian 0.015, 1e-7, 100 |
 | `nspin` | 1 or 2 | SOC MD is possible but rarer |
 
 For `nvt`/`npt` set the thermostat/barostat targets that match `md_type`; for

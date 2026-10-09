@@ -18,7 +18,7 @@ message.
 
 | solver | basis | requires |
 | --- | --- | --- |
-| `dav_subspace` (+ `pw_diag_ndim 2`) | PW | always available; the recommended combination |
+| `dav_subspace` (+ `pw_diag_ndim 2`, `pw_diag_nmax 20`) | PW | always available; the recommended combination |
 | `cg`, `dav`, `bpcg` | PW | always available |
 | `genelpa` | LCAO | an ELPA build; CPU only; usually the fastest |
 | `elpa` | LCAO | ELPA; supports CPU and GPU |

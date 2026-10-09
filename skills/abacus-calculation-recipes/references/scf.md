@@ -11,13 +11,13 @@ The base run. Every other recipe reuses its parameters.
 | `ecutrho` | 4x for NC, 8-12x for USPP | only PW has a separate density cutoff |
 | `kspacing` | about 0.14 (1/Bohr) for bulk | not VASP's KSPACING; differ by 2*pi |
 | `smearing_method` | `gaussian` | |
-| `smearing_sigma` | metals 0.01-0.02 Ry, insulators 0.001-0.005 Ry | do not use `fixed` for an insulator |
+| `smearing_sigma` | 0.015 Ry (shipped template); insulators 0.001-0.005 Ry | do not use `fixed` for an insulator |
 | `mixing_type` | `broyden` | |
 | `mixing_beta` | 0.8 (`nspin 1`), 0.4 (`nspin 2/4`) | lower to 0.2-0.4 if the energy oscillates |
-| `scf_thr` | 1e-8 | tighten for production |
+| `scf_thr` | shipped template 1e-7; 1e-8 for PW production | tighten for production |
 | `scf_nmax` | 100-200 | |
 | `ks_solver` | `dav_subspace` with `pw_diag_ndim 2` | recommended |
-| `symmetry` | 0 | 1 only in limited cases |
+| `symmetry` | 0 (the shipped scf template uses 1) | use -1 for nspin 4 SOC |
 | `nspin` | 1 (or 2, 4) | |
 
 ## LCAO basis
@@ -40,7 +40,7 @@ ecutwfc          60
 ecutrho          240
 kspacing         0.14
 smearing_method  gaussian
-smearing_sigma   0.01
+smearing_sigma   0.015
 mixing_type      broyden
 mixing_beta      0.8
 scf_thr          1e-8

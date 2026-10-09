@@ -23,12 +23,12 @@ syntax by `abacus-inputs`; pseudopotential/orbital choice by `abacus-basis`.
 | `ecutrho` | NC 4x `ecutwfc`; USPP 8-12x | PW only |
 | `kspacing` | about 0.14 (1/Bohr) for bulk | see the note below |
 | `smearing_method` | `gaussian` | metals and insulators alike |
-| `smearing_sigma` | metals 0.01-0.02 Ry; insulators 0.001-0.005 Ry | in Ry |
+| `smearing_sigma` | 0.015 Ry (the shipped template); insulators 0.001-0.005 Ry | in Ry |
 | `mixing_type` | `broyden` | |
 | `mixing_beta` | 0.8 for `nspin 1`, 0.4 for `nspin 2/4` | lower it if the SCF oscillates |
-| `scf_thr` | PW 1e-8, LCAO 1e-7 | tighten for production |
+| `scf_thr` | shipped template 1e-7; PW production 1e-8, LCAO 1e-7 | tighten for production |
 | `scf_nmax` | 100-200 | |
-| `symmetry` | 0 | see the note below |
+| `symmetry` | 0 (the shipped scf template uses 1) | see the note below |
 | `nspin` | 1, 2 or 4 | |
 
 Two frequent mistakes:
@@ -62,7 +62,7 @@ ecutwfc          60
 ecutrho          240            # NC; use 8-12x for USPP
 kspacing         0.14
 smearing_method  gaussian
-smearing_sigma   0.01
+smearing_sigma   0.015
 mixing_type      broyden
 mixing_beta      0.8
 scf_thr          1e-8
@@ -148,6 +148,14 @@ dump_virial      1
 The default `md_nstep` is far too small for production; set it explicitly.
 Details in [references/md.md](references/md.md).
 
+## Shipped templates
+
+The example `~/.abacustools/config.yaml` carries a recommended base deck per job
+type under `input_templates`, plus the basis/solver defaults under
+`basis_settings`. Those are the values used above unless a note says
+otherwise. The full recommended decks are reproduced in
+[references/shipped-templates.md](references/shipped-templates.md).
+
 ## Runtime, hardware and build
 
 | keyword | common value | comment |
@@ -183,3 +191,5 @@ hand. See [references/version-differences.md](references/version-differences.md)
   gating, MPI/OpenMP layout, memory, GPU.
 - [references/version-differences.md](references/version-differences.md) - LTS
   3.10 versus develop.
+- [references/shipped-templates.md](references/shipped-templates.md) - the
+  recommended base deck per job type and the basis/solver defaults.

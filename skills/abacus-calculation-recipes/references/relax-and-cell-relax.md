@@ -12,7 +12,7 @@ parameter and add a convergence criterion.
 | `relax_method` | `bfgs` | `cg` is a common alternative |
 | `relax_nmax` | 100-200 | |
 | `force_thr_ev` | 0.01-0.03 eV/Angstrom | 0.02 is a common start |
-| `symmetry`, `ks_solver`, `mixing_*`, `smearing_*` | as for scf | |
+| `symmetry`, `ks_solver`, `mixing_*`, `smearing_*`, `scf_thr` | as for scf | the shipped template uses 0.8, gaussian 0.015, 1e-7, 0 |
 
 ## cell-relax
 
@@ -24,7 +24,7 @@ parameter and add a convergence criterion.
 | `relax_method` | `cg` | `bfgs` is also used |
 | `relax_nmax` | 100-200 | |
 | `force_thr_ev` | 0.01-0.03 eV/Angstrom | |
-| `stress_thr` | 0.5-1 kBar | 0.5 is a common start |
+| `stress_thr` | 0.5-1 kBar | 0.5 is the shipped value |
 
 ## Full examples
 
