@@ -58,3 +58,21 @@ noncollinear calculation cannot use SCAN.
 5. For a dispersion-corrected calculation, the functional also selects the
    D3/D4 damping parameters (see
    [capabilities.md](capabilities.md)).
+
+## Meta-GGA restrictions beyond nspin 4
+
+- Meta-GGA functionals (SCAN, SCAN0, SCANL) are LIBXC-only on both branches, so
+  a non-LIBXC build refuses them before the run starts.
+- The one enforced physical restriction is `nspin 4`: the gradient kernel aborts
+  with "meta-GGA has not been implemented for nspin = 4 yet" on both branches.
+  A collinear (nspin 1 or 2) meta-GGA run is allowed.
+- Both branches carry a dedicated meta-GGA stress path
+  (`stress_func_mgga` / `stress_mgga`), so a stress or cell-relaxation run with
+  a meta-GGA is supported for nspin 1/2. The LTS source keeps a commented-out
+  historical guard about "mgga stress not implemented for polarized case"; it
+  is not active, so the enforced limit stays the nspin-4 one.
+- A meta-GGA run produces the kinetic-energy-density cube (`tau.cube` /
+  `taus<n>.cube` on develop, `SPIN<n>_TAU.cube` on LTS) through the same
+  `out_chg` path; `out_elf` can then use it.
+- Hybrid meta-GGA (SCAN0) inherits both the LIBXC requirement and the nspin-4
+  restriction.

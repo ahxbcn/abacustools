@@ -64,3 +64,19 @@ from the accepted LCAO list.
    efficiency unless the build lacks it.
 4. Pick `esolver_type` only when a non-Kohn-Sham driver is intended; the
    LTS/develop lists differ (develop adds `tdofdft`, `nep`, `dfpt`).
+
+## Driver-specific boundaries
+
+| driver | basis | notes |
+| --- | --- | --- |
+| `tddft` (RT-TDDFT) | PW and LCAO | most `td_*` keywords are gated on `esolver_type==tddft`; the linear-solver keywords are PW-only, several propagation keywords are LCAO-only |
+| `tdofdft` | develop, PW-oriented | time-dependent orbital-free DFT; its keywords are gated on `esolver_type==tdofdft` |
+| `dfpt` | develop only | adds `dfpt_qmesh`, `dfpt_qfile`, `dfpt_compute_q0`, `dfpt_loto`, `dfpt_conv_thr`, `dfpt_max_iter`, `dfpt_mix_beta`; `dfpt_loto` requires `dfpt_compute_q0` |
+| `lr` / `ks-lr` | both branches | `lr` requires `calculation nscf`, because it reads the converged ground state before the response |
+| `sdft` | PW only | stochastic DFT |
+
+The ELF output (`out_elf`) is accepted only for `ksdft`, `ofdft` and `tddft`;
+other drivers refuse it.
+
+LTS 3.10.1 has no `tdofdft` and no `dfpt`, so the corresponding keywords and
+drivers do not exist there.

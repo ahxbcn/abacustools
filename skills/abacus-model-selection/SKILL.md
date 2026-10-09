@@ -52,6 +52,12 @@ source under `source/` matches the commit. See
 | DFT+DMFT | LCAO only | LCAO only |
 | dispersion | D2, D3(0), D3(BJ) | adds D4 (external library) |
 | charged cell (`nelec`,`nelec_delta`) | yes | yes |
+| implicit solvation (`imp_sol`) | yes | yes |
+| electric field / dipole (`efield_flag`,`dip_cor_flag`) | yes, not with `symmetry 1` | yes, not with `symmetry 1` |
+| RT-TDDFT (`tddft`) | yes (PW and LCAO) | yes (PW and LCAO) |
+| TD-OFDFT (`tdofdft`) | no | yes |
+| DFPT (`dfpt`) | no | yes |
+| PAW | compile-gated `USE_PAW`, PW only | removed |
 | noncollinear + gamma_only | not allowed | not allowed |
 
 ## How to choose
@@ -68,6 +74,9 @@ source under `source/` matches the commit. See
 4. Check the interacting switches: `nspin 4`, `lspinorb`, DFT+U, dispersion and
    charged-cell settings each restrict the others. See
    [references/capabilities.md](references/capabilities.md).
+5. Check the environment terms: implicit solvation, an applied field, a dipole
+   or gate correction. See
+   [references/solvation-and-fields.md](references/solvation-and-fields.md).
 
 ## Boundary
 
