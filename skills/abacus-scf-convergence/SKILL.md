@@ -22,7 +22,10 @@ poisons every later step.
 
 Also confirm the units and type of the criterion: `scf_thr_type 1` is a
 reciprocal-space density error in Ry (PW), `scf_thr_type 2` is a real-space
-density error (LCAO). `scf_ene_thr` is a separate total-energy threshold in eV.
+density error (LCAO, the common basis in the examples below). Typical values
+are `scf_thr 1e-7` for LCAO and `1e-8` for PW; a large LCAO geometry
+optimization may loosen to `1e-6`. `scf_ene_thr` is a separate total-energy
+threshold in eV.
 
 ## Tuning order
 

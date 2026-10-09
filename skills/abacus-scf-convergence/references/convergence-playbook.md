@@ -1,30 +1,39 @@
 # Convergence playbook
 
+These examples use the commonly used LCAO basis: `basis_type lcao`,
+`ks_solver genelpa` and `scf_thr 1e-7` (`scf_thr_type 2`, the LCAO default).
+For a plane-wave run use `scf_thr 1e-8` and `scf_thr_type 1` instead. A large
+LCAO geometry optimization may loosen `scf_thr` to `1e-6`.
+
 Ready parameter sets, from the easy cases to the hard ones. Each block shows
-only the SCF-relevant keywords; the basis, cutoff and k-point settings stay as
-in the calculation recipe.
+the SCF-relevant keywords plus the LCAO basis and solver; the cutoff and
+k-point settings stay as in the calculation recipe.
 
 ## Well-behaved default
 
 ```text
+basis_type      lcao
+ks_solver       genelpa
 mixing_type      broyden
 mixing_beta      0.8            # nspin 1
 mixing_ndim      8
 mixing_gg0       1.0
-scf_thr          1e-8
+scf_thr          1e-7
 scf_nmax         100
 ```
 
 ## Metal
 
 ```text
+basis_type      lcao
+ks_solver       genelpa
 smearing_method  gaussian
 smearing_sigma   0.02
 mixing_type      broyden
 mixing_beta      0.4
 mixing_ndim      10
 mixing_gg0       1.0
-scf_thr          1e-8
+scf_thr          1e-7
 scf_nmax         150
 ```
 
@@ -34,12 +43,14 @@ lower `mixing_beta`.
 ## Insulator or wide-gap system
 
 ```text
+basis_type      lcao
+ks_solver       genelpa
 smearing_method  gaussian
 smearing_sigma   0.001
 mixing_type      broyden
 mixing_beta      0.8
 mixing_ndim      8
-scf_thr          1e-8
+scf_thr          1e-7
 scf_nmax         100
 ```
 
@@ -51,11 +62,13 @@ Low-dimensional systems with a lot of vacuum are the classic hard case for
 charge sloshing. Lower the charge mixing and lengthen its history:
 
 ```text
+basis_type      lcao
+ks_solver       genelpa
 mixing_type      broyden
 mixing_beta      0.025
 mixing_ndim      24
 mixing_gg0       1.0            # Kerker is bypassed at mixing_beta <= 0.1
-scf_thr          1e-8
+scf_thr          1e-7
 scf_nmax         200
 ```
 
@@ -68,12 +81,14 @@ large systems.
 Set the initial moments in `STRU` first, then reduce the magnetic mixing:
 
 ```text
+basis_type      lcao
+ks_solver       genelpa
 nspin            2
 mixing_type      broyden
 mixing_beta      0.1
 mixing_beta_mag  0.2            # 1.5-2 times mixing_beta; default is 4x, capped at 1.6
 mixing_ndim      16
-scf_thr          1e-8
+scf_thr          1e-7
 scf_nmax         200
 ```
 
@@ -84,6 +99,8 @@ moment is more important than any of these.
 ## Noncollinear or SOC magnetic system
 
 ```text
+basis_type      lcao
+ks_solver       genelpa
 nspin            4
 noncolin         1
 mixing_type      broyden
@@ -92,7 +109,7 @@ mixing_beta_mag  0.2
 mixing_angle     1.0            # relax the moment directions to the ground state
 mixing_ndim      16
 symmetry         -1             # do not impose time-reversal symmetry
-scf_thr          1e-8
+scf_thr          1e-7
 scf_nmax         200
 ```
 
@@ -105,12 +122,14 @@ The density can converge while the energy does not, because the kinetic energy
 density is not mixed by default:
 
 ```text
+basis_type      lcao
+ks_solver       genelpa
 dft_functional   SCAN           # or another meta-GGA
 mixing_type      broyden
 mixing_beta      0.1
 mixing_tau       1
 mixing_ndim      16
-scf_thr          1e-8
+scf_thr          1e-7
 scf_ene_thr      1e-5           # eV, checked in addition to scf_thr
 scf_nmax         200
 ```
@@ -118,13 +137,15 @@ scf_nmax         200
 ## DFT+U
 
 ```text
+basis_type      lcao
+ks_solver       genelpa
 dft_plus_u       1
 orbital_corr     -1 2          # per species
 hubbard_u        0.0 4.0        # eV, per species
 mixing_type      broyden
 mixing_beta      0.1
 mixing_ndim      16
-scf_thr          1e-8
+scf_thr          1e-7
 scf_nmax         200
 ```
 
@@ -135,11 +156,13 @@ move.
 ## Restart from a previous density
 
 ```text
+basis_type      lcao
+ks_solver       genelpa
 init_chg         file
 read_file_dir    OUT.ABACUS
 mixing_restart   1e-4          # restart the mixer once drho falls below this
 mixing_beta      0.4
-scf_thr          1e-8
+scf_thr          1e-7
 scf_nmax         100
 ```
 
