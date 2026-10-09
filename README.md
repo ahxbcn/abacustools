@@ -900,6 +900,25 @@ These three need the structure and its pseudopotentials, so they cannot be
 combined with `--difference`, and `--promolecular-plot` draws the NCI plot of
 the reference density itself.
 
+The Hirshfeld-partitioned independent gradient model, IGMH, replaces the frozen
+promolecular atomic densities with `rho_A = w_A rho`, where the weights come
+from the Hirshfeld partition of the calculated density. The `igmh-i` variant
+uses the self-consistent Hirshfeld-I weights instead:
+
+```text
+abacustools postprocess chg -j JOB --quantity igmh --igmh-plot
+abacustools postprocess chg -j JOB --quantity igmh-i --igmh-plot
+```
+
+Both quantities are written in the same units as `dg` and can be exported with
+`--cube`, `--profile` or `--slice`. The partition uses the total density of the
+job and the same pseudopotential references as `postprocess hirshfeld`, so these
+analyses require `--spin total`, cannot be combined with `--difference`, and
+need a pseudopotential with `PP_RHOATOM` for Hirshfeld; the Hirshfeld-I variant
+additionally needs `PP_PSWFC` unless explicit reference densities are supplied.
+Without `--igmh-plot`, `igmh` and `igmh-i` are still available as fields through
+`--quantity`.
+
 `--profile AXIS` writes the in-plane average of every plane in e/Angstrom^3 to
 `chg_profile_<axis>_average.dat`, or the charge of every plane in e with
 `--profile-kind integral`, whose sum is the total number of electrons.

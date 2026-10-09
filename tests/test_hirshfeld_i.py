@@ -8,15 +8,18 @@ import numpy as np
 import pytest
 
 from abacustools.core.constant import ANG_TO_BOHR, BOHR_TO_ANG
+from abacustools.data.grid import Charge
 from abacustools.data.hirshfeld import (
     AtomicReference,
     _reference_occupations,
     hirshfeld_charges,
     hirshfeld_i_charges,
+    hirshfeld_i_weights,
     pseudo_atomic_references,
     read_reference_densities,
 )
 from abacustools.io.pseudo import UPF
+from abacustools.io.stru import AbacusSTRU
 
 # A two-orbital norm-conserving pseudopotential whose PP_RHOATOM is exactly the
 # occupation-weighted sum of the PP_PSWFC radial densities.
@@ -26,10 +29,7 @@ _R = [0.0, 1.0, 2.0, 3.0, 4.0]
 _OCC_S, _OCC_P = 2.0, 2.0
 _NORM_S = sum(value * value for value in _CHI_S)
 _NORM_P = sum(value * value for value in _CHI_P)
-_RHOATOM = [
-    _OCC_S * s * s / _NORM_S + _OCC_P * p * p / _NORM_P
-    for s, p in zip(_CHI_S, _CHI_P)
-]
+_RHOATOM = [_OCC_S * s * s / _NORM_S + _OCC_P * p * p / _NORM_P for s, p in zip(_CHI_S, _CHI_P)]
 
 _UPF = """\
 <UPF version="2.0.1">
@@ -75,10 +75,10 @@ def test_pseudo_atomic_references_reproduce_rhoatom(tmp_path: Path) -> None:
     for population in reference.populations:
         rho = reference.densities[population]
         # Back to 4 pi r^2 rho(r) in Bohr and integrate on the radial mesh.
-        rhoatom = rho * BOHR_TO_ANG ** 3 * 4.0 * np.pi * r_bohr ** 2
+        rhoatom = rho * BOHR_TO_ANG**3 * 4.0 * np.pi * r_bohr**2
         assert float(np.sum(rhoatom * rab)) == pytest.approx(population, abs=1e-9)
     # The neutral population is the pseudopotential's own PP_RHOATOM.
-    neutral = reference.densities[4] * BOHR_TO_ANG ** 3 * 4.0 * np.pi * r_bohr ** 2
+    neutral = reference.densities[4] * BOHR_TO_ANG**3 * 4.0 * np.pi * r_bohr**2
     assert np.allclose(neutral, np.asarray(upf.rhoatom), atol=1e-12)
 
 
@@ -116,8 +116,10 @@ def test_read_reference_densities_round_trip(tmp_path: Path) -> None:
     references = read_reference_densities(tmp_path)
     assert set(references) == {"C"}
     assert references["C"].populations == (3, 4)
-    assert np.allclose(references["C"].at(3.5), 0.5 * references["C"].densities[3]
-                       + 0.5 * references["C"].densities[4])
+    assert np.allclose(
+        references["C"].at(3.5),
+        0.5 * references["C"].densities[3] + 0.5 * references["C"].densities[4],
+    )
 
 
 # --- A single-atom job whose density is the pseudopotential proatom. ---
@@ -186,7 +188,7 @@ def _proatom_radial(upf_text: str) -> tuple[np.ndarray, np.ndarray]:
     rho = np.zeros_like(r_bohr)
     rho[1:] = rhoatom[1:] / (4.0 * np.pi * r_bohr[1:] ** 2)
     rho[0] = rho[1]
-    return r_bohr * BOHR_TO_ANG, rho / BOHR_TO_ANG ** 3
+    return r_bohr * BOHR_TO_ANG, rho / BOHR_TO_ANG**3
 
 
 def _write_job(job: Path, positions, weights, shape=(48, 48, 48)) -> float:
@@ -196,9 +198,7 @@ def _write_job(job: Path, positions, weights, shape=(48, 48, 48)) -> float:
     """
     job.mkdir(parents=True, exist_ok=True)
     (job / "H.upf").write_text(_H_UPF, encoding="utf-8")
-    position_lines = "\n".join(
-        f"{x:.6f} {y:.6f} {z:.6f}" for x, y, z in positions
-    )
+    position_lines = "\n".join(f"{x:.6f} {y:.6f} {z:.6f}" for x, y, z in positions)
     (job / "STRU").write_text(
         _STRU.format(count=len(positions), positions=position_lines), encoding="utf-8"
     )
@@ -223,8 +223,14 @@ def _write_job(job: Path, positions, weights, shape=(48, 48, 48)) -> float:
     for position, weight in zip(positions, weights):
         distance = np.linalg.norm(points - np.asarray(position, dtype=float), axis=1)
         values += weight * np.interp(distance, r_ang, rho_ang, right=0.0)
-    _write_cube(output / "SPIN1_CHG.cube", shape, cell, [1] * len(positions),
-                positions, (values * BOHR_TO_ANG ** 3).reshape(shape))
+    _write_cube(
+        output / "SPIN1_CHG.cube",
+        shape,
+        cell,
+        [1] * len(positions),
+        positions,
+        (values * BOHR_TO_ANG**3).reshape(shape),
+    )
     volume_element = abs(float(np.linalg.det(cell))) / (shape[0] * shape[1] * shape[2])
     return float(values.sum() * volume_element)
 
@@ -237,6 +243,22 @@ def test_hirshfeld_i_of_a_proatom_is_neutral(tmp_path: Path) -> None:
     assert result.grid == (48, 48, 48)
     assert abs(float(result.charges[0])) < 0.25
     assert result.populations[0] == pytest.approx(result.valence[0] - result.charges[0])
+
+
+def test_hirshfeld_i_weights_reproduce_the_populations(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    _write_job(job, [(5.0, 5.0, 5.0), (5.0, 5.0, 7.0)], [1.0, 1.6])
+    result = hirshfeld_i_charges(job)
+    density = Charge.from_cube(str(job / "OUT.ABACUS" / "SPIN1_CHG.cube"), format="abacus")
+    structure = AbacusSTRU.read(str(job / "STRU"))
+
+    partition = hirshfeld_i_weights(density, structure, job=job)
+
+    assert partition.converged
+    assert partition.weights.shape == (2, 48**3)
+    np.testing.assert_allclose(partition.populations, result.populations)
+    occupied = density.data.reshape(-1) > 0.0
+    assert np.all(partition.weights[:, occupied].sum(axis=0) <= 1.0 + 1e-12)
 
 
 def test_hirshfeld_i_conserves_electrons_and_polarises(tmp_path: Path) -> None:

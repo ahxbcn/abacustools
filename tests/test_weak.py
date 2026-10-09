@@ -9,6 +9,8 @@ import pytest
 
 from abacustools.core.constant import BOHR_TO_ANG
 from abacustools.data.charge import Charge
+from abacustools.data.igmh import atomic_gradient_sum, igmh
+from abacustools.data.nci import density_derivatives
 from abacustools.data.weak import (
     IRI_EXPONENT,
     IRI_RHO_CUT,
@@ -84,9 +86,7 @@ def _job(tmp_path: Path, *, center=(4.0, 4.0, 4.0)) -> Path:
     job = tmp_path / "job"
     job.mkdir(parents=True, exist_ok=True)
     (job / "Si.upf").write_text(_gaussian_upf(), encoding="utf-8")
-    (job / "INPUT").write_text(
-        "INPUT_PARAMETERS\nsuffix ABACUS\nnspin 1\n", encoding="utf-8"
-    )
+    (job / "INPUT").write_text("INPUT_PARAMETERS\nsuffix ABACUS\nnspin 1\n", encoding="utf-8")
     (job / "STRU").write_text(
         "ATOMIC_SPECIES\n"
         "Si 28.0855 Si.upf\n\n"
@@ -105,12 +105,13 @@ def _job(tmp_path: Path, *, center=(4.0, 4.0, 4.0)) -> Path:
 def _grid(job: Path, values: np.ndarray | None = None) -> Charge:
     structure = AbacusSTRU.read(str(job / "STRU"))
     data = np.zeros((NPOINTS,) * 3) if values is None else values
+    positions = np.asarray(structure.coords, dtype=float)
     return Charge(
         data,
         np.diag([LENGTH] * 3),
-        np.asarray(structure.coords, dtype=float),
-        [14],
-        [VALENCE],
+        positions,
+        [14] * len(positions),
+        [VALENCE] * len(positions),
     )
 
 
@@ -154,9 +155,7 @@ def test_promolecular_density_and_gradient_of_one_atom(tmp_path: Path) -> None:
     # The atomic density is radially symmetric, so the analytic gradient
     # magnitudes must follow the numerical derivative of the same field.
     spacing = LENGTH / NPOINTS
-    numerical = np.sqrt(
-        sum(np.gradient(rho, spacing, axis=axis) ** 2 for axis in range(3))
-    )
+    numerical = np.sqrt(sum(np.gradient(rho, spacing, axis=axis) ** 2 for axis in range(3)))
     significant = gradient > 0.2 * gradient.max()
     ratio = numerical[significant] / gradient[significant]
     assert float(np.median(ratio)) == pytest.approx(1.0, rel=0.05)
@@ -171,9 +170,7 @@ def test_delta_g_vanishes_for_the_promolecular_density(tmp_path: Path) -> None:
     values = delta_g(Charge(rho, reference.cell), gradient)
 
     significant = gradient > 0.2 * gradient.max()
-    assert float(np.median(values[significant])) <= 0.05 * float(
-        np.median(gradient[significant])
-    )
+    assert float(np.median(values[significant])) <= 0.05 * float(np.median(gradient[significant]))
     assert np.all(values >= 0.0)
 
 
@@ -193,6 +190,64 @@ def test_delta_g_reports_the_difference_for_two_atoms(tmp_path: Path) -> None:
 
     assert values.max() > 0.0
     assert float(values.max()) < float(gradient.max())
+
+
+def test_atomic_gradient_sum_reproduces_one_atom_gradient(tmp_path: Path) -> None:
+    job = _job(tmp_path)
+    structure = AbacusSTRU.read(str(job / "STRU"))
+    reference = _grid(job)
+    rho, _ = promolecular_fields(reference, structure, job=job)
+    density = Charge(
+        rho,
+        reference.cell,
+        np.asarray(structure.coords, dtype=float),
+        [14],
+        [VALENCE],
+    )
+    weights = np.ones((1, rho.size))
+
+    gradient = atomic_gradient_sum(density, weights)
+    expected, _ = density_derivatives(density)
+
+    np.testing.assert_allclose(
+        gradient,
+        np.linalg.norm(expected, axis=-1) / BOHR2A**4,
+        rtol=1e-12,
+        atol=1e-14,
+    )
+
+
+def test_igmh_detects_the_overlap_of_two_proatoms(tmp_path: Path) -> None:
+    job = _job(tmp_path)
+    (job / "STRU").write_text(
+        "ATOMIC_SPECIES\n"
+        "Si 28.0855 Si.upf\n\n"
+        "LATTICE_CONSTANT\n"
+        "1.8897261254578281\n\n"
+        "LATTICE_VECTORS\n"
+        f"{LENGTH} 0 0\n0 {LENGTH} 0\n0 0 {LENGTH}\n\n"
+        "ATOMIC_POSITIONS\nCartesian\n\n"
+        "Si\n0.0\n2\n"
+        "3.0 4.0 4.0 1 1 1\n"
+        "5.0 4.0 4.0 1 1 1\n",
+        encoding="utf-8",
+    )
+    structure = AbacusSTRU.read(str(job / "STRU"))
+    reference = _grid(job)
+    rho, _ = promolecular_fields(reference, structure, job=job)
+    density = Charge(
+        rho,
+        reference.cell,
+        np.asarray(structure.coords, dtype=float),
+        [14, 14],
+        [VALENCE, VALENCE],
+    )
+
+    values = igmh(density, structure, job=job)
+
+    assert values.shape == rho.shape
+    assert float(values.max()) > 0.0
+    assert np.all(values >= 0.0)
 
 
 def test_iri_matches_the_analytic_formula() -> None:

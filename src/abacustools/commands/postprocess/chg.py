@@ -23,6 +23,9 @@ from abacustools.data.charge import (
     slice_plane,
     subtract,
 )
+from abacustools.data.grid import Charge
+from abacustools.data.igmh import igmh as igmh_field
+from abacustools.data.igmh import igmh_i as igmh_i_field
 from abacustools.data.nci import (
     QUANTITIES as NCI_QUANTITIES,
     analyse as analyse_nci,
@@ -35,7 +38,6 @@ from abacustools.data.weak import (
     iri,
     promolecular_fields,
 )
-from abacustools.data.grid import Charge
 from abacustools.io.abacus import ReadInput
 from abacustools.io.stru import AbacusSTRU
 
@@ -48,12 +50,16 @@ _DENSITY_UNIT = "e/Angstrom^3"
 #: Fields derived from the promolecular reference of the job.
 _PROMOLECULAR_QUANTITIES = ("rdg-promolecular", "sl2rho-promolecular", "dg")
 
+#: Fields derived from the Hirshfeld partition of the calculated density.
+_HIRSCHFELD_QUANTITIES = ("igmh", "igmh-i")
+
 #: Quantity of the density itself plus the fields derived from it.
 _QUANTITIES = (
     ("density",)
     + tuple(NCI_QUANTITIES)
     + ("iri",)
     + _PROMOLECULAR_QUANTITIES
+    + _HIRSCHFELD_QUANTITIES
 )
 
 #: Unit of the in-plane average and of the charge per plane of every quantity.
@@ -66,6 +72,8 @@ _QUANTITY_UNITS = {
     "iri": ("dimensionless", "Angstrom^3"),
     "rdg-promolecular": ("dimensionless", "Angstrom^3"),
     "dg": ("e/Angstrom^4", "e/Angstrom"),
+    "igmh": ("e/Angstrom^4", "e/Angstrom"),
+    "igmh-i": ("e/Angstrom^4", "e/Angstrom"),
 }
 
 #: Points a non-covalent interaction plot draws at most.
@@ -94,7 +102,8 @@ def _output_path(job: Path, value: str) -> Path:
 def _register_arguments(parser: argparse.ArgumentParser) -> None:
     """Register the arguments of the charge-density command."""
     parser.add_argument(
-        "-j", "--job",
+        "-j",
+        "--job",
         required=True,
         type=_job_directory,
         help="ABACUS job directory with charge-density cubes of either branch.",
@@ -180,8 +189,9 @@ def _register_arguments(parser: argparse.ArgumentParser) -> None:
         help=(
             "Field to analyse: the density itself, or a field derived from it -- "
             "rdg (reduced density gradient, pp.x plot_num=19), sl2rho "
-            "(sign(lambda_2) rho, plot_num=20) or dori (density overlap regions "
-            "indicator, plot_num=123)."
+            "(sign(lambda_2) rho, plot_num=20), dori (density overlap regions "
+            "indicator, plot_num=123), or igmh/igmh-i (Hirshfeld and "
+            "Hirshfeld-I independent gradient models)."
         ),
     )
     parser.add_argument(
@@ -203,9 +213,21 @@ def _register_arguments(parser: argparse.ArgumentParser) -> None:
         default=None,
         metavar="FILE",
         help=(
-            "Draw the independent gradient model plot of the selected density, "
-            "delta g against sign(lambda_2) rho. Without FILE the plot is called "
-            "igm.png."
+            "Draw the promolecular independent gradient model plot of the selected "
+            "density, delta g against sign(lambda_2) rho. Without FILE the plot "
+            "is called igm.png."
+        ),
+    )
+    parser.add_argument(
+        "--igmh-plot",
+        nargs="?",
+        const=_AUTO_PLOT,
+        default=None,
+        metavar="FILE",
+        help=(
+            "Draw the Hirshfeld-partitioned independent gradient model plot. "
+            "Use --quantity igmh-i for the Hirshfeld-I variant. Without FILE the "
+            "plot is called igmh.png or igmh_i.png."
         ),
     )
     parser.add_argument(
@@ -315,9 +337,7 @@ def _plot_profile(
     axes.plot(distances, values, linewidth=1.2)
     axes.set_xlabel(f"{axis} (Angstrom)")
     axes.set_ylabel(
-        f"in-plane average ({unit})"
-        if kind == "average"
-        else f"value per plane ({unit})"
+        f"in-plane average ({unit})" if kind == "average" else f"value per plane ({unit})"
     )
     axes.set_title("Planar profile")
     axes.grid(alpha=0.3)
@@ -340,8 +360,7 @@ def _write_slice(path: Path, plane: PlaneSlice, unit: str) -> None:
     lines = [
         f"# {plane.axis} slice at fractional {plane.position:.6f} "
         f"(index {plane.index}, {plane.distance:.6f} Angstrom)",
-        f"# {plane.labels[0]} (Angstrom) {plane.labels[1]} (Angstrom) value "
-        f"({unit})",
+        f"# {plane.labels[0]} (Angstrom) {plane.labels[1]} (Angstrom) value ({unit})",
     ]
     for first, x_value in enumerate(plane.coordinates[0]):
         for second, y_value in enumerate(plane.coordinates[1]):
@@ -549,6 +568,28 @@ def _resolve_named_plot(value: Any, job: Path, filename: str) -> Optional[Path]:
     return _output_path(job, str(value))
 
 
+def _job_structure(
+    job: Path,
+    cache: Dict[str, Any],
+) -> tuple[Dict[str, Any], AbacusSTRU]:
+    """Return the INPUT parameters and structure of a job."""
+    cached = cache.get("job-structure")
+    if cached is not None:
+        return cached
+    inputs = ReadInput(str(job / "INPUT"))
+    structure_file = job / str(inputs.get("stru_file", "STRU"))
+    if not structure_file.is_file():
+        raise ChargeDensityError(
+            f"this analysis needs the structure, but {structure_file} is missing"
+        )
+    structure = AbacusSTRU.read(str(structure_file))
+    if structure is None:
+        raise ChargeDensityError(f"cannot read the structure: {structure_file}")
+    cached = (inputs, structure)
+    cache["job-structure"] = cached
+    return cached
+
+
 def _promolecular_fields(
     job: Path,
     density: Charge,
@@ -557,16 +598,7 @@ def _promolecular_fields(
     """Return the promolecular density and atomic gradient fields of a job."""
     fields = cache.get("promolecular")
     if fields is None:
-        inputs = ReadInput(str(job / "INPUT"))
-        structure_file = job / str(inputs.get("stru_file", "STRU"))
-        if not structure_file.is_file():
-            raise ChargeDensityError(
-                "the promolecular analysis needs the structure, but "
-                f"{structure_file} is missing"
-            )
-        structure = AbacusSTRU.read(str(structure_file))
-        if structure is None:
-            raise ChargeDensityError(f"cannot read the structure: {structure_file}")
+        inputs, structure = _job_structure(job, cache)
         fields = promolecular_fields(
             density,
             structure,
@@ -576,6 +608,41 @@ def _promolecular_fields(
         )
         cache["promolecular"] = fields
     return fields
+
+
+def _hirshfeld_fields(
+    job: Path,
+    density: Charge,
+    method: str,
+    cache: Dict[str, Any],
+) -> np.ndarray:
+    """Return the IGMH field for the requested Hirshfeld partition."""
+    if method not in _HIRSCHFELD_QUANTITIES:
+        raise ValueError(f"unknown Hirshfeld partition: {method}")
+    key = f"{method}-field"
+    values = cache.get(key)
+    if values is not None:
+        return values
+    inputs, structure = _job_structure(job, cache)
+    try:
+        if method == "igmh":
+            values = igmh_field(
+                density,
+                structure,
+                job=job,
+                pseudo_dir=inputs.get("pseudo_dir"),
+            )
+        else:
+            values = igmh_i_field(
+                density,
+                structure,
+                job=job,
+                pseudo_dir=inputs.get("pseudo_dir"),
+            )
+    except (OSError, ValueError) as error:
+        raise ChargeDensityError(f"{method} analysis failed: {error}") from error
+    cache[key] = values
+    return values
 
 
 def _charge_with_values(field: Charge, values: np.ndarray) -> Charge:
@@ -640,10 +707,7 @@ def _print_report(report: Dict[str, Any]) -> None:
     grid = " x ".join(str(size) for size in report["grid"])
     print(f"  grid: {grid}, cell volume {report['volume_angstrom3']:.6f} Angstrom^3")
     field = report["field"]
-    print(
-        f"  field: {field['minimum']:.6g} .. {field['maximum']:.6g} "
-        f"(mean {field['mean']:.6g})"
-    )
+    print(f"  field: {field['minimum']:.6g} .. {field['maximum']:.6g} (mean {field['mean']:.6g})")
     if "electrons" in report:
         electrons = f"  electrons: {report['electrons']:.6f} e"
         if report["valence_electrons"] is not None:
@@ -683,20 +747,18 @@ def _print_report(report: Dict[str, Any]) -> None:
     igm = report.get("igm")
     if igm:
         print(f"  igm plot: {igm['plot']} ({igm['points']} points)")
+    igmh = report.get("igmh")
+    if igmh:
+        print(f"  igmh plot ({igmh['method']}): {igmh['plot']} ({igmh['points']} points)")
     promolecular = report.get("promolecular")
     if promolecular:
-        print(
-            f"  promolecular nci plot: {promolecular['plot']} "
-            f"({promolecular['points']} points)"
-        )
+        print(f"  promolecular nci plot: {promolecular['plot']} ({promolecular['points']} points)")
 
 
 def _analyse(args: argparse.Namespace, job: Path) -> Dict[str, Any]:
     """Assemble the density and run the requested actions."""
     grid_shape = tuple(args.grid) if args.grid else None
-    density = read_job_density(
-        job, description="postprocess chg", grid_shape=grid_shape
-    )
+    density = read_job_density(job, description="postprocess chg", grid_shape=grid_shape)
     spin = str(args.spin)
     base = select_spin(density, spin)
 
@@ -705,9 +767,7 @@ def _analyse(args: argparse.Namespace, job: Path) -> Dict[str, Any]:
         other = Path(args.difference)
         if not other.is_dir():
             raise ChargeDensityError(f"difference job directory does not exist: {other}")
-        other_density = read_job_density(
-            other, description="postprocess chg --difference"
-        )
+        other_density = read_job_density(other, description="postprocess chg --difference")
         base = subtract(base, select_spin(other_density, spin), "the two jobs")
         difference_of = str(other)
 
@@ -718,6 +778,18 @@ def _analyse(args: argparse.Namespace, job: Path) -> Dict[str, Any]:
         raise ChargeDensityError(
             "the promolecular analyses compare a density with the atoms of its own "
             "job, so they cannot be combined with --difference"
+        )
+    needs_hirshfeld = (
+        quantity_name in _HIRSCHFELD_QUANTITIES or getattr(args, "igmh_plot", None) is not None
+    )
+    if needs_hirshfeld and difference_of is not None:
+        raise ChargeDensityError(
+            "the Hirshfeld-partitioned analyses use the total density of their own "
+            "job, so they cannot be combined with --difference"
+        )
+    if needs_hirshfeld and spin != "total":
+        raise ChargeDensityError(
+            "the Hirshfeld-partitioned analyses need the total density; use --spin total"
         )
     values: Optional[np.ndarray] = None
     if quantity_name in NCI_QUANTITIES:
@@ -735,6 +807,8 @@ def _analyse(args: argparse.Namespace, job: Path) -> Dict[str, Any]:
                 if quantity_name == "rdg-promolecular"
                 else signed_density_hessian(reference)
             )
+    elif quantity_name in _HIRSCHFELD_QUANTITIES:
+        values = _hirshfeld_fields(job, base, quantity_name, cache)
     quantity = _charge_with_values(base, values) if derived else base
     unit = _QUANTITY_UNITS[quantity_name][0]
 
@@ -753,9 +827,7 @@ def _analyse(args: argparse.Namespace, job: Path) -> Dict[str, Any]:
         "difference_of": difference_of,
         "magnetization": magnetization,
         "grid": [int(size) for size in values.shape],
-        "volume_angstrom3": abs(
-            float(np.linalg.det(np.asarray(quantity.cell, dtype=float)))
-        ),
+        "volume_angstrom3": abs(float(np.linalg.det(np.asarray(quantity.cell, dtype=float)))),
         "field": {
             "minimum": float(values.min()),
             "maximum": float(values.max()),
@@ -850,9 +922,35 @@ def _analyse(args: argparse.Namespace, job: Path) -> Dict[str, Any]:
         )
         report["igm"] = {"plot": str(igm_path), "points": int(np.size(signed))}
 
-    promolecular_path = _resolve_named_plot(
-        args.promolecular_plot, job, "nci_promolecular.png"
-    )
+    igmh_plot = getattr(args, "igmh_plot", None)
+    igmh_method = "igmh-i" if quantity_name == "igmh-i" else "igmh"
+    igmh_filename = "igmh_i.png" if igmh_method == "igmh-i" else "igmh.png"
+    igmh_path = _resolve_named_plot(igmh_plot, job, igmh_filename)
+    if igmh_path is not None:
+        gradient = (
+            values
+            if quantity_name == igmh_method and values is not None
+            else _hirshfeld_fields(job, base, igmh_method, cache)
+        )
+        signed = signed_density_hessian(base)
+        title = "Independent gradient model based on Hirshfeld partition"
+        if igmh_method == "igmh-i":
+            title += " (Hirshfeld-I)"
+        _plot_scatter(
+            igmh_path,
+            signed,
+            gradient,
+            xlabel="sign(lambda_2) rho (e/Bohr^3)",
+            ylabel="delta g (e/Angstrom^4)",
+            title=title,
+        )
+        report["igmh"] = {
+            "method": igmh_method,
+            "plot": str(igmh_path),
+            "points": int(np.size(signed)),
+        }
+
+    promolecular_path = _resolve_named_plot(args.promolecular_plot, job, "nci_promolecular.png")
     if promolecular_path is not None:
         promolecular, _ = _promolecular_fields(job, base, cache)
         reference = _charge_with_values(base, promolecular)
@@ -865,10 +963,7 @@ def _analyse(args: argparse.Namespace, job: Path) -> Dict[str, Any]:
             gradient[keep],
             xlabel="sign(lambda_2) rho (e/Bohr^3)",
             ylabel="reduced density gradient",
-            title=(
-                "Promolecular NCI plot "
-                f"(rho <= {_PROMOLECULAR_RHO_MAX:g} e/Bohr^3)"
-            ),
+            title=(f"Promolecular NCI plot (rho <= {_PROMOLECULAR_RHO_MAX:g} e/Bohr^3)"),
             ylim=(0.0, 2.0),
         )
         report["promolecular"] = {

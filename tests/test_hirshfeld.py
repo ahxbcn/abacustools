@@ -8,7 +8,9 @@ import numpy as np
 import pytest
 
 from abacustools.core.constant import ANG_TO_BOHR
-from abacustools.data.hirshfeld import hirshfeld_charges
+from abacustools.data.grid import Charge
+from abacustools.data.hirshfeld import hirshfeld_charges, hirshfeld_weights
+from abacustools.io.stru import AbacusSTRU
 
 # A radial grid in Bohr with PP_RHOATOM integrated to z_valence = 1.
 _UPF = """\
@@ -113,7 +115,7 @@ def _write_job(job: Path, shape=(60, 60, 60)) -> None:
     j = np.arange(shape[1]) / shape[1]
     k = np.arange(shape[2]) / shape[2]
     frac = np.stack(np.meshgrid(i, j, k, indexing="ij"), axis=-1)
-    points = (frac.reshape(-1, 3) @ cell)
+    points = frac.reshape(-1, 3) @ cell
     distance = np.linalg.norm(points - center, axis=1) * ANG_TO_BOHR
     values = np.interp(distance, r_bohr, radial, right=0.0).reshape(shape)
     _write_cube(output / "SPIN1_CHG.cube", shape, cell, [1], [center], values)
@@ -128,6 +130,22 @@ def test_hirshfeld_of_a_proatom_is_neutral(tmp_path: Path) -> None:
     # is the radial-interpolation and grid resolution of this synthetic case.
     assert abs(float(result.charges[0])) < 0.25
     assert result.volumes[0] > 0.0
+
+
+def test_hirshfeld_weights_reproduce_the_charges(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    _write_job(job)
+    result = hirshfeld_charges(job)
+    density = Charge.from_cube(str(job / "OUT.ABACUS" / "SPIN1_CHG.cube"), format="abacus")
+    structure = AbacusSTRU.read(str(job / "STRU"))
+    weights = hirshfeld_weights(density, structure, job=job)
+
+    assert weights.shape == (1, 60**3)
+    occupied = density.data.reshape(-1) > 0.0
+    np.testing.assert_allclose(weights[:, occupied].sum(axis=0), 1.0, rtol=1e-12)
+    volume_element = abs(float(np.linalg.det(density.cell))) / density.data.size
+    population = float((weights @ density.data.reshape(-1))[0] * volume_element)
+    assert population == pytest.approx(result.valence[0] - result.charges[0], rel=1e-12)
 
 
 def test_cm5_correction_shifts_charge(tmp_path: Path) -> None:

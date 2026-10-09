@@ -53,6 +53,7 @@ def _args(job: Path, **overrides) -> Namespace:
         "nci_plot": None,
         "nci_rho_max": 0.05,
         "igm_plot": None,
+        "igmh_plot": None,
         "promolecular_plot": None,
         "difference": None,
         "cube": None,
@@ -107,9 +108,7 @@ def test_summary_as_json_reports_the_source_and_grid(
     assert report["deviation"] == pytest.approx(8.0)
 
 
-def test_two_spin_channels_are_summed(
-    tmp_path: Path, capsys: pytest.CaptureFixture
-) -> None:
+def test_two_spin_channels_are_summed(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
     job, output = _job(tmp_path, nspin=2)
     _cube(output / "SPIN1_CHG.cube", np.full((2, 2, 2), 0.75))
     _cube(output / "SPIN2_CHG.cube", np.full((2, 2, 2), 0.25))
@@ -132,9 +131,7 @@ def test_cube_export_writes_the_total_density(tmp_path: Path) -> None:
     np.testing.assert_allclose(
         Charge.from_cube(str(written), format="abacus").data, 0.25, rtol=1e-9
     )
-    np.testing.assert_allclose(
-        Grid.from_cube(str(written)).data, 0.25 * BOHR_TO_ANG**3, rtol=1e-9
-    )
+    np.testing.assert_allclose(Grid.from_cube(str(written)).data, 0.25 * BOHR_TO_ANG**3, rtol=1e-9)
 
 
 def test_profile_writes_the_data_and_an_explicit_plot(tmp_path: Path) -> None:
@@ -142,9 +139,7 @@ def test_profile_writes_the_data_and_an_explicit_plot(tmp_path: Path) -> None:
     job, output = _job(tmp_path)
     _cube(output / "SPIN1_CHG.cube", np.broadcast_to(values[None, None, :], (2, 2, 4)))
 
-    assert run(
-        _args(job, profile="c", plot="profile.png", data_output="profile.dat")
-    ) == 0
+    assert run(_args(job, profile="c", plot="profile.png", data_output="profile.dat")) == 0
 
     rows = [
         line.split()
@@ -164,9 +159,7 @@ def test_profile_default_names_and_integral_kind(
     job, output = _job(tmp_path)
     _cube(output / "SPIN1_CHG.cube", np.full((2, 2, 2), 0.5))
 
-    assert run(
-        _args(job, profile="c", profile_kind="integral", plot=_AUTO_PLOT, json=True)
-    ) == 0
+    assert run(_args(job, profile="c", profile_kind="integral", plot=_AUTO_PLOT, json=True)) == 0
 
     report = json.loads(capsys.readouterr().out)
     profile = report["profile"]
@@ -179,9 +172,7 @@ def test_profile_default_names_and_integral_kind(
     assert (job / "chg_profile_c_integral.png").is_file()
 
 
-def test_missing_density_is_reported(
-    tmp_path: Path, capsys: pytest.CaptureFixture
-) -> None:
+def test_missing_density_is_reported(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
     job, _ = _job(tmp_path)
 
     assert run(_args(job)) == 1
@@ -189,9 +180,7 @@ def test_missing_density_is_reported(
     assert "Charge-density analysis failed" in capsys.readouterr().out
 
 
-def test_spin_choices_select_the_channels(
-    tmp_path: Path, capsys: pytest.CaptureFixture
-) -> None:
+def test_spin_choices_select_the_channels(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
     job, output = _job(tmp_path, nspin=2)
     _cube(output / "SPIN1_CHG.cube", np.full((2, 2, 2), 0.75))
     _cube(output / "SPIN2_CHG.cube", np.full((2, 2, 2), 0.25))
@@ -212,9 +201,7 @@ def test_spin_choices_select_the_channels(
     assert report["deviation"] is None
 
 
-def test_spin_choice_needs_two_channels(
-    tmp_path: Path, capsys: pytest.CaptureFixture
-) -> None:
+def test_spin_choice_needs_two_channels(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
     job, output = _job(tmp_path)
     _cube(output / "SPIN1_CHG.cube", np.ones((2, 2, 2)))
 
@@ -242,9 +229,7 @@ def test_difference_of_two_jobs(tmp_path: Path, capsys: pytest.CaptureFixture) -
     )
 
 
-def test_difference_requires_the_same_grid(
-    tmp_path: Path, capsys: pytest.CaptureFixture
-) -> None:
+def test_difference_requires_the_same_grid(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
     job, output = _job(tmp_path)
     _cube(output / "SPIN1_CHG.cube", np.ones((2, 2, 2)))
     other, other_output = _job(tmp_path / "other")
@@ -304,9 +289,7 @@ def test_slice_can_skip_the_atoms(tmp_path: Path, capsys: pytest.CaptureFixture)
     assert json.loads(capsys.readouterr().out)["slice"]["atoms"] == []
 
 
-def test_develop_named_job_is_reported(
-    tmp_path: Path, capsys: pytest.CaptureFixture
-) -> None:
+def test_develop_named_job_is_reported(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
     job, output = _job(tmp_path, nspin=2)
     _cube(output / "chgs1.cube", np.full((2, 2, 2), 0.75))
     _cube(output / "chgs2.cube", np.full((2, 2, 2), 0.25))
@@ -352,9 +335,7 @@ def test_quantity_dori_exports_a_bounded_cube(tmp_path: Path) -> None:
     assert np.all(values < 1.0)
 
 
-def test_nci_plot_is_written_and_reported(
-    tmp_path: Path, capsys: pytest.CaptureFixture
-) -> None:
+def test_nci_plot_is_written_and_reported(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
     job, output = _job(tmp_path, nspin=1)
     _varied_cube(output / "SPIN1_CHG.cube")
 
@@ -392,9 +373,7 @@ def test_profile_of_a_dimensionless_field_names_its_unit(
     assert report["profile"]["unit"] == "dimensionless"
 
 
-def test_quantity_iri_is_reported(
-    tmp_path: Path, capsys: pytest.CaptureFixture
-) -> None:
+def test_quantity_iri_is_reported(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
     job, output = _job(tmp_path, nspin=1)
     _varied_cube(output / "SPIN1_CHG.cube")
 
@@ -444,6 +423,79 @@ def test_promolecular_quantities_and_plots(
     report = json.loads(capsys.readouterr().out)
     assert report["promolecular"]["points"] > 0
     assert (job / "nci_promolecular.png").is_file()
+
+
+def _igmh_stub(density, structure, **kwargs):
+    return np.full(density.data.shape, 3.0e-3)
+
+
+def _igmh_i_stub(density, structure, **kwargs):
+    return np.full(density.data.shape, 4.0e-3)
+
+
+def test_igmh_quantities_and_plots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    job, output = _job(tmp_path, nspin=1)
+    _varied_cube(output / "SPIN1_CHG.cube")
+    _stru(job)
+    monkeypatch.setattr(
+        "abacustools.commands.postprocess.chg.igmh_field",
+        _igmh_stub,
+    )
+    monkeypatch.setattr(
+        "abacustools.commands.postprocess.chg.igmh_i_field",
+        _igmh_i_stub,
+    )
+
+    assert run(_args(job, quantity="igmh", cube="igmh.cube", json=True)) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["quantity"] == "igmh"
+    assert report["field"]["maximum"] == pytest.approx(3.0e-3)
+    assert (job / "igmh.cube").is_file()
+
+    assert run(_args(job, quantity="igmh-i", igmh_plot="auto", json=True)) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["quantity"] == "igmh-i"
+    assert report["field"]["maximum"] == pytest.approx(4.0e-3)
+    assert report["igmh"]["method"] == "igmh-i"
+    assert report["igmh"]["plot"] == str(job / "igmh_i.png")
+    assert (job / "igmh_i.png").is_file()
+
+
+def test_igmh_plot_defaults_to_hirshfeld(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    job, output = _job(tmp_path, nspin=1)
+    _varied_cube(output / "SPIN1_CHG.cube")
+    _stru(job)
+    monkeypatch.setattr(
+        "abacustools.commands.postprocess.chg.igmh_field",
+        _igmh_stub,
+    )
+
+    assert run(_args(job, igmh_plot="auto", json=True)) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["igmh"]["method"] == "igmh"
+    assert report["igmh"]["plot"] == str(job / "igmh.png")
+    assert (job / "igmh.png").is_file()
+
+
+def test_igmh_rejects_difference_and_spin_channels(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    job, output = _job(tmp_path, nspin=2)
+    _cube(output / "SPIN1_CHG.cube", np.ones((2, 2, 2)))
+    _cube(output / "SPIN2_CHG.cube", np.ones((2, 2, 2)))
+    other, other_output = _job(tmp_path / "other", nspin=1)
+    _cube(other_output / "SPIN1_CHG.cube", np.ones((2, 2, 2)))
+
+    assert run(_args(job, quantity="igmh", difference=str(other))) == 1
+    assert "cannot be combined with --difference" in capsys.readouterr().out
+
+    assert run(_args(job, quantity="igmh", spin="up")) == 1
+    assert "need the total density" in capsys.readouterr().out
 
 
 def test_promolecular_quantities_reject_the_difference(
