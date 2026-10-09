@@ -11,13 +11,13 @@ The base run. Every other recipe reuses its parameters.
 | `ecutrho` | 4x for NC, 8-12x for USPP | only PW has a separate density cutoff |
 | `kspacing` | about 0.14 (1/Bohr) for bulk | not VASP's KSPACING; differ by 2*pi |
 | `smearing_method` | `gaussian` | |
-| `smearing_sigma` | 0.015 Ry (shipped template); insulators 0.001-0.005 Ry | do not use `fixed` for an insulator |
+| `smearing_sigma` | 0.015 Ry; insulators 0.001-0.005 Ry | do not use `fixed` for an insulator |
 | `mixing_type` | `broyden` | |
 | `mixing_beta` | 0.8 (`nspin 1`), 0.4 (`nspin 2/4`) | lower to 0.2-0.4 if the energy oscillates |
-| `scf_thr` | shipped template 1e-7; 1e-8 for PW production | tighten for production |
+| `scf_thr` | 1e-8 | 1e-6 is acceptable inside a large relaxation |
 | `scf_nmax` | 100-200 | |
 | `ks_solver` | `dav_subspace` with `pw_diag_ndim 2` | recommended |
-| `symmetry` | 0 (the shipped scf template uses 1) | use -1 for nspin 4 SOC |
+| `symmetry` | 0 | use -1 for nspin 4 SOC; 1 only in limited cases |
 | `nspin` | 1 (or 2, 4) | |
 
 ## LCAO basis
@@ -27,7 +27,7 @@ The base run. Every other recipe reuses its parameters.
 | `basis_type` | `lcao` | needs a numerical orbital per element |
 | `ecutwfc` | at least the cutoff in the orbital name | the orbital recommends the value |
 | `ks_solver` | `genelpa` | needs an ELPA build; otherwise `scalapack_gvx` |
-| `scf_thr` | 1e-7 | |
+| `scf_thr` | 1e-7 | 1e-6 is acceptable inside a large relaxation |
 | `gamma_only` | 1 for a Gamma-only run | cannot be combined with `noncolin` |
 | `mixing_*`, `smearing_*`, `symmetry` | as for PW | |
 
@@ -51,11 +51,20 @@ symmetry         0
 nspin            1
 ```
 
-## Verify before trusting the result
+## Cost and tightening
+
+- Inside a geometry optimization of a large structure, `scf_thr 1e-6` is a
+  common compromise: each ionic step is cheaper and the final energy is still
+  accurate enough to drive the forces. Keep 1e-8 for a small cell or when a
+  delicate observable (gap, magnetic moment) is read from the run.
+- The cutoff and k sampling still have to be converged before loosening the
+  SCF threshold; a loose SCF threshold does not excuse an unconverged basis.
+
+## Verify
 
 - `scf_thr` reached and `drho` flat.
 - The total energy no longer drifts with the last SCF steps.
-- For a metal, the smearing sigma does not change the energy or the moment
-  beyond the target tolerance; for an insulator a too-large sigma is visible as
+- For a metal the smearing sigma does not change the energy or the moment
+  beyond the target tolerance; for an insulator a too-large sigma shows up as
   an artificial occupation across the gap.
 - The magnetic moment is stable if `nspin > 1`.

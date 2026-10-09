@@ -10,6 +10,7 @@ before copying a deck from the other one.
 | density-matrix output | `out_dm1`, `SPIN<n>_DM` | `out_dmr`, `dm*_nao.txt` |
 | per-step structures | `out_stru` is a boolean; `STRU_ION<step>_D` | `out_stru` is an integer mode (final/STRU/CIF); `STRU_NOW`, `STRU_FINAL`, `STRU<step+1>` |
 | overlap matrix | `calculation get_S` | `calculation get_s` |
+| relaxation method | `bfgs_trad` for relax; `relax_new` requires `cg` | `bfgs` for relax (default variant 2); `cg 1`/`cg 2` (default `cg 2`); adds `lbfgs` |
 | extra `esolver_type` | ksdft, sdft, ofdft, tddft, lj, dp, lr, ks-lr | adds tdofdft, nep, dfpt |
 | extra functionals | - | SCANL; PW hybrids are refused on LTS but supported on develop |
 | extra dispersion | D2, D3(0), D3(BJ) | adds D4 (external DFT-D4) |

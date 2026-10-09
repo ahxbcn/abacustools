@@ -5,13 +5,13 @@ description: Parameter recipes for the most common ABACUS calculations - scf, ns
 
 # ABACUS calculation recipes
 
-This skill lists, in order of setting type, the parameters that are usually set
-for the common calculations, together with the values that are commonly used.
-Treat every number as a starting point that still has to pass a convergence
-check, not as a universal constant. Which functionals, pseudopotentials and
-spin treatments are supported is answered by the `abacus-model-selection`
-skill; file layout and output names by the `abacus-job-files` skill; STRU/KPT
-syntax by `abacus-inputs`; pseudopotential/orbital choice by `abacus-basis`.
+This skill lists, in order of setting type, the parameters usually set for the
+common calculations and the values that are commonly used. Treat every number
+as a starting point that still has to pass a convergence check, not as a
+universal constant. Which functionals, pseudopotentials and spin treatments are
+supported is answered by the `abacus-model-selection` skill; file layout and
+output names by the `abacus-job-files` skill; STRU/KPT syntax by
+`abacus-inputs`; pseudopotential/orbital choice by `abacus-basis`.
 
 ## Always set these first
 
@@ -23,12 +23,12 @@ syntax by `abacus-inputs`; pseudopotential/orbital choice by `abacus-basis`.
 | `ecutrho` | NC 4x `ecutwfc`; USPP 8-12x | PW only |
 | `kspacing` | about 0.14 (1/Bohr) for bulk | see the note below |
 | `smearing_method` | `gaussian` | metals and insulators alike |
-| `smearing_sigma` | 0.015 Ry (the shipped template); insulators 0.001-0.005 Ry | in Ry |
+| `smearing_sigma` | 0.015 Ry; insulators 0.001-0.005 Ry | in Ry |
 | `mixing_type` | `broyden` | |
 | `mixing_beta` | 0.8 for `nspin 1`, 0.4 for `nspin 2/4` | lower it if the SCF oscillates |
-| `scf_thr` | shipped template 1e-7; PW production 1e-8, LCAO 1e-7 | tighten for production |
+| `scf_thr` | PW 1e-8, LCAO 1e-7 | a large relaxation may use 1e-6 |
 | `scf_nmax` | 100-200 | |
-| `symmetry` | 0 (the shipped scf template uses 1) | see the note below |
+| `symmetry` | 0 | see the note below |
 | `nspin` | 1, 2 or 4 | |
 
 Two frequent mistakes:
@@ -97,16 +97,23 @@ Details in [references/nscf.md](references/nscf.md).
 
 ## 3. relax
 
-Ionic relaxation at fixed cell.
+Ionic relaxation at fixed cell. The optimization algorithm differs by branch.
 
 ```text
 calculation      relax
 cal_force        1
-relax_method     bfgs
+relax_method     bfgs_trad      # LTS 3.10.1; use bfgs on develop
 relax_nmax       100
 force_thr_ev     0.02
 # plus the scf parameters above
 ```
+
+- LTS 3.10.1: `relax_method bfgs_trad`.
+- develop: `relax_method bfgs`.
+- For a large structure the inner SCF can be loosened to `scf_thr 1e-6` to cut
+  the cost; keep 1e-8 for a small cell or a sensitive observable.
+
+Details in [references/relax-and-cell-relax.md](references/relax-and-cell-relax.md).
 
 ## 4. cell-relax
 
@@ -123,8 +130,11 @@ stress_thr       0.5            # kBar
 # plus the scf parameters above
 ```
 
-`relax` and `cell-relax` share the thresholds and methods; details in
-[references/relax-and-cell-relax.md](references/relax-and-cell-relax.md).
+`cg` is the only algorithm that optimizes the cell and the atomic positions
+together. Any other method falls back to a two-level loop (ions inside, cell
+outside) and is much slower. For a simple, high-symmetry crystal tighten the
+thresholds, for example `force_thr_ev 0.005-0.01` and `stress_thr 0.1-0.3`.
+Details in [references/relax-and-cell-relax.md](references/relax-and-cell-relax.md).
 
 ## 5. md
 
@@ -133,28 +143,31 @@ Molecular dynamics: the SCF parameters plus the ensemble and dump controls.
 ```text
 calculation      md
 md_type          nvt
+md_thermostat    nhc
 md_nstep         1000
 md_dt            1.0            # fs
 md_tfirst        300            # K
 md_tlast         300
+md_tfreq         0.025          # NHC frequency, about 1/(40*md_dt)
 md_dumpfreq      10
 md_restartfreq   50
 dump_force       1
 dump_vel         1
 dump_virial      1
-# plus the scf parameters above
 ```
 
-The default `md_nstep` is far too small for production; set it explicitly.
-Details in [references/md.md](references/md.md).
+For the NPT ensemble add the barostat controls:
 
-## Shipped templates
+```text
+md_type          npt
+md_pmode         iso            # iso, aniso, tri
+md_pfirst        1.0            # bar, target pressure
+md_plast         1.0
+md_pfreq         0.0025         # about 1/(400*md_dt)
+```
 
-The example `~/.abacustools/config.yaml` carries a recommended base deck per job
-type under `input_templates`, plus the basis/solver defaults under
-`basis_settings`. Those are the values used above unless a note says
-otherwise. The full recommended decks are reproduced in
-[references/shipped-templates.md](references/shipped-templates.md).
+The default `md_nstep` is a smoke-test value; set it explicitly. Details in
+[references/md.md](references/md.md).
 
 ## Runtime, hardware and build
 
@@ -171,8 +184,8 @@ Launch with `mpirun -np N` (or the scheduler's equivalent) and set
 large job. `genelpa` refuses GPU; `cusolver`/`cusolvermp` need CUDA. The exact
 solver and feature set depends on the build flags (`ENABLE_MPI`, `ENABLE_ELPA`,
 `USE_CUDA`, `ENABLE_LIBXC`, `ENABLE_PEXSI`). Site details such as queue names,
-node memory and module names belong in runtime configuration, not here. See
-[references/runtime-and-build.md](references/runtime-and-build.md).
+node memory and module names belong in the runtime configuration of the
+machine, not here. See [references/runtime-and-build.md](references/runtime-and-build.md).
 
 ## Version differences
 
@@ -191,5 +204,3 @@ hand. See [references/version-differences.md](references/version-differences.md)
   gating, MPI/OpenMP layout, memory, GPU.
 - [references/version-differences.md](references/version-differences.md) - LTS
   3.10 versus develop.
-- [references/shipped-templates.md](references/shipped-templates.md) - the
-  recommended base deck per job type and the basis/solver defaults.
