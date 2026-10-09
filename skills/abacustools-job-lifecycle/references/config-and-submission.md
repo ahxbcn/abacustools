@@ -85,7 +85,7 @@ first and submits the displacements after it.
 ## Batch runner file
 
 `abacustools job prepare --submit-config` writes one configuration file next to
-the generated job directories for a batch runner.
+the generated job directories for a runner such as `abacustest` or Bohrium.
 The file is named by `submission.batch.filename` (`job.json` by default) and is
 either rendered from the inline `submission.batch.template` or copied and
 rendered from `submission.batch.template_file`.
@@ -95,7 +95,7 @@ submission:
   batch:
     generate: false          # --submit-config turns it on for one run
     filename: "job.json"
-    template_file: /path/to/my/batch.json
+    template_file: /path/to/my/abacustest.json
 ```
 
 Placeholders: `{examples}` (the directory names as a JSON array), `{count}`,
@@ -104,6 +104,5 @@ the ones of the JSON object itself, are left alone, so a JSON template needs no
 escaping; an unknown placeholder is an error rather than a silently broken
 file. `--no-submit-config` overrides a configuration that enables the file, and
 `job prepare --abacus-command 'mpirun -np 32 abacus'` sets the command the
-batch file records. The packaged template targets one cloud runner;
-review its image, machine type, account and command before submitting, or point
-`template_file` at your own job file.
+batch file records. The packaged template is an abacustest job for Bohrium;
+review its image, machine type, account and command before submitting.

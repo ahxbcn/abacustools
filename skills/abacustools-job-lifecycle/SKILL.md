@@ -115,8 +115,8 @@ script. Workflow prepare stages can generate those scripts when
 `submission.generate: true` is set in `~/.abacustools/config.yaml` or
 `--submit-script` is passed; the packaged templates cover local execution and
 Slurm, PBS, and LSF. `job prepare --submit-config` writes the separate batch
-file (`submission.batch.filename`, `job.json` by default) that a batch runner
-reads, with the generated directory names filled in.
+file (`submission.batch.filename`, `job.json` by default) that a runner such as
+`abacustest` or Bohrium reads, with the generated directory names filled in.
 See [references/config-and-submission.md](references/config-and-submission.md)
 for the template syntax, the launcher block, the batch placeholders, and the
 ABACUS version profiles that decide how logs are read.
