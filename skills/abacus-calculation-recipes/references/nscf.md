@@ -42,6 +42,10 @@ For DOS replace the line-mode `KPT` with a dense mesh and set `out_dos 1`
 instead of `out_band 1`; the mesh for DOS should be considerably denser than
 the SCF mesh.
 
+For a slab the vacuum direction should stay coarse in the nscf mesh too. With
+the three-value form use `kspacing 0.14 0.14 1.0` (or a larger vacuum value),
+so the dense sampling is spent on the periodic plane only.
+
 ## Verify
 
 - The Fermi level from the NSCF log is near the one expected from the SCF.
