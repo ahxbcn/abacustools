@@ -9,7 +9,7 @@ The base run. Every other recipe reuses its parameters.
 | `basis_type` | `pw` | |
 | `ecutwfc` | 50-80 Ry | converge the total energy per atom to about 1 meV |
 | `ecutrho` | 4x for NC, 8-12x for USPP | only PW has a separate density cutoff |
-| `kspacing` | about 0.14 (1/Bohr) for bulk | not VASP's KSPACING; differ by 2*pi |
+| `kspacing` | about 0.14 (1/Bohr) for bulk; 1 or 3 values | not VASP's KSPACING; set the vacuum direction large |
 | `smearing_method` | `gaussian` | |
 | `smearing_sigma` | 0.015 Ry; insulators 0.001-0.005 Ry | do not use `fixed` for an insulator |
 | `mixing_type` | `broyden` | |
@@ -50,6 +50,21 @@ pw_diag_ndim     2
 symmetry         0
 nspin            1
 ```
+
+## Systems with a vacuum layer
+
+`kspacing` accepts one value or three values, one per reciprocal direction.
+For a slab, wire or molecule in a box, give the vacuum direction a large
+value, for example 1.0 or more in 1/Bohr, so the generated mesh is 1 along
+that direction:
+
+```text
+kspacing         0.14 0.14 1.0     # third axis is the vacuum
+```
+
+This is the usual fix for a slab whose mesh is unnecessarily dense across the
+vacuum; the two periodic directions keep the ordinary spacing. A Gaussian
+smearing and the ordinary mixing settings are unchanged.
 
 ## Cost and tightening
 

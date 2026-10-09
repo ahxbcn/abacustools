@@ -21,7 +21,7 @@ output names by the `abacus-job-files` skill; STRU/KPT syntax by
 | `ks_solver` | PW `dav_subspace`, LCAO `genelpa` | see the note below |
 | `ecutwfc` | PW 50-80 Ry; LCAO from the orbital | PW must converge this |
 | `ecutrho` | NC 4x `ecutwfc`; USPP 8-12x | PW only |
-| `kspacing` | about 0.14 (1/Bohr) for bulk | see the note below |
+| `kspacing` | about 0.14 (1/Bohr) for bulk; 1 or 3 values | for a vacuum slab set the vacuum-direction value >= 1.0 |
 | `smearing_method` | `gaussian` | metals and insulators alike |
 | `smearing_sigma` | 0.015 Ry; insulators 0.001-0.005 Ry | in Ry |
 | `mixing_type` | `broyden` | |
@@ -39,6 +39,11 @@ Two frequent mistakes:
   crystal about 0.14 is a good starting point for the convergence test.
 - An insulator is normally run with `smearing_method gaussian` and a small
   `smearing_sigma` (for example 0.001-0.005 Ry), not with `fixed` smearing.
+- A system with a vacuum layer uses the three-value form of `kspacing`, with a
+  large value along the vacuum direction, for example `kspacing 0.14 0.14 1.0`
+  for a slab whose vacuum is along the third axis. A value of 1.0 or more
+  collapses the mesh to one point in that direction and usually removes the
+  wasteful sampling of the vacuum.
 
 ## Solver and symmetry notes
 
