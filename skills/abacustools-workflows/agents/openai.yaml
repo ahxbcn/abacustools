@@ -1,0 +1,4 @@
+interface:
+  display_name: "Abacustools Workflows"
+  short_description: "Run multi-step ABACUS property workflows"
+  default_prompt: "Use $abacustools-workflows to prepare and postprocess a phonon workflow."

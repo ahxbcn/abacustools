@@ -1,0 +1,4 @@
+interface:
+  display_name: "Abacustools Job Lifecycle"
+  short_description: "Prepare, validate, and monitor ABACUS jobs"
+  default_prompt: "Use $abacustools-job-lifecycle to check this job and show its SCF progress."
