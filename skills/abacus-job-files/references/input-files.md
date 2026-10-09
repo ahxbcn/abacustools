@@ -22,7 +22,7 @@ the physics/numerics settings and the names of the other input files:
 | `pseudo_dir` | (working directory) | directory searched for pseudopotentials |
 | `orbital_dir` | (working directory) | directory searched for numerical orbitals |
 | `paw_dir` | (working directory) | directory searched for PAW data |
-| `read_file_dir` | `OUT.$suffix` | directory holding a restart density / wavefunction |
+| `read_file_dir` | `OUT.<suffix>` | directory holding a restart density / wavefunction |
 | `suffix` | `ABACUS` | names the output directory `OUT.<suffix>` |
 
 ### Structure file (`stru_file`, default `STRU`)
@@ -82,8 +82,10 @@ below `paw_dir`.
 
 A restarted run reuses the density or wavefunction of a previous one:
 
-- `read_file_dir` (default `OUT.$suffix`) points at the directory that holds
-  the starting files, such as `SPIN1_CHG.cube` or its restart form.
+- `read_file_dir` (default `OUT.<suffix>`) points at the directory that holds
+  the starting files: a density cube (`SPIN<n>_CHG.cube` on LTS,
+  `chg.cube`/`chgs<n>.cube` on develop) or the binary
+  `<suffix>-CHARGE-DENSITY.restart` backup.
 - `init_chg` selects the starting density; its `file` option reads it from
   `read_file_dir`.
 - `init_wfc` selects the starting wavefunction; its `file` option is mainly for
