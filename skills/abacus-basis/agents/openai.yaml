@@ -1,0 +1,4 @@
+interface:
+  display_name: "Abacus Basis"
+  short_description: "Choose ABACUS pseudopotential and orbital files"
+  default_prompt: "Use $abacus-basis to choose the pseudopotential and orbital files for this structure."
