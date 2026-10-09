@@ -55,8 +55,11 @@ nspin            1
 
 `kspacing` accepts one value or three values, one per reciprocal direction.
 For a slab, wire or molecule in a box, give the vacuum direction a large
-value, for example 1.0 or more in 1/Bohr, so the generated mesh is 1 along
-that direction:
+value, for example 1.0 or more in 1/Bohr. The mesh along direction i is
+`max(1, int(b_i * 2*pi / kspacing[i] / lat0 + 1))`, so a large value keeps that
+direction coarse; along a vacuum direction the reciprocal vector b_i is short
+and the mesh is usually a single point, though that is not guaranteed in
+general:
 
 ```text
 kspacing         0.14 0.14 1.0     # third axis is the vacuum

@@ -21,7 +21,7 @@ output names by the `abacus-job-files` skill; STRU/KPT syntax by
 | `ks_solver` | PW `dav_subspace`, LCAO `genelpa` | see the note below |
 | `ecutwfc` | PW 50-80 Ry; LCAO from the orbital | PW must converge this |
 | `ecutrho` | NC 4x `ecutwfc`; USPP 8-12x | PW only |
-| `kspacing` | about 0.14 (1/Bohr) for bulk; 1 or 3 values | for a vacuum slab set the vacuum-direction value >= 1.0 |
+| `kspacing` | about 0.14 (1/Bohr) for bulk; 1 or 3 values | for a vacuum slab make the vacuum-direction value large (1.0 or more) |
 | `smearing_method` | `gaussian` | metals and insulators alike |
 | `smearing_sigma` | 0.015 Ry; insulators 0.001-0.005 Ry | in Ry |
 | `mixing_type` | `broyden` | |
@@ -41,9 +41,10 @@ Two frequent mistakes:
   `smearing_sigma` (for example 0.001-0.005 Ry), not with `fixed` smearing.
 - A system with a vacuum layer uses the three-value form of `kspacing`, with a
   large value along the vacuum direction, for example `kspacing 0.14 0.14 1.0`
-  for a slab whose vacuum is along the third axis. A value of 1.0 or more
-  collapses the mesh to one point in that direction and usually removes the
-  wasteful sampling of the vacuum.
+  for a slab whose vacuum is along the third axis. A large value keeps that
+  direction coarse; along a vacuum direction the reciprocal vector is short,
+  so the mesh is usually a single point there. That is a consequence of the
+  geometry, not a guarantee of the value by itself.
 
 ## Solver and symmetry notes
 

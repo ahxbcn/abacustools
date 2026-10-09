@@ -62,9 +62,11 @@ The band data files are then read together with this file.
 - `kspacing` in `INPUT` is the alternative to a KPT file: a reciprocal-space
   spacing in 1/Bohr, from which ABACUS builds the mesh. Set it or the KPT file,
   not both. It accepts one value (applied to all three directions) or three
-  values (one per reciprocal direction); a value of 1.0 or more collapses the
-  mesh to one point along that direction, which is the usual setting for the
-  vacuum direction of a slab, wire or molecule in a box.
+  values (one per reciprocal direction). The mesh along direction i is
+  `max(1, int(b_i * 2*pi / kspacing[i] / lat0 + 1))`, so a large value keeps
+  that direction coarse; for the vacuum direction of a slab, wire or molecule
+  in a box the reciprocal vector is short and the mesh is usually a single
+  point, but that follows from the geometry rather than from the value alone.
 - A single Gamma point is the right mesh for an isolated molecule in a box;
   a bulk crystal needs a real mesh or `kspacing`, and a missing setting is a
   common cause of a suspiciously fast, suspiciously wrong run.
