@@ -1,4 +1,0 @@
-interface:
-  display_name: "Abacustools Structures"
-  short_description: "Convert, inspect, edit, and download crystal structures"
-  default_prompt: "Use $abacustools-structures to build a slab with 15 Angstrom of vacuum."

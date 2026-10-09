@@ -1,4 +1,0 @@
-interface:
-  display_name: "Abacustools Postprocess"
-  short_description: "Analyse ABACUS bands, DOS, charges, and trajectories"
-  default_prompt: "Use $abacustools-postprocess to report the band gap and DOS of this job."
