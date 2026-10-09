@@ -797,9 +797,9 @@ class InputPreparer:
         orb_variant: Optional[str] = None,
         input_template: Optional[PathLike] = None,
         kpt: Optional[Sequence[int]] = None,
-        kpt_model: str = "gamma",
+        kpt_model: Optional[str] = None,
         basis: Optional[str] = None,
-        nspin: int = 1,
+        nspin: Optional[int] = None,
         soc: bool = False,
         dftu: bool = False,
         dftu_param: Optional[Mapping[str, Any]] = None,
@@ -846,9 +846,11 @@ class InputPreparer:
         )
         self.input_template = input_template
         self.kpt = list(kpt) if kpt is not None else None
-        self.kpt_model = kpt_model
+        self.kpt_model = kpt_model or "gamma"
+        self.kpt_model_explicit = kpt_model is not None
         self.basis = basis.lower() if basis else None
-        self.nspin = nspin
+        self.nspin = 1 if nspin is None else nspin
+        self.nspin_explicit = nspin is not None
         self.soc = soc
         self.dftu = dftu
         self.dftu_param = dict(dftu_param) if dftu_param is not None else None
@@ -905,8 +907,23 @@ class InputPreparer:
                 )
         if self.nspin not in (1, 2, 4):
             raise ValueError("nspin must be 1, 2, or 4")
-        if self.soc and self.nspin != 4:
+        if self.soc:
+            if self.nspin_explicit and self.nspin != 4:
+                raise ValueError(
+                    "--soc implies nspin 4; remove --nspin or set it to 4"
+                )
             self.nspin = 4
+        if (self.init_mag or self.afm) and self.nspin == 1:
+            raise ValueError(
+                "initial magnetic moments need a spin-polarized run; "
+                "pass --nspin 2 or --nspin 4"
+            )
+        if self.kpt_model_explicit and self.kpt is None:
+            warnings.warn(
+                "--kpt-model has no effect without --kpt; the k mesh comes from "
+                "kspacing/gamma_only in INPUT or from a KPT file",
+                stacklevel=2,
+            )
         self._validate_solver_basis()
         self.kpt_model = NormalizeKptModel(self.kpt_model)
         if self.kpt is not None:
@@ -1029,8 +1046,15 @@ class InputPreparer:
             if basis.startswith("lcao"):
                 inputs["out_mul"] = 1
         if basis.startswith("pw"):
-            inputs.pop("out_mul", None)
-            inputs.pop("onsite_radius", None)
+            for key in ("out_mul", "onsite_radius"):
+                if key in inputs:
+                    warnings.warn(
+                        f"{key} needs numerical atomic orbitals and is ignored "
+                        "for the plane-wave basis; remove it or use the LCAO "
+                        "basis.",
+                        stacklevel=3,
+                    )
+                    inputs.pop(key)
         return inputs
 
     def _dftu_inputs(self, inputs: dict[str, Any], structure: AbacusSTRU) -> None:

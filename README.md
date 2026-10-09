@@ -341,6 +341,14 @@ abacustools job prepare -f STRUCTURE \
   --kpt 0 0 0 10 G --kpt 0.5 0.5 0 1 X --kpt-model line
 ```
 
+Magnetic and DFT+U settings are prepared with `--nspin`, `--soc`,
+`--init-mag`, `--afm` and `--dftu-param`. `--dftu-param ELEMENT U` enables
+DFT+U by itself and repeats for several elements. Initial magnetic moments
+require a spin-polarized run (`--nspin 2` or `--nspin 4`), and `--soc`
+requires `--nspin 4`; a conflicting choice is an error rather than a silent
+override. `--kpt-model` applies only together with `--kpt` and warns when it
+is given alone.
+
 Generated jobs are self-contained: the referenced pseudopotentials and orbitals
 are symlinked into the job directory (copied with `--copy-resources`), and the
 written `STRU` refers to them by file name. PAW files are not supported when

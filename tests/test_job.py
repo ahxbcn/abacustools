@@ -1413,3 +1413,108 @@ def test_job_prepare_help_does_not_expose_resource_paths(capsys) -> None:
     assert "--pp" not in output
     assert "--orb" not in output
     assert "--paw" not in output
+
+
+def test_prepare_rejects_initial_magnets_without_spin_polarization(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+
+    with pytest.raises(ValueError, match="initial magnetic moments"):
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="pw",
+            pp_path=library,
+            init_mag={"H": 1.0},
+        )
+    with pytest.raises(ValueError, match="initial magnetic moments"):
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="pw",
+            pp_path=library,
+            afm=True,
+        )
+
+
+def test_prepare_rejects_soc_with_a_conflicting_nspin(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+
+    with pytest.raises(ValueError, match="--soc implies nspin 4"):
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="pw",
+            pp_path=library,
+            soc=True,
+            nspin=2,
+        )
+
+
+def test_prepare_warns_when_kpt_model_has_no_kpt(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+
+    with pytest.warns(UserWarning, match="--kpt-model has no effect"):
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="pw",
+            pp_path=library,
+            kpt_model="mp",
+        ).run()
+
+
+def test_prepare_warns_and_drops_pw_incompatible_keys(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+
+    with pytest.warns(UserWarning, match="needs numerical atomic orbitals"):
+        job = InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="pw",
+            pp_path=library,
+            set_params={"out_mul": 1, "onsite_radius": 3.0},
+        ).run()[0].path
+
+    inputs = ReadInput(job / "INPUT")
+    assert "out_mul" not in inputs
+    assert "onsite_radius" not in inputs
+
+
+def test_prepare_dftu_param_enables_dftu(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, library = _source_and_library(tmp_path)
+    monkeypatch.setitem(
+        CONFIG,
+        "resources",
+        {"default": "test", "libraries": {"test": {"pp": str(library), "orb": str(library)}}},
+    )
+
+    runs = tmp_path / "runs"
+    assert main(
+        [
+            "job",
+            "prepare",
+            "-f",
+            str(source),
+            "--ftype",
+            "stru",
+            "--basis",
+            "lcao",
+            "-o",
+            str(runs),
+            "--dftu-param",
+            "H",
+            "4.0",
+        ]
+    ) == 0
+
+    inputs = ReadInput(runs / "000000" / "INPUT")
+    assert int(inputs["dft_plus_u"]) == 1
+    hubbard = inputs["hubbard_u"]
+    assert (hubbard if isinstance(hubbard, list) else [hubbard]) == pytest.approx([4.0])

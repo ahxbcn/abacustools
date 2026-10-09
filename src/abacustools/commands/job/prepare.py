@@ -57,19 +57,18 @@ def register_parser(subparsers) -> None:
         ),
     )
     parser.add_argument(
-        "--kpt-model", default="gamma",
+        "--kpt-model", default=None,
         choices=("gamma", "mp", "direct", "cartesian", "line", "line_cartesian"),
         help="KPT model used with --kpt, default: gamma.",
     )
     basis = parser.add_mutually_exclusive_group()
     basis.add_argument("--basis", choices=("pw", "lcao"), default=None)
     basis.add_argument("--lcao", dest="basis", action="store_const", const="lcao", help="Use the LCAO basis.")
-    parser.add_argument("--nspin", default=1, type=int, choices=(1, 2, 4))
+    parser.add_argument("--nspin", default=None, type=int, choices=(1, 2, 4))
     parser.add_argument("--soc", action="store_true", help="Enable spin-orbit coupling.")
-    parser.add_argument("--dftu", action="store_true", help="Enable DFT+U.")
     parser.add_argument(
         "--dftu-param", action="append", nargs=2, metavar=("ELEMENT", "U"),
-        help="DFT+U value for an element; repeat for multiple elements.",
+        help="Enable DFT+U and set U (eV) for an element; repeat for multiple elements.",
     )
     parser.add_argument(
         "--init-mag", action="append", nargs=2, metavar=("ELEMENT", "MAG"),
@@ -132,7 +131,7 @@ def run(args: argparse.Namespace) -> int:
         basis=args.basis,
         nspin=args.nspin,
         soc=args.soc,
-        dftu=args.dftu,
+        dftu=bool(dftu_param),
         dftu_param=dftu_param,
         init_mag=init_mag,
         afm=args.afm,
