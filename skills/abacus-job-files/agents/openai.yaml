@@ -1,0 +1,4 @@
+interface:
+  display_name: "ABACUS Job Files"
+  short_description: "Input and output files of an ABACUS job"
+  default_prompt: "Use $abacus-job-files to list the input and output files of this ABACUS job."
