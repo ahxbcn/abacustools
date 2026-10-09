@@ -24,8 +24,7 @@ newer checkout against its source before trusting an edge case.
 | LTS | `v3.10.1` | `f71921fe848659deac8db319cd4311b55b5ad480` | 2025-11-21 |
 | develop | `v3.11.0-beta10` | `260139d97786fa1ac3a416e72d1a19f7b221a5db` | 2026-10-06 |
 
-The LTS working tree carries unrelated toolchain/example modifications; the
-source under `source/` matches the commit. See
+Attribute behavior to the commit, not to a working checkout. See
 [references/versions.md](references/versions.md) for how to reproduce this.
 
 ## Support matrix
