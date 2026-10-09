@@ -348,15 +348,23 @@ preparing directories and a source `STRU` containing a `PAW_FILES` block is
 rejected instead of producing a job with missing files. A
 plane-wave job (`--basis pw`) never ships or references numerical orbitals,
 even when the source `STRU` contains a `NUMERICAL_ORBITAL` block; LCAO jobs
-require an orbital for every element. When neither `--kpt` nor a KPT file,
-`kspacing` or `gamma_only` is available, a 1x1x1 Gamma mesh is written and a
-warning is issued.
+require an orbital for every element. The packaged templates set
+`kspacing 0.14`, so a prepared job gets a real k-point mesh instead of a
+single Gamma point: no `KPT` file is written and ABACUS builds the mesh from
+`kspacing`. An explicit `--kpt` overrides the template `kspacing`, and a `KPT`
+file next to the structure is used when `kspacing` was not set explicitly.
+When the k sampling is disabled (`kspacing 0`) and no KPT file is available, a
+1x1x1 Gamma mesh is written and a warning is issued. A structure with a vacuum
+layer (slab, wire or molecule) triggers a warning that suggests the
+three-value `kspacing` form with a large value along the vacuum.
 
 The basis defaults of `basis_settings` (solver, diagonalization settings) are
 applied for the basis the job ends up using, so `--set basis_type pw` also
 selects the plane-wave solver. The basis may be given only once: `--basis` and
 `--set basis_type`, or `--basis` and a template with another `basis_type`, are
-rejected instead of producing a mixed INPUT.
+rejected instead of producing a mixed INPUT. A `ks_solver` that does not belong
+to the selected basis (for example `genelpa` with `--basis pw`) is rejected
+before any directory is created.
 
 The names given to `--set` are checked against the ABACUS parameter list shipped
 in `input-params.json`, so a mistyped parameter is reported with a suggestion

@@ -77,6 +77,7 @@ resources:
 input_templates:
   scf:
     calculation: "scf"
+    kspacing: 0.14
     symmetry: 1
     scf_thr: 1e-7
     scf_nmax: 100
@@ -86,6 +87,7 @@ input_templates:
     mixing_beta: 0.8
   relax:
     calculation: "relax"
+    kspacing: 0.14
     symmetry: 0
     scf_thr: 1e-7
     scf_nmax: 100
@@ -99,6 +101,7 @@ input_templates:
     force_thr_ev: 0.02
   cell-relax:
     calculation: "cell-relax"
+    kspacing: 0.14
     symmetry: 0
     scf_thr: 1e-7
     scf_nmax: 100
@@ -114,6 +117,7 @@ input_templates:
     stress_thr: 0.5
   md:
     calculation: "md"
+    kspacing: 0.14
     symmetry: 0
     scf_thr: 1e-7
     scf_nmax: 100

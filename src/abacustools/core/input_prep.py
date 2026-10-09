@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence, Union
 
 from abacustools.core.config import CONFIG
+from abacustools.data.dimensionality import classify_dimensionality
 from abacustools.io.abacus import (
     FormatKpt,
     IsEnabled,
@@ -906,11 +907,60 @@ class InputPreparer:
             raise ValueError("nspin must be 1, 2, or 4")
         if self.soc and self.nspin != 4:
             self.nspin = 4
+        self._validate_solver_basis()
         self.kpt_model = NormalizeKptModel(self.kpt_model)
         if self.kpt is not None:
             self.kpt = _normalize_kpt(self.kpt, self.kpt_model)
             # Validate before any directory is created.
             FormatKpt(self.kpt, self.kpt_model)
+
+    @staticmethod
+    def _allowed_solvers(basis: str) -> tuple[str, ...]:
+        """Return the ``ks_solver`` values ABACUS accepts for a basis."""
+        if str(basis).startswith("lcao"):
+            # cg_in_lcao is LTS-only and under testing, so it is not accepted.
+            return (
+                "genelpa",
+                "elpa",
+                "lapack",
+                "scalapack_gvx",
+                "cusolver",
+                "cusolvermp",
+                "pexsi",
+            )
+        return ("cg", "dav", "bpcg", "dav_subspace")
+
+    def _validate_solver_basis(self) -> None:
+        """Cross-check a requested diagonalizer against the basis.
+
+        Only the values the tool can inject are checked: ``--set ks_solver``
+        and the configured ``basis_settings`` default. An INPUT template keeps
+        arbitrary keywords and stays an escape hatch, so its ``ks_solver`` is
+        not validated here.
+        """
+        template_basis = None
+        if self.input_template is not None:
+            template_path = Path(self.input_template).expanduser()
+            if template_path.is_file():
+                template_basis = ReadInput(template_path).get("basis_type")
+        basis = (
+            self.basis
+            or self.set_params.get("basis_type")
+            or template_basis
+            or CONFIG.get("abacus", {}).get("default_basis", "pw")
+        )
+        basis = str(basis).lower()
+        allowed = self._allowed_solvers(basis)
+        configured = CONFIG.get("basis_settings", {}).get(basis, {})
+        configured_solver = configured.get("ks_solver") if isinstance(configured, Mapping) else None
+        for solver in (self.set_params.get("ks_solver"), configured_solver):
+            if solver is None:
+                continue
+            if str(solver).lower() not in allowed:
+                raise ValueError(
+                    f"ks_solver {solver} is not available for basis_type {basis}; "
+                    f"use one of {', '.join(allowed)}"
+                )
 
     def _sources(self) -> list[Path]:
         sources = []
@@ -931,6 +981,7 @@ class InputPreparer:
 
     def _base_inputs(self) -> dict[str, Any]:
         inputs = deepcopy(CONFIG["input_templates"][self.job_type])
+        self.kspacing_explicit = "kspacing" in self.set_params
         explicit_basis = self.basis
         if self.input_template is not None:
             template_path = Path(self.input_template).expanduser()
@@ -939,6 +990,8 @@ class InputPreparer:
             template = ReadInput(template_path)
             template.pop("calculation", None)
             inputs.update(template)
+            if "kspacing" in template:
+                self.kspacing_explicit = True
         if explicit_basis is not None:
             template_basis = inputs.get("basis_type")
             if template_basis is not None and str(template_basis).lower() != explicit_basis:
@@ -1137,6 +1190,56 @@ class InputPreparer:
             suffix += 1
         return candidate
 
+    @staticmethod
+    def _source_kpt_path(inputs: Mapping[str, Any], source: Path) -> Optional[Path]:
+        """Return the KPT file next to the source structure, if one exists."""
+        filename = str(inputs.get("kpoint_file", "KPT"))
+        path = source.parent / filename
+        return path if path.is_file() else None
+
+    def _reconcile_ksampling(self, inputs: dict[str, Any], source: Path) -> None:
+        """Make INPUT's k sampling agree with the KPT that will be written.
+
+        An explicit ``--kpt`` wins over the template's ``kspacing``, and a KPT
+        file next to the structure wins over the default kspacing but not over
+        one the user set explicitly.
+        """
+        if IsEnabled(inputs.get("gamma_only")):
+            inputs.pop("kspacing", None)
+            return
+        if self.kpt is not None:
+            inputs.pop("kspacing", None)
+            return
+        if not IsEnabled(inputs.get("kspacing")):
+            return
+        if not getattr(self, "kspacing_explicit", False):
+            if self._source_kpt_path(inputs, source) is not None:
+                inputs.pop("kspacing", None)
+
+    @staticmethod
+    def _warn_about_vacuum(source: Path, structure: AbacusSTRU) -> None:
+        """Warn when the structure carries a vacuum layer.
+
+        A vacuum direction should not carry the same k spacing as the periodic
+        directions; with ``kspacing`` the three-value form lets the vacuum
+        direction be set to a large value.
+        """
+        try:
+            report = classify_dimensionality(structure, min_vacuum=5.0)
+        except (TypeError, ValueError):
+            return
+        if report.get("dimensionality") == "bulk":
+            return
+        directions = ", ".join(report.get("vacuum_directions", [])) or "an axis"
+        warnings.warn(
+            f"{source.name} has a vacuum layer along {directions} and looks like "
+            f"a {report.get('label', 'low-dimensional system')}; the k-point "
+            "sampling should be coarse along the vacuum. With kspacing, give the "
+            "vacuum direction a large value, for example 'kspacing 0.14 0.14 1.0', "
+            "or pass a KPT file.",
+            stacklevel=3,
+        )
+
     def _write_kpt(self, inputs: Mapping[str, Any], source: Path, destination: Path) -> None:
         filename = str(inputs.get("kpoint_file", "KPT"))
         (destination / filename).parent.mkdir(parents=True, exist_ok=True)
@@ -1145,8 +1248,8 @@ class InputPreparer:
             return
         if IsEnabled(inputs.get("gamma_only")) or IsEnabled(inputs.get("kspacing")):
             return
-        source_kpt = source.parent / filename
-        if source_kpt.is_file():
+        source_kpt = self._source_kpt_path(inputs, source)
+        if source_kpt is not None:
             if self.copy_resources:
                 shutil.copy2(source_kpt, destination / filename)
             else:
@@ -1239,6 +1342,8 @@ class InputPreparer:
                     inputs["ecutwfc"] = max(recommendations)
             if self.nspin == 4:
                 self._check_spin_orbit_pseudopotentials(pseudopotentials)
+            self._reconcile_ksampling(inputs, source)
+            self._warn_about_vacuum(source, structure)
 
             destination = self._destination(source, index)
             destination.mkdir(parents=True, exist_ok=False)
