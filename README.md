@@ -915,7 +915,8 @@ Both quantities are written in the same units as `dg` and can be exported with
 job and the same pseudopotential references as `postprocess hirshfeld`, so these
 analyses require `--spin total`, cannot be combined with `--difference`, and
 need a pseudopotential with `PP_RHOATOM` for Hirshfeld; the Hirshfeld-I variant
-additionally needs `PP_PSWFC` unless explicit reference densities are supplied.
+additionally needs `PP_PSWFC`. The data API also accepts explicit reference
+densities for that variant.
 Without `--igmh-plot`, `igmh` and `igmh-i` are still available as fields through
 `--quantity`.
 
