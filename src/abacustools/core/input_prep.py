@@ -964,7 +964,7 @@ class InputPreparer:
             self.basis
             or self.set_params.get("basis_type")
             or template_basis
-            or CONFIG.get("abacus", {}).get("default_basis", "pw")
+            or CONFIG.get("abacus", {}).get("default_basis", "lcao")
         )
         basis = str(basis).lower()
         allowed = self._allowed_solvers(basis)
@@ -1019,7 +1019,7 @@ class InputPreparer:
             inputs["basis_type"] = explicit_basis
 
         basis = explicit_basis or str(
-            inputs.get("basis_type", CONFIG["abacus"].get("default_basis", "pw"))
+            inputs.get("basis_type", CONFIG["abacus"].get("default_basis", "lcao"))
         ).lower()
 
         inputs.update(self.set_params)

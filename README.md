@@ -341,6 +341,9 @@ abacustools job prepare -f STRUCTURE \
   --kpt 0 0 0 10 G --kpt 0.5 0.5 0 1 X --kpt-model line
 ```
 
+The basis is selected with `--basis pw|lcao` and defaults to `lcao` (the
+configured `abacus.default_basis`); pass `--basis pw` for a plane-wave job.
+
 Magnetic and DFT+U settings are prepared with `--nspin`, `--soc`,
 `--init-mag`, `--afm` and `--dftu-param`. `--dftu-param ELEMENT U` enables
 DFT+U by itself and repeats for several elements. Initial magnetic moments

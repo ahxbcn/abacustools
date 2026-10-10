@@ -1410,6 +1410,8 @@ def test_job_prepare_help_does_not_expose_resource_paths(capsys) -> None:
     assert error.value.code == 0
     output = capsys.readouterr().out
     assert "--library" in output
+    assert "--basis" in output
+    assert "--lcao" not in output
     assert "--pp" not in output
     assert "--orb" not in output
     assert "--paw" not in output
@@ -1518,3 +1520,23 @@ def test_prepare_dftu_param_enables_dftu(
     assert int(inputs["dft_plus_u"]) == 1
     hubbard = inputs["hubbard_u"]
     assert (hubbard if isinstance(hubbard, list) else [hubbard]) == pytest.approx([4.0])
+
+
+def test_prepare_defaults_to_the_lcao_basis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, library = _source_and_library(tmp_path)
+    monkeypatch.setitem(
+        CONFIG,
+        "resources",
+        {"default": "test", "libraries": {"test": {"pp": str(library), "orb": str(library)}}},
+    )
+
+    runs = tmp_path / "runs"
+    assert main(
+        ["job", "prepare", "-f", str(source), "--ftype", "stru", "-o", str(runs)]
+    ) == 0
+
+    inputs = ReadInput(runs / "000000" / "INPUT")
+    assert inputs["basis_type"] == "lcao"
+    assert inputs["ks_solver"] == "genelpa"

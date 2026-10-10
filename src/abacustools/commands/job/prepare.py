@@ -61,9 +61,15 @@ def register_parser(subparsers) -> None:
         choices=("gamma", "mp", "direct", "cartesian", "line", "line_cartesian"),
         help="KPT model used with --kpt, default: gamma.",
     )
-    basis = parser.add_mutually_exclusive_group()
-    basis.add_argument("--basis", choices=("pw", "lcao"), default=None)
-    basis.add_argument("--lcao", dest="basis", action="store_const", const="lcao", help="Use the LCAO basis.")
+    # The effective default is lcao (``abacus.default_basis``); leaving the
+    # argparse default as None keeps an INPUT template or ``--set basis_type``
+    # able to choose the basis without conflicting with an implicit --basis.
+    parser.add_argument(
+        "--basis",
+        choices=("pw", "lcao"),
+        default=None,
+        help="Basis (pw or lcao); default: lcao.",
+    )
     parser.add_argument("--nspin", default=None, type=int, choices=(1, 2, 4))
     parser.add_argument("--soc", action="store_true", help="Enable spin-orbit coupling.")
     parser.add_argument(
