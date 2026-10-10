@@ -33,7 +33,12 @@ def register_parser(subparsers) -> None:
     )
     parser.add_argument("--ftype", default=None, help="Input structure format; inferred by default.")
     parser.add_argument("-o", "--output-dir", default=".", type=Path, help="Directory for generated jobs.")
-    parser.add_argument("--job-type", default="scf", choices=available_job_types(), help="ABACUS calculation type.")
+    parser.add_argument(
+        "--job-type",
+        default="scf",
+        choices=available_job_types(),
+        help="ABACUS calculation type; default: scf.",
+    )
     parser.add_argument(
         "--library", choices=available_resource_libraries(), default=None,
         help="Configured pseudopotential/orbital library; uses the configured default by default.",

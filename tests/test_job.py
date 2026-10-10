@@ -1410,6 +1410,7 @@ def test_job_prepare_help_does_not_expose_resource_paths(capsys) -> None:
     assert error.value.code == 0
     output = capsys.readouterr().out
     assert "--library" in output
+    assert "default: scf" in output
     assert "--basis" in output
     assert "--lcao" not in output
     assert "--pp" not in output
