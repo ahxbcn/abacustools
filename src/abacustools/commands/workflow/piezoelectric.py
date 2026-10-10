@@ -12,20 +12,29 @@ from typing import Any, Iterable, Optional
 import numpy as np
 
 from abacustools.core.constant import ELEMENTARY_CHARGE
+from abacustools.data.elastic import point_group_operations
+from abacustools.data.piezoelectric import (
+    fit_independent_piezoelectric,
+    independent_component_count,
+    independent_components,
+    independent_strain_modes,
+    symmetrize_piezoelectric_tensor,
+    symmetrization_residual,
+)
 from abacustools.data.versions import default_version
 from abacustools.io.abacus import WriteInput, WriteKpt
 from abacustools.io.stru import AbacusSTRU
 
-from .bec import (
-    _kpoint_mesh,
-    _read_task_polarization,
-    _task_metrics,
+from abacustools.data.polarization import (
+    kpoint_mesh,
     polarization_cartesian,
-    polarization_delta,
+    read_task_polarization,
+    task_metrics,
 )
+from abacustools.core.job import read_job_structure
+
 from .common import (
     clear_generated_jobs,
-    read_job_structure,
     read_manifest,
     register_stages,
     write_abacus_job,
@@ -45,6 +54,29 @@ _DISP_TYPES = ("f", "b", "c")
 _TASK_PREFIX = "piezoelectric_"
 _ELECTRON_ANGSTROM_SQUARED_TO_CM2 = ELEMENTARY_CHARGE * 1.0e20
 
+#: Symmetry tolerance of the reference cell, in Angstrom.
+DEFAULT_SYMPREC = 1.0e-2
+
+
+def _selected_modes(modes=None) -> list[tuple[str, int, int]]:
+    """Return the Voigt strain modes a preparation or a fit works with."""
+    if modes is None:
+        return list(_VOIGT_MODES)
+    wanted = {int(mode) for mode in modes}
+    return [
+        entry for position, entry in enumerate(_VOIGT_MODES) if position in wanted
+    ]
+
+
+def _selectable_modes(modes=None) -> list[int]:
+    """Return the Voigt indices of the selected strain modes."""
+    wanted = (
+        set(range(len(_VOIGT_MODES)))
+        if modes is None
+        else {int(mode) for mode in modes}
+    )
+    return [position for position in range(len(_VOIGT_MODES)) if position in wanted]
+
 
 def _register_prepare_arguments(parser: argparse.ArgumentParser) -> None:
     """Register arguments for piezoelectric preparation."""
@@ -63,16 +95,31 @@ def _register_prepare_arguments(parser: argparse.ArgumentParser) -> None:
     continuity = parser.add_mutually_exclusive_group()
     continuity.add_argument(
         "--use-k-continuity", dest="use_k_continuity", action="store_true",
-        help="Enable ABACUS k-point continuity for Berry phase calculations.",
+        help="Enable ABACUS k-point continuity. ABACUS only accepts it for "
+        "plane wave calculations and refuses it for the non self consistent "
+        "Berry phase steps this workflow runs, so enabling it makes every "
+        "generated calculation stop; it is available for future versions that "
+        "lift the restriction.",
     )
     continuity.add_argument(
         "--no-k-continuity", dest="use_k_continuity", action="store_false",
-        help="Do not enable ABACUS k-point continuity.",
+        help="Do not enable ABACUS k-point continuity, the default.",
     )
-    parser.set_defaults(use_k_continuity=True)
+    parser.set_defaults(use_k_continuity=False)
     parser.add_argument(
         "--relax", action="store_true",
         help="Relax ionic positions under each strain before the Berry calculation.",
+    )
+    parser.add_argument(
+        "--strains",
+        choices=("full", "independent"),
+        default="full",
+        help=(
+            "Strain modes to prepare. 'full' applies all six Voigt strains, "
+            "'independent' applies only the modes that determine the "
+            "independent piezoelectric components of the point group, "
+            "default: full."
+        ),
     )
     parser.add_argument(
         "--abacus-command", "--abacus_command", dest="abacus_command", default="abacus",
@@ -98,6 +145,36 @@ def _register_postprocess_arguments(parser: argparse.ArgumentParser) -> None:
         "-o", "--output", default="piezoelectric_results.json",
         help="Output JSON filename. Relative paths are resolved below JOB.",
     )
+    parser.add_argument(
+        "--symprec",
+        type=float,
+        default=DEFAULT_SYMPREC,
+        help=f"Symmetry tolerance of the reference cell, default: {DEFAULT_SYMPREC}.",
+    )
+    parser.add_argument(
+        "--symmetrize",
+        dest="symmetrize",
+        action="store_true",
+        default=True,
+        help="Symmetrize the tensor with the crystal symmetry, the default.",
+    )
+    parser.add_argument(
+        "--no-symmetrize",
+        dest="symmetrize",
+        action="store_false",
+        help="Keep the fitted components as they are.",
+    )
+    parser.add_argument(
+        "--fit",
+        choices=("full", "independent"),
+        default="full",
+        help=(
+            "Fit the six measured columns and symmetrize afterwards ('full'), "
+            "or fit only the independent components ('independent'). A job "
+            "prepared with --strains independent always uses the independent "
+            "fit, default: full."
+        ),
+    )
 
 
 def _validate_strain(value: float) -> float:
@@ -110,19 +187,32 @@ def _validate_strain(value: float) -> float:
 
 
 def _strain_matrix(index: int, other_index: int, magnitude: float) -> np.ndarray:
-    """Build one normal or symmetric shear strain matrix."""
+    """Build one normal or shear strain matrix in the Voigt convention.
+
+    A normal mode is the strain tensor component itself, ``eps_xx`` for the
+    ``xx`` mode.  A shear mode gets half of the requested magnitude in each
+    off-diagonal element, so that the *engineering* shear of the IEEE
+    convention, ``S_4 = 2 eps_yz`` and so on, equals the requested magnitude.
+    Dividing the polarization change by that magnitude then gives the
+    piezoelectric tensor the literature and DFPT codes report, and a request
+    for a one percent shear means a one percent shear in the same sense the
+    elastic workflow uses.
+    """
     matrix = np.zeros((3, 3), dtype=float)
-    matrix[index, other_index] = magnitude
-    matrix[other_index, index] = magnitude
+    if index == other_index:
+        matrix[index, other_index] = magnitude
+    else:
+        matrix[index, other_index] = 0.5 * magnitude
+        matrix[other_index, index] = 0.5 * magnitude
     return matrix
 
 
-def _task_names(disp_type: str) -> list[str]:
-    """Return the deterministic task order for all six strain components."""
+def _task_names(disp_type: str, modes=None) -> list[str]:
+    """Return the deterministic task order of the selected strain components."""
     names: list[str] = []
     if disp_type != "c":
         names.append("piezoelectric_org")
-    for label, _, _ in _VOIGT_MODES:
+    for label, _, _ in _selected_modes(modes):
         if disp_type in {"f", "c"}:
             names.append(f"piezoelectric_{label}")
         if disp_type in {"b", "c"}:
@@ -245,13 +335,44 @@ def _write_piezo_inputs(
 
 
 def _deformed_structure(structure, strain: np.ndarray):
-    """Apply a finite strain to the cell while preserving fractional positions."""
+    """Apply a finite strain to the cell while preserving fractional positions.
+
+    ``structure.cell`` holds the lattice vectors as its rows, and a homogeneous
+    deformation maps every lattice vector by the deformation gradient
+    ``F = I + strain``, so the deformed cell is ``C @ F.T``: the strain acts on
+    the Cartesian components of each lattice vector.  Multiplying on the left
+    instead would combine the lattice vectors with each other, which is a
+    different deformation for every cell that is not diagonal.
+    """
     result = deepcopy(structure)
     fractional = np.asarray(structure.coords_direct, dtype=float)
-    cell = (np.eye(3) + strain) @ np.asarray(structure.cell, dtype=float)
-    result.cell = cell.tolist()
+    cell = np.asarray(structure.cell, dtype=float)
+    result.cell = (cell @ (np.eye(3) + strain).T).tolist()
     result.coords_direct = fractional.tolist()
     return result
+
+
+def _symmetry_block(structure, symprec: float) -> dict[str, Any]:
+    """Return the symmetry block recorded in the workflow manifest."""
+    from abacustools.data.symmetry import crystallographic_symmetry
+
+    analysis = crystallographic_symmetry(structure, symprec=symprec)
+    if not analysis.get("available"):
+        raise RuntimeError(
+            "the symmetry of the reference cell could not be determined: "
+            f"{analysis.get('error', 'unknown reason')}"
+        )
+    rotations = point_group_operations(structure, symprec=symprec)
+    return {
+        "point_group": analysis["point_group"],
+        "schoenflies": analysis.get("schoenflies"),
+        "space_group_symbol": analysis["space_group_symbol"],
+        "space_group_number": analysis["space_group_number"],
+        "crystal_system": analysis["crystal_system"],
+        "operations": int(len(rotations)),
+        "independent_components": independent_component_count(rotations),
+        "symprec": float(symprec),
+    }
 
 
 def _prepare_one(
@@ -263,6 +384,8 @@ def _prepare_one(
     relax: bool,
     abacus_command: str,
     override: bool,
+    modes=None,
+    symmetry: Optional[dict[str, Any]] = None,
 ) -> list[str]:
     """Prepare one job directory and return its generated task paths."""
     if not job.is_dir():
@@ -272,8 +395,8 @@ def _prepare_one(
     strain_magnitude = _validate_strain(strain_magnitude)
 
     inputs, stru_filename, structure = read_job_structure(job)
-    kpoint, kpoint_model = _kpoint_mesh(job, inputs, structure)
-    task_names = _task_names(disp_type)
+    kpoint, kpoint_model = kpoint_mesh(job, inputs, structure)
+    task_names = _task_names(disp_type, modes)
     existing = sorted(
         path.name
         for path in job.glob(f"{_TASK_PREFIX}*")
@@ -306,7 +429,7 @@ def _prepare_one(
             abacus_command=abacus_command,
         )
 
-    for label, index, other_index in _VOIGT_MODES:
+    for label, index, other_index in _selected_modes(modes):
         strain_matrix = _strain_matrix(index, other_index, strain_magnitude)
         if disp_type in {"f", "c"}:
             name = f"piezoelectric_{label}"
@@ -371,6 +494,9 @@ def _prepare_one(
         strain=strain_magnitude,
         difference_type=disp_type,
         displacement_type=disp_type,
+        strain_modes=_selectable_modes(modes),
+        strains_mode="independent" if modes is not None else "full",
+        symmetry=symmetry,
         modes=[
             {
                 "label": label,
@@ -378,7 +504,7 @@ def _prepare_one(
                     index, other_index, strain_magnitude
                 ).tolist(),
             }
-            for label, index, other_index in _VOIGT_MODES
+            for label, index, other_index in _selected_modes(modes)
         ],
         kpoint=kpoint,
         kpoint_model=kpoint_model,
@@ -394,7 +520,7 @@ def prepare_piezoelectric_jobs(
     jobs: Iterable[str | Path],
     strain: float,
     disp_type: str = "f",
-    k_continuity: bool = True,
+    k_continuity: bool = False,
     relax: bool = False,
     *,
     abacus_command: str = "abacus",
@@ -427,8 +553,15 @@ def prepare(args: argparse.Namespace) -> int:
     """Prepare equilibrium and finite-strained Berry phase calculations."""
     job = Path(args.job).absolute()
     disp_type = getattr(args, "disp_type", getattr(args, "type", "f"))
-    use_k_continuity = getattr(
-        args, "use_k_continuity", not bool(getattr(args, "no_k_continuity", False))
+    use_k_continuity = getattr(args, "use_k_continuity", False)
+    strains_mode = getattr(args, "strains", "full")
+    _, _, structure = read_job_structure(job)
+    rotations = point_group_operations(
+        structure, symprec=getattr(args, "symprec", DEFAULT_SYMPREC)
+    )
+    symmetry = _symmetry_block(structure, float(getattr(args, "symprec", DEFAULT_SYMPREC)))
+    modes = (
+        independent_strain_modes(rotations) if strains_mode == "independent" else None
     )
     _prepare_one(
         job,
@@ -438,11 +571,19 @@ def prepare(args: argparse.Namespace) -> int:
         relax=bool(getattr(args, "relax", False)),
         abacus_command=getattr(args, "abacus_command", "abacus"),
         override=bool(getattr(args, "override", False)),
+        modes=modes,
+        symmetry=symmetry,
     )
     print(f"  job: {job}")
     print(f"  strain: {float(args.strain):g} ({disp_type})")
-    print(f"  modes: {len(_VOIGT_MODES)}")
-    print(f"  generated calculations: {len(_task_names(disp_type))}")
+    print(
+        f"  point group: {symmetry['point_group']} "
+        f"({symmetry['space_group_symbol']}, "
+        f"space group {symmetry['space_group_number']})"
+    )
+    print(f"  independent piezoelectric components: {symmetry['independent_components']}")
+    print(f"  modes: {len(_selectable_modes(modes))} of {len(_VOIGT_MODES)}")
+    print(f"  generated calculations: {len(_task_names(disp_type, modes))}")
     return 0
 
 
@@ -454,10 +595,10 @@ def _read_task_data(
 ) -> dict[str, Any]:
     """Collect SCF diagnostics and Berry phase data from one task."""
     data: dict[str, Any] = {
-        "metrics": _task_metrics(task, version),
+        "metrics": task_metrics(task, version),
         "polarization": None,
     }
-    polarization = _read_task_polarization(task, suffix)
+    polarization = read_task_polarization(task, suffix)
     if polarization is None:
         return data
     structure = AbacusSTRU.read(task / stru_filename)
@@ -497,7 +638,7 @@ def _read_full_polarization(
 ) -> tuple[np.ndarray, np.ndarray, Optional[float]]:
     """Read the legacy raw Cartesian polarization tuple for one task."""
     task = Path(folder)
-    polarization = _read_task_polarization(task, suffix)
+    polarization = read_task_polarization(task, suffix)
     if polarization is None:
         raise ValueError(f"complete Berry phase output was not found in {task}")
     structure = AbacusSTRU.read(task / stru_filename)
@@ -539,7 +680,25 @@ def _mode_difference(
     disp_type: str,
     strain: float,
 ) -> Optional[list[float]]:
-    """Calculate one Cartesian polarization response by finite difference."""
+    """Calculate one Cartesian polarization response by finite difference.
+
+    ABACUS prints the polarization of each Berry phase direction as a dipole
+    per cell referred to the lattice vectors, that is modulo the quantum of a
+    lattice translation, and the quantum itself depends on the cell the value
+    was computed in.  Comparing the printed values of two differently strained
+    cells therefore mixes that geometry into the response: a centrosymmetric
+    crystal, whose polarization sits exactly on the branch point, acquires a
+    tensor of order of the quantum even though symmetry forces it to vanish,
+    and every other crystal acquires symmetry forbidden components of the same
+    order.
+
+    The printed value divided by its own quantum is a phase in units of the
+    quantum, and that ratio carries no geometry: the branch point is the same
+    number in every cell.  The response is therefore taken as the phase
+    difference, wrapped to the period of the printed polarization, converted
+    back to a dipole with the quantum and the lattice of the *reference* cell
+    alone, and only then turned into a Cartesian polarization density.
+    """
     positive = task_data.get(f"piezoelectric_{label}")
     negative = task_data.get(f"piezoelectric_{label}_back")
     original = task_data.get("piezoelectric_org")
@@ -560,27 +719,50 @@ def _mode_difference(
 
     reference_p = reference["polarization"]
     displaced_p = displaced["polarization"]
-    delta_lattice = polarization_delta(
-        reference_p["components_cm2"],
-        displaced_p["components_cm2"],
-        displaced_p["modulus_cm2"],
-    )
-    # Unwrap the displaced polarization before transforming both states. This
-    # retains the small change in lattice-vector directions for shear modes.
-    displaced_unwrapped = (
-        np.asarray(reference_p["components_cm2"], dtype=float)
-        + np.asarray(delta_lattice, dtype=float)
-    )
-    reference_cartesian = np.asarray(
-        polarization_cartesian(reference_p["components_cm2"], reference_p["cell"]),
+    delta_phase = np.asarray(_phase_difference(reference_p, displaced_p), dtype=float)
+    factor = _ELECTRON_ANGSTROM_SQUARED_TO_CM2 / float(reference_p["volume"])
+    delta_cartesian = np.asarray(
+        polarization_cartesian(
+            delta_phase * np.asarray(reference_p["mod"], dtype=float) * factor,
+            reference_p["cell"],
+        ),
         dtype=float,
     )
-    displaced_cartesian = np.asarray(
-        polarization_cartesian(displaced_unwrapped, displaced_p["cell"]),
-        dtype=float,
-    )
-    delta_cartesian = displaced_cartesian - reference_cartesian
     return [float(value) / denominator for value in delta_cartesian]
+
+
+def _phase_difference(
+    reference: dict[str, Any], displaced: dict[str, Any]
+) -> np.ndarray:
+    """Return the change of the polarization phase between two cells.
+
+    ABACUS prints polarizations modulo twice the lattice translation quantum,
+    so the printed value divided by the printed modulus runs over one period of
+    one, independently of the cell.
+
+    Args:
+        reference: Polarization of the reference task.
+        displaced: Polarization of the strained task.
+
+    Returns:
+        The phase difference of each of the three directions, wrapped to the
+        period of the printed polarization.
+
+    Raises:
+        ValueError: When the two polarizations do not hold three directions or
+            a quantum cannot be read.
+    """
+    reference_values = np.asarray(reference["p_vec"], dtype=float)
+    displaced_values = np.asarray(displaced["p_vec"], dtype=float)
+    reference_quantum = np.asarray(reference["mod"], dtype=float)
+    displaced_quantum = np.asarray(displaced["mod"], dtype=float)
+    for values in (reference_values, displaced_values, reference_quantum, displaced_quantum):
+        if values.shape != (3,):
+            raise ValueError("polarization vectors must contain three values")
+    if np.any(reference_quantum <= 0.0) or np.any(displaced_quantum <= 0.0):
+        raise ValueError("polarization quantum must be positive")
+    delta = displaced_values / displaced_quantum - reference_values / reference_quantum
+    return delta - np.rint(delta)
 
 
 def _postprocess_one(
@@ -673,8 +855,9 @@ def _summary(tensor: list[list[float]]) -> str:
         [
             "",
             "The tensor is computed by finite differences of the Berry-phase",
-            "polarization, with the polarization quantum resolved by the shortest",
-            "branch change.",
+            "polarization, taken as a phase so that the branch of each cell",
+            "cancels; a centrosymmetric crystal therefore gives a vanishing",
+            "tensor instead of one of the order of the polarization quantum.",
             "",
         ]
     )
@@ -734,12 +917,29 @@ def postprocess_piezoelectric(
     return all_metrics, tensor
 
 
+def _symmetry_from_manifest(
+    job: Path, recorded: Any, symprec: float
+) -> dict[str, Any]:
+    """Return the symmetry of the reference cell.
+
+    The preparation stage records it in the manifest; a manifest written
+    before that information existed is completed here from the reference
+    structure.
+    """
+    if isinstance(recorded, dict) and recorded.get("point_group"):
+        return dict(recorded)
+    _, _, structure = read_job_structure(job)
+    return _symmetry_block(structure, symprec)
+
+
 def postprocess(args: argparse.Namespace) -> int:
     """Calculate the piezoelectric stress tensor from Berry phase tasks."""
     job = Path(args.job).absolute()
     if not job.is_dir():
         raise RuntimeError(f"job directory does not exist: {job}")
 
+    recorded_symmetry = None
+    measured_modes: Optional[list[int]] = None
     try:
         manifest = read_manifest(job, "piezoelectric", [])
     except FileNotFoundError:
@@ -758,6 +958,10 @@ def postprocess(args: argparse.Namespace) -> int:
             raise RuntimeError("piezoelectric manifest has an invalid difference type")
         suffix = str(manifest.get("suffix", "ABACUS"))
         stru_filename = str(manifest.get("stru_filename", "STRU"))
+        recorded_symmetry = manifest.get("symmetry")
+        modes = manifest.get("strain_modes")
+        if isinstance(modes, list) and modes:
+            measured_modes = [int(mode) for mode in modes]
 
     metrics, tensor, task_data = _postprocess_one(
         job,
@@ -768,16 +972,60 @@ def postprocess(args: argparse.Namespace) -> int:
         suffix=suffix,
         stru_filename=stru_filename,
     )
+    symprec = float(getattr(args, "symprec", DEFAULT_SYMPREC))
+    symmetrize = bool(getattr(args, "symmetrize", True))
+    symmetry = _symmetry_from_manifest(job, recorded_symmetry, symprec)
+    if not measured_modes:
+        measured_modes = list(range(len(_VOIGT_MODES)))
+    _, _, structure = read_job_structure(job)
+    rotations = point_group_operations(structure, symprec=symprec)
+
+    method = str(getattr(args, "fit", "full"))
+    if len(measured_modes) < len(_VOIGT_MODES) and method == "full":
+        print(
+            "  the strain set covers the independent modes only; "
+            "fitting the independent components"
+        )
+        method = "independent"
+    if method == "independent":
+        tensor = fit_independent_piezoelectric(
+            np.asarray(tensor, dtype=float), measured_modes, rotations
+        ).tolist()
+        raw = tensor
+        residual = 0.0
+        print("  fit: independent components")
+    else:
+        raw = tensor
+        if symmetrize:
+            tensor = symmetrize_piezoelectric_tensor(
+                np.asarray(tensor, dtype=float), rotations
+            ).tolist()
+        residual = symmetrization_residual(np.asarray(raw), np.asarray(tensor))
     result = {
         "workflow": "piezoelectric",
         "difference_type": disp_type,
         "strain": strain,
         "voigt_modes": [label for label, _, _ in _VOIGT_MODES],
+        "strain_modes": [int(mode) for mode in measured_modes],
         "tensor_layout": (
             "rows are Cartesian polarization directions; columns are Voigt strain modes"
         ),
-        "units": {"piezoelectric_tensor": "C/m^2", "strain": "dimensionless"},
+        "units": {
+            "piezoelectric_tensor": "C/m^2",
+            "strain": "dimensionless",
+            "symmetrization_residual": "C/m^2",
+        },
         "piezoelectric_tensor": tensor,
+        "piezoelectric_tensor_raw": raw,
+        "symmetrization_residual": residual,
+        "independent_components": independent_components(
+            np.asarray(tensor, dtype=float), rotations
+        ),
+        "symmetry": symmetry,
+        "fit": {
+            "method": method,
+            "strain_modes": [int(mode) for mode in measured_modes],
+        },
         "tasks": {
             name: {
                 "metrics": metrics.get(name, {}),
@@ -794,6 +1042,28 @@ def postprocess(args: argparse.Namespace) -> int:
 
     print(f"  job: {job}")
     print(summary)
+    print(
+        f"  point group: {symmetry['point_group']} "
+        f"({symmetry['space_group_symbol']}, "
+        f"space group {symmetry['space_group_number']})"
+    )
+    print(
+        f"  independent components: {symmetry['independent_components']} "
+        f"from {len(measured_modes)} of {len(_VOIGT_MODES)} strain modes"
+    )
+    if method == "independent":
+        print("  piezoelectric tensor (C/m^2, independent fit):")
+    else:
+        print("  piezoelectric tensor (C/m^2, symmetrized):")
+    for row in tensor:
+        print("    " + " ".join(f"{value: .8f}" for value in row))
+    if method == "full" and symmetrize:
+        print(f"  symmetrization residual: {residual:.8f} C/m^2")
+    components = result["independent_components"]
+    print(
+        "  independent components (C/m^2): "
+        + ", ".join(f"{name} = {value:.6f}" for name, value in components.items())
+    )
     print(f"  results: {output}")
     return 0
 

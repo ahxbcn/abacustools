@@ -23,27 +23,28 @@ from typing import Any, Iterator, Optional
 import numpy as np
 
 from abacustools.core.submission import generate_workflow_submission
+from abacustools.data.phonon import (
+    automatic_supercell,
+    collect_forces,
+    displacement_tasks,
+    jsonable,
+    phonopy_atoms,
+    phonopy_supercell_structure,
+    validate_displacement_entries,
+    validate_mesh,
+    validate_positive_float,
+    validate_supercell,
+)
 from abacustools.data.versions import default_version
+from abacustools.core.job import read_job_structure
 
 from .common import (
     clear_generated_jobs,
     kpoint_filename,
     read_manifest,
-    read_job_structure,
     register_stages,
     write_abacus_job,
     write_manifest,
-)
-from .phonon import (
-    _automatic_supercell,
-    _jsonable,
-    _phonopy_atoms,
-    _phonopy_supercell_structure,
-    _read_forces,
-    _resolve_output,
-    _validate_mesh,
-    _validate_positive_float,
-    _validate_supercell,
 )
 
 
@@ -86,9 +87,9 @@ def _mesh_setting(values: Any) -> list[int]:
     """Validate a one- or three-dimensional phono3py mesh."""
     mesh = list(values)
     if len(mesh) == 1:
-        mesh = _validate_mesh([mesh[0], mesh[0], mesh[0]])[:1]
+        mesh = validate_mesh([mesh[0], mesh[0], mesh[0]])[:1]
     else:
-        mesh = _validate_mesh(mesh)
+        mesh = validate_mesh(mesh)
     return mesh
 
 
@@ -112,13 +113,6 @@ def _scale_kpoints(kpt: Any, model: Any, supercell: Any) -> list:
     return scaled
 
 
-def _displacement_tasks(supercells: Any, prefix: str) -> list[dict[str, Any]]:
-    """Return task names and dataset indices of the displaced supercells."""
-    return [
-        {"task": f"{prefix}{index:04d}", "index": index}
-        for index, supercell in enumerate(supercells)
-        if supercell is not None
-    ]
 
 
 def _existing_task_names(job: Path) -> list[str]:
@@ -264,23 +258,23 @@ def prepare(args: argparse.Namespace) -> int:
     job = Path(args.job).absolute()
     if not job.is_dir():
         raise RuntimeError(f"job directory does not exist: {job}")
-    _validate_positive_float(args.displacement_stepsize_fc3, "displacement_stepsize_fc3")
-    _validate_positive_float(args.min_supercell_length, "min_supercell_length")
+    validate_positive_float(args.displacement_stepsize_fc3, "displacement_stepsize_fc3")
+    validate_positive_float(args.min_supercell_length, "min_supercell_length")
     stepsize_fc2 = (
         args.displacement_stepsize_fc3
         if args.displacement_stepsize_fc2 is None
         else args.displacement_stepsize_fc2
     )
-    _validate_positive_float(stepsize_fc2, "displacement_stepsize_fc2")
+    validate_positive_float(stepsize_fc2, "displacement_stepsize_fc2")
 
     inputs, stru_filename, structure = read_job_structure(job)
     supercell_fc3 = (
-        _validate_supercell(args.supercell_fc3)
+        validate_supercell(args.supercell_fc3)
         if args.supercell_fc3 is not None
-        else _automatic_supercell(structure, args.min_supercell_length)
+        else automatic_supercell(structure, args.min_supercell_length)
     )
     supercell_fc2 = (
-        _validate_supercell(args.supercell_fc2)
+        validate_supercell(args.supercell_fc2)
         if args.supercell_fc2 is not None
         else None
     )
@@ -293,7 +287,7 @@ def prepare(args: argparse.Namespace) -> int:
 
     phono3py = _load_phono3py()
     ph3 = phono3py.Phono3py(
-        _phonopy_atoms(structure),
+        phonopy_atoms(structure),
         supercell_matrix=np.diag(supercell_fc3),
         primitive_matrix="P",
         phonon_supercell_matrix=np.diag(supercell_fc2) if separate_fc2 else None,
@@ -303,10 +297,10 @@ def prepare(args: argparse.Namespace) -> int:
         # generate_displacements also builds the fc2 dataset with the fc3 step.
         ph3.generate_fc2_displacements(distance=stepsize_fc2)
 
-    fc3_tasks = _displacement_tasks(ph3.supercells_with_displacements, _FC3_PREFIX)
+    fc3_tasks = displacement_tasks(ph3.supercells_with_displacements, _FC3_PREFIX)
     if separate_fc2:
         fc2_supercells = ph3.phonon_supercells_with_displacements
-        fc2_tasks = _displacement_tasks(fc2_supercells, _FC2_PREFIX)
+        fc2_tasks = displacement_tasks(fc2_supercells, _FC2_PREFIX)
     else:
         fc2_supercells = []
         fc2_tasks = []
@@ -349,7 +343,7 @@ def prepare(args: argparse.Namespace) -> int:
             (fc2_tasks, supercell_fc2, ph3.phonon_supercell, fc2_supercells)
         )
     for tasks, supercell, phonopy_supercell, supercells in datasets:
-        template = _phonopy_supercell_structure(structure, phonopy_supercell)
+        template = phonopy_supercell_structure(structure, phonopy_supercell)
         for item in tasks:
             displaced = supercells[item["index"]]
             if template.natoms != len(displaced):
@@ -412,42 +406,6 @@ def prepare(args: argparse.Namespace) -> int:
     return 0
 
 
-def _collect_forces(
-    job: Path,
-    entries: Any,
-    supercells: Any,
-    version: str,
-    expected_natoms: int,
-) -> list[Optional[np.ndarray]]:
-    """Read one force set per displaced supercell, keeping symmetry gaps."""
-    if not isinstance(entries, list) or not entries:
-        raise RuntimeError("thermal conductivity manifest has no displacement tasks")
-    forces: list[Optional[np.ndarray]] = [None] * len(supercells)
-    for entry in entries:
-        if not isinstance(entry, dict) or "task" not in entry or "index" not in entry:
-            raise RuntimeError("invalid displacement entry in thermal conductivity manifest")
-        try:
-            index = int(entry["index"])
-        except (TypeError, ValueError) as error:
-            raise RuntimeError(
-                "invalid displacement index in thermal conductivity manifest"
-            ) from error
-        if index < 0 or index >= len(supercells):
-            raise RuntimeError(
-                "displacement index in thermal conductivity manifest is out of range"
-            )
-        forces[index] = _read_forces(job / str(entry["task"]), version, expected_natoms)
-    missing = [
-        index
-        for index, supercell in enumerate(supercells)
-        if supercell is not None and forces[index] is None
-    ]
-    if missing:
-        raise RuntimeError(
-            "no forces were collected for displacement indices: "
-            + ", ".join(str(index) for index in missing)
-        )
-    return forces
 
 
 @contextmanager
@@ -522,7 +480,7 @@ def postprocess(args: argparse.Namespace) -> int:
         raise RuntimeError("thermal conductivity manifest has invalid tasks")
     read_manifest(job, _WORKFLOW, tasks)
     try:
-        supercell_fc3 = _validate_supercell(manifest.get("fc3_supercell"))
+        supercell_fc3 = validate_supercell(manifest.get("fc3_supercell"))
     except ValueError as error:
         raise RuntimeError(
             "thermal conductivity manifest has an invalid fc3 supercell"
@@ -542,24 +500,36 @@ def postprocess(args: argparse.Namespace) -> int:
             f"records {supercell_fc3}"
         )
 
-    ph3.forces = _collect_forces(
-        job,
+    fc3_entries = validate_displacement_entries(
         manifest.get("fc3_displacements"),
+        len(ph3.supercells_with_displacements),
+        "thermal conductivity",
+    )
+    ph3.forces = collect_forces(
+        job,
+        fc3_entries,
         ph3.supercells_with_displacements,
         args.version,
         len(ph3.supercell),
+        workflow="thermal conductivity",
     )
     ph3.produce_fc3()
     ph3.symmetrize_fc3()
 
     separate_fc2 = ph3.phonon_supercell_matrix is not None
     if separate_fc2:
-        ph3.phonon_forces = _collect_forces(
-            job,
+        fc2_entries = validate_displacement_entries(
             manifest.get("fc2_displacements"),
+            len(ph3.phonon_supercells_with_displacements),
+            "thermal conductivity",
+        )
+        ph3.phonon_forces = collect_forces(
+            job,
+            fc2_entries,
             ph3.phonon_supercells_with_displacements,
             args.version,
             len(ph3.phonon_supercell),
+            workflow="thermal conductivity",
         )
         ph3.produce_fc2()
         ph3.symmetrize_fc2()
@@ -620,13 +590,17 @@ def postprocess(args: argparse.Namespace) -> int:
         "kappa_hdf5": str(kappa_file) if kappa_file.is_file() else None,
     }
 
-    plot_path = _resolve_output(job, args.plot)
+    plot_path = Path(args.plot)
+    if not plot_path.is_absolute():
+        plot_path = job / plot_path
     _plot_conductivity(temperatures, components, plot_path)
     result["plot"] = str(plot_path)
 
-    output = _resolve_output(job, args.output)
+    output = Path(args.output)
+    if not output.is_absolute():
+        output = job / output
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(_jsonable(result), indent=2) + "\n", encoding="utf-8")
+    output.write_text(json.dumps(jsonable(result), indent=2) + "\n", encoding="utf-8")
 
     header = "  ".join(f"{name:>10}" for name in ("T(K)", *_KAPPA_COMPONENTS))
     print(f"  job: {job}")

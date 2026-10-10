@@ -216,6 +216,127 @@ def find_conventional(
 
 
 
+def _matrix_square_root(matrix: np.ndarray) -> np.ndarray:
+    """Return the symmetric positive semi-definite square root of a matrix."""
+    values, vectors = np.linalg.eigh(0.5 * (matrix + matrix.T))
+    return (vectors * np.sqrt(np.clip(values, 0.0, None))) @ vectors.T
+
+
+def _idealized_lattice(cell: np.ndarray, rotations: np.ndarray) -> np.ndarray:
+    """Return the cell closest to ``cell`` whose metric obeys the rotations.
+
+    The metric tensor of a lattice that obeys a symmetry operation ``R``
+    satisfies ``R^T G R = G``, so the average of ``R^T G R`` over the space
+    group is its invariant part. A pure strain then maps the input cell onto a
+    cell with that ideal metric, which keeps the orientation of the input.
+    """
+    metric = cell @ cell.T
+    invariant = np.mean([rotation.T @ metric @ rotation for rotation in rotations], axis=0)
+    root = _matrix_square_root(metric)
+    inverse_root = np.linalg.inv(root)
+    strain = inverse_root @ _matrix_square_root(root @ invariant @ root) @ inverse_root
+    return strain @ cell
+
+
+def _symmetrized_positions(
+    fractional: np.ndarray,
+    metric: np.ndarray,
+    rotations: np.ndarray,
+    translations: np.ndarray,
+    symprec: float,
+) -> np.ndarray:
+    """Average every position over the images its symmetry partners give it.
+
+    For an operation ``g`` the atom nearest to ``g(x_i)`` is the image of
+    ``x_i`` under ``g``, so ``g^-1`` of that atom is another estimate of
+    ``x_i``. Averaging those estimates removes the noise along the orbit.
+    """
+    count = len(fractional)
+    accumulated = np.zeros_like(fractional)
+    weights = np.zeros(count)
+    for rotation, translation in zip(rotations, translations):
+        images = (fractional @ rotation.T + translation) % 1.0
+        delta = images[:, None, :] - fractional[None, :, :]
+        delta -= np.rint(delta)
+        distances = np.einsum("ijk,kl,ijl->ij", delta, metric, delta)
+        nearest = np.argmin(distances, axis=1)
+        matched = distances[np.arange(count), nearest] <= symprec**2
+        inverse = np.rint(np.linalg.inv(rotation)).astype(int)
+        back = (fractional[nearest] - translation) @ inverse.T
+        back -= np.rint(back - fractional)
+        accumulated[matched] += back[matched]
+        weights[matched] += 1
+    return (accumulated / weights[:, None]) % 1.0
+
+
+def symmetrize_structure(
+    structure: AbacusSTRU,
+    *,
+    symprec: float = 1e-5,
+    angle_tolerance: float = 5.0,
+    keep_cell: bool = False,
+) -> AbacusSTRU:
+    """Return a copy snapped onto the symmetry found in its own cell.
+
+    spglib determines the space group of the structure. The atomic positions
+    are then averaged with their symmetry images and the lattice metric is
+    projected onto the metric that the space group requires, so small numerical
+    errors disappear and the symmetry of the result is exact. The cell setting,
+    the number and the order of the atoms, and every atom attribute are
+    preserved; use :func:`standardize_cell` or :func:`find_conventional` to
+    rewrite the cell into the standard setting instead.
+
+    Args:
+        structure: Structure to clean.
+        symprec: Distance tolerance in Angstrom, with the meaning it has in
+            spglib: deviations have to stay below it to count as noise.
+        angle_tolerance: Angle tolerance in degrees, passed to spglib.
+        keep_cell: Idealize the positions only and leave the lattice vectors
+            untouched, which keeps the symmetry approximate in the cell.
+
+    Returns:
+        AbacusSTRU: A new structure whose symmetry is exact.
+
+    Raises:
+        StructureEditError: If the structure has no periodic cell, spglib is
+            not installed, or the symmetry analysis fails.
+    """
+    try:
+        import spglib
+    except ImportError as error:
+        raise StructureEditError("spglib is not installed") from error
+
+    tolerance = _finite_float(symprec, "symprec")
+    angle = _finite_float(angle_tolerance, "angle tolerance", allow_zero=True)
+    cell = np.asarray(structure.cell, dtype=float)
+    if cell.shape != (3, 3) or not np.all(np.isfinite(cell)):
+        raise StructureEditError("symmetrize needs a finite three-dimensional cell")
+    if abs(float(np.linalg.det(cell))) < 1e-12:
+        raise StructureEditError("symmetrize needs a periodic cell with a volume")
+
+    lattice, positions, numbers = _spglib_cell(structure)
+    dataset = spglib.get_symmetry_dataset(
+        (lattice, positions, numbers),
+        symprec=tolerance,
+        angle_tolerance=angle,
+    )
+    if dataset is None:
+        raise StructureEditError("spglib could not determine the symmetry of the structure")
+
+    rotations = np.asarray(dataset.rotations, dtype=int)
+    translations = np.asarray(dataset.translations, dtype=float)
+    fractional = np.asarray(positions, dtype=float) % 1.0
+    idealized = _symmetrized_positions(
+        fractional, cell @ cell.T, rotations, translations, tolerance
+    )
+
+    edited = _copy(structure)
+    if not keep_cell:
+        edited.cell = _idealized_lattice(cell, rotations).tolist()
+    edited.coords_direct = idealized.tolist()
+    return edited
+
+
 def _direction_index(direction: Union[str, int]) -> int:
     """Map ``a``/``b``/``c`` or ``x``/``y``/``z`` to a lattice direction."""
     if isinstance(direction, bool):
@@ -830,6 +951,7 @@ __all__ = [
     "generate_all_slabs",
     "make_supercell",
     "standardize_cell",
+    "symmetrize_structure",
     "set_coordinate_mode",
     "select_atoms",
     "select_indices",

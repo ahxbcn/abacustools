@@ -64,6 +64,44 @@ def _restart_grid_index(miller: np.ndarray, grid_shape) -> np.ndarray:
     return np.mod(np.asarray(miller, dtype=np.int64), shape)
 
 
+_MILLER_KEY_BITS = 21
+_MILLER_KEY_OFFSET = 1 << (_MILLER_KEY_BITS - 1)
+_MILLER_KEY_LIMIT = 1 << (_MILLER_KEY_BITS - 1)
+
+
+def _miller_keys(miller: np.ndarray) -> np.ndarray:
+    """Encode Miller indices as one sortable integer per G-vector."""
+    values = np.asarray(miller, dtype=np.int64)
+    if values.size and np.any(np.abs(values) >= _MILLER_KEY_LIMIT):
+        raise ValueError(
+            f"Miller indices must stay below {_MILLER_KEY_LIMIT} in magnitude"
+        )
+    shifted = (values + _MILLER_KEY_OFFSET).astype(np.uint64)
+    return (
+        (shifted[:, 0] << np.uint64(2 * _MILLER_KEY_BITS))
+        | (shifted[:, 1] << np.uint64(_MILLER_KEY_BITS))
+        | shifted[:, 2]
+    )
+
+
+def _check_grid_fits(miller: np.ndarray, grid_shape) -> None:
+    """Reject an FFT grid that cannot describe the stored G-vectors.
+
+    The grid shape is not part of the restart file, so it has to come from the
+    log of the calculation that wrote it. An inconsistent grid (for example the
+    one of an earlier relaxation step whose cell axes were ordered differently)
+    would otherwise silently produce a wrong density.
+    """
+    values = np.asarray(miller, dtype=np.int64)
+    shape = np.asarray(grid_shape, dtype=np.int64)
+    if values.size and np.any(2 * np.abs(values) > shape):
+        raise ValueError(
+            "the Miller indices of the restart file do not fit the FFT grid "
+            f"{tuple(int(n) for n in shape)}; use the grid of the calculation "
+            "that wrote the file, or pass it explicitly"
+        )
+
+
 def _scatter_rhog(rhog: np.ndarray, miller: np.ndarray, grid_shape) -> np.ndarray:
     full = np.zeros(tuple(int(n) for n in grid_shape), dtype=np.complex128)
     index = _restart_grid_index(miller, grid_shape)
@@ -139,11 +177,11 @@ class RestartCharge:
     so with numpy ``rho(G) = fftn(rho(r)) / N`` and ``rho(r) = N * ifftn(rho(G))``.
 
     Note:
-        Only ``gamma_only=False`` files can be converted between real and
-        reciprocal space. Files with ``gamma_only=True`` can still be read and
-        written, but :meth:`to_real` and :meth:`from_real` raise
-        :class:`NotImplementedError` because the half-sphere reconstruction
-        depends on ABACUS-specific G-vector ordering.
+        ``gamma_only=True`` files store one half of the G-vectors; :meth:`to_real`
+        reconstructs the other half with ``rho(-G) = conj(rho(G))`` and can
+        therefore convert them as well. :meth:`from_real` still requires
+        ``gamma_only=False`` because it cannot know which half of the sphere a
+        reader expects.
     """
 
     def __init__(
@@ -305,19 +343,40 @@ class RestartCharge:
             A ``(nspin, nx, ny, nz)`` float array of the charge density in
             ABACUS units (e/Bohr^3).
         """
-        if self._gamma_only:
-            raise NotImplementedError(
-                "gamma_only restart files cannot be converted to real space yet"
-            )
         shape = tuple(int(n) for n in grid_shape)
         if len(shape) != 3 or any(n <= 0 for n in shape):
             raise ValueError(f"grid_shape must be three positive integers, got {shape}")
+        miller, rhog = self._full_sphere()
+        _check_grid_fits(miller, shape)
         npoints = int(np.prod(shape))
         real = np.empty((self.nspin,) + shape, dtype=float)
         for ispin in range(self.nspin):
-            full = _scatter_rhog(self._rhog[ispin], self._miller, shape)
+            full = _scatter_rhog(rhog[ispin], miller, shape)
             real[ispin] = (np.fft.ifftn(full) * npoints).real
         return real
+
+    def _full_sphere(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Return G-vectors and coefficients that span the whole sphere.
+
+        A gamma-only file stores one half of the G-vectors only, because the
+        density of a real Gamma-point calculation satisfies
+        ``rho(-G) = conj(rho(G))``. The missing half is reconstructed by
+        mirroring and conjugating the stored coefficients.
+
+        Returns:
+            The Miller indices of the full sphere and the matching coefficients,
+            shaped ``(nspin, ngm)``.
+        """
+        if not self._gamma_only or self.ngm == 0:
+            return self._miller, self._rhog
+        stored = np.sort(_miller_keys(self._miller))
+        mirror_miller = -self._miller
+        mirror_keys = _miller_keys(mirror_miller)
+        position = np.clip(np.searchsorted(stored, mirror_keys), 0, stored.size - 1)
+        missing = stored[position] != mirror_keys
+        miller = np.concatenate([self._miller, mirror_miller[missing]])
+        rhog = np.concatenate([self._rhog, np.conj(self._rhog[:, missing])], axis=1)
+        return miller, rhog
 
     @classmethod
     def from_real(
@@ -484,10 +543,15 @@ class Grid:
                 f.write(f"{self.data.shape[i]:5d} {self.cell[i,0] * box_factor/self.data.shape[i]:20.12f} {self.cell[i,1] * box_factor/self.data.shape[i]:20.12f} {self.cell[i,2] * box_factor/self.data.shape[i]:20.12f}\n")
             for i in range(len(self.atom_types)):
                 f.write(f"{self.atom_types[i]:5d} {self.atom_charges[i]:12.6f} {self.atom_positions[i,0] * box_factor:20.12f} {self.atom_positions[i,1] * box_factor:20.12f} {self.atom_positions[i,2] * box_factor:20.12f}\n")
-            flat_data = self.data.flatten() * data_factor
-            for i in range(0, len(flat_data), 6):
-                line_data = flat_data[i:i+6] 
-                f.write(" ".join(f"{x:17.11e}" for x in line_data) + "\n")
+            # Chargemol reads one (i, j) row per Fortran READ statement, and a
+            # list-directed READ discards the rest of the record it stopped in,
+            # so every row of the inner (z) axis has to end with a newline, as
+            # it does in the cubes ABACUS itself writes.
+            inner = int(self.data.shape[2])
+            for row in (self.data.reshape(-1, inner) * data_factor):
+                for i in range(0, inner, 6):
+                    line_data = row[i:i + 6]
+                    f.write(" ".join(f"{x:17.11e}" for x in line_data) + "\n")
     
     def save_cube(self, filename: str):
         """Save the grid data to a cube file in its original units."""

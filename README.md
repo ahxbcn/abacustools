@@ -1,5 +1,26 @@
 Collection of tools used for performing DFT calculation with ABACUS.
 
+## Python data types
+
+The core data types are importable straight from the package, so a script can
+work with structures, inputs and results without reaching into the `io`/`data`
+submodules:
+
+```python
+from abacustools import AbacusSTRU, AbacusATOM, ReadInput, Unitcell, UPF
+
+structure = AbacusSTRU.read("STRU")
+inputs = ReadInput("INPUT")
+```
+
+The exported set covers the file-handling types: the structures
+(`AbacusSTRU`, `AbacusATOM`, `AbacusAtomType`, `StructureConversionWarning`),
+the cell helper `Unitcell`, `INPUT` (`ReadInput`, `WriteInput`), the
+pseudopotential and orbital readers (`UPF`, `AbacusNAO`) and the Molden types
+(`MoldenShell`, `MoldenAtom`, `MoldenOrbital`). The names resolve lazily, so
+`import abacustools` stays cheap and a defining module is loaded only when its
+name is first used; `dir(abacustools)` lists the whole set.
+
 ## Command-line subcommands
 
 Subcommands are registered in the package with Python's
@@ -21,9 +42,10 @@ abacustools post bader -j JOB
 abacustools pp bader -j JOB
 ```
 
-The top-level families are `file`, `job`, `postprocess`, `workflow`, and `mp`.
-The `mp` family searches and downloads Materials Project entries as described
-at the end of this document.
+The top-level families are `file`, `job`, `database`, `postprocess`,
+`workflow`, and `mp`. The `database` family searches and downloads structures
+from many materials databases as described at the end of this document, and
+`mp` is the short spelling of `database --database mp`.
 
 ## Interactive menu
 
@@ -55,11 +77,13 @@ abacustools file stru structure.xyz STRU --cell 10 0 0 0 10 0 0 0 10
 Basic structure information can be inspected without converting the file:
 
 ```text
-abacustools file info STRU
-abacustools file info POSCAR --json
-abacustools file info structure.xyz --cell 10 0 0 0 10 0 0 0 10
-abacustools file info slab.STRU --coordination
-abacustools file info STRU --coordination voronoi --json
+abacustools file struinfo STRU
+abacustools file struinfo POSCAR --json
+abacustools file struinfo structure.xyz --cell 10 0 0 0 10 0 0 0 10
+abacustools file struinfo slab.STRU --coordination
+abacustools file struinfo STRU --coordination voronoi --json
+abacustools file struinfo *.vasp POSCAR --json
+abacustools file struinfo STRU --summary
 ```
 
 The report includes cell parameters, volume, density, element and label counts,
@@ -68,8 +92,8 @@ formula, space group, crystal system, point group with its Schoenflies symbol,
 Bravais lattice with the Pearson symbol, inversion symmetry, polar point group,
 the symmetry tolerances that were used, symmetry operation count, per-atom
 Wyckoff positions with their multiplicity and site symmetry, a separate list of
-symmetry-inequivalent atomic positions, and the ABACUS pseudopotential and
-orbital file of every label. The inequivalent list contains one representative
+symmetry-inequivalent atomic positions, and, when the input is read as an
+ABACUS `STRU`, the ABACUS pseudopotential and orbital file of every label. The inequivalent list contains one representative
 atom per symmetry-equivalent group together with the equivalent atom indices
 and multiplicity; when no two atoms are related by symmetry, as in `P1`, the
 list only repeats the per-atom table and is left out of the report.
@@ -110,6 +134,61 @@ reported as unavailable instead of being replaced silently. The work-function
 workflow uses the same vacuum analysis to find the direction of the
 electrostatic vacuum.
 
+Several structures can be listed at once, which reports only the fields that
+make them comparable: the file, the formula, the number of atoms, the space
+group with its number, the crystal system and the cell parameters, with the
+lengths in Angstrom, the angles in degree and the volume in Angstrom^3.
+`--summary` asks for that listing for a single structure as well. The listing
+leaves the rest of the report out, so it does not pay for the Wyckoff
+positions, the point group, the Bravais lattice, the magnetic and layer
+symmetry, the dimensionality, the coordination or the per-atom table;
+`--coordination` and `--layer-direction` are rejected together with it, and
+`--json` returns one summary object per structure instead of a report.
+
+`file kpt` inspects a KPT file, or writes a new one. Without `--output` it
+reports the model, the mesh or the k-point list, and validates the values;
+adding `--structure` also reports the k-spacing in 1/Angstrom that the mesh
+realizes. With `--output` it writes a mesh (`--mesh 9 9 9`, or `--spacing 0.03`
+together with `--structure`, which expands the target spacing into a mesh the
+way ABACUS does) or, with `--path` and `--structure`, the seekpath
+high-symmetry path as a line-mode KPT with `--npoints` points per segment:
+
+```text
+abacustools file kpt KPT --structure STRU
+abacustools file kpt --structure STRU --spacing 0.03 -o KPT.scf
+abacustools file kpt --structure STRU --path --npoints 20 -o KPT.band
+```
+
+The path follows the dimensionality of the structure: a bulk uses the seekpath
+high-symmetry path, a slab uses the in-plane path of its 2D Bravais lattice
+(hexagonal, square, rectangular or a generic oblique loop) with the vacuum
+direction pinned to `k = 0`, and a wire uses the single periodic direction.
+`--min-vacuum` sets the empty span that counts as vacuum (5 Angstrom by
+default), and `--path-mode auto|bulk|slab|wire` forces one of them; a
+zero-dimensional structure has no band path and is rejected.
+
+Two structures can be stacked into a heterojunction interface with pymatgen's
+coherent interface builder, which searches the Zur-McGuire lattice matches of
+the two surfaces and strains the film onto the substrate:
+
+```text
+abacustools file interface FILM SUBSTRATE -o HET --film-miller 0 0 1 --substrate-miller 0 0 1
+abacustools file interface FILM SUBSTRATE --list --max-strain 0.03 --max-area 200
+abacustools file interface FILM SUBSTRATE -o HET --film-thickness 3 --substrate-thickness 3 --gap 2.5 --vacuum 15
+```
+
+`--list` prints the candidate lattice matches (supercell area, length and angle
+mismatch, supercell size) without writing anything; otherwise the best match
+that satisfies `--max-atoms` is written. `--film-thickness` and
+`--substrate-thickness` size the two films in layers, or in Angstrom with
+`--in-angstrom`, `--gap` and `--vacuum` place the stack, `--termination` picks
+one of the surface terminations, and `--max-strain`, `--max-angle` and
+`--max-area` bound the lattice search. The film sits on top of the substrate
+along `c`. The pseudopotential and orbital of every element are inherited from
+the structure that contains it, film or substrate, with the configured resource
+library as the fallback, and the report names each file together with the reason
+for choosing it.
+
 Structures can also be edited into a new file. Every action reads a structure,
 writes a separate OUTPUT (existing files are only replaced with `--override`)
 and keeps the atom attributes it does not touch, such as pseudopotential and
@@ -122,6 +201,7 @@ abacustools file editstru slab      STRU -o SLAB  --miller 1 0 0 --layers 3 --va
 abacustools file editstru slab      STRU -o SLAB  --miller 1 1 0 --layers 4 --fix
 abacustools file editstru select    STRU -o SUB   --elements Si O
 abacustools file editstru select    STRU -o FREE  --indices 1 3 --remove
+abacustools file editstru substitute STRU -o DOPED --element Fe --elements Si
 abacustools file editstru fix       STRU -o FIXED --coords 0 0.2 --direction c --direct
 abacustools file editstru fix       STRU -o FIXED --elements O --move x y --free-others
 abacustools file editstru direct    STRU -o DIRECT
@@ -129,6 +209,7 @@ abacustools file editstru cartesian STRU -o CART
 abacustools file editstru primitive   STRU -o PRIM
 abacustools file editstru conventional STRU -o CONV
 abacustools file editstru standardize STRU -o STD --to-primitive
+abacustools file editstru symmetrize  STRU -o CLEAN --symprec 0.001
 abacustools file editstru all-slabs   STRU --miller 1 1 0 --output-prefix SLAB
 ```
 
@@ -142,6 +223,27 @@ Selections are additive filters (an atom must match every filter), while
 `--indices` are one-based, as in the other abacustools commands. `--coords`
 uses Cartesian coordinates unless `--direct` requests fractional ones, and
 `--direction` accepts `a`/`b`/`c` or `x`/`y`/`z`.
+
+`substitute` replaces the atoms selected by `--indices`, `--elements` or
+`--coords`/`--direction` with `--element`. The new atoms take the mass of that
+element, and their pseudopotential and orbital are chosen in a fixed order: when
+the input structure already contains the element, the files that element uses
+there are reused, so a doped cell stays consistent with its host; otherwise they
+come from the configured resource library of `job prepare` (`--library` and
+`--variant` select it, with the `ABACUS_PP_PATH`/`ABACUS_ORB_PATH` fallbacks),
+and `--pp`/`--orb` override either choice. `--basis auto|lcao|pw` decides
+whether an orbital is needed at all; `auto` follows the input structure, and a
+plane-wave structure drops the orbital. The command reports the chosen
+pseudopotential and orbital together with the reason for each, `--label` names
+the new species, and `--keep-moments` keeps the magnetic moments of the
+replaced atoms, which are cleared otherwise.
+
+The STRU reader follows the newer ABACUS conventions as well: the
+`Cartesian_angstrom`, `Cartesian_au` and
+`Cartesian_angstrom_center_{xy,xz,yz,xyz}` coordinate modes, `#` comment
+annotations after the block keywords, the per-atom force field
+(`f`/`force`/`forces`, in eV/Angstrom) and the `pp_type` column of
+`ATOMIC_SPECIES` are all parsed, kept on the atoms and written back.
 
 `direct` and `cartesian` rewrite the same structure with an
 `ATOMIC_POSITIONS Direct` or `ATOMIC_POSITIONS Cartesian` block. Atoms, cell and
@@ -178,6 +280,16 @@ deviations of the standardize action instead of rounding them away, and
 `--symprec`/`--angle-tolerance` set the tolerances of the symmetry search.
 Pseudopotential, orbital and magnetic data travel with the atoms.
 
+`symmetrize` cleans up a structure instead of changing its cell setting. spglib
+finds the space group, the atomic positions are averaged with their symmetry
+images and the lattice is strained onto the metric that space group requires, so
+the small numerical errors disappear and the symmetry of the result is exact.
+The cell setting, the number and order of the atoms and every atom attribute are
+kept, which distinguishes the action from `standardize` and `conventional`.
+`--symprec` sets which deviations count as noise, so raise it above the errors
+you want to remove (1e-5 would round away almost nothing), and `--keep-cell`
+idealizes the positions only and leaves the lattice as it is.
+
 `all-slabs` asks pymatgen for every symmetrically distinct termination of one
 set of Miller indices, which matters for polar or mixed-terminated surfaces
 where only one cut is not enough. `--min-slab-size` and `--min-vacuum-size`
@@ -189,7 +301,9 @@ termination is written to its own file named after `--output-prefix`, such as
 Conversions issue a `StructureConversionWarning` when ABACUS-specific data
 such as pseudopotential/orbital filenames, spin settings, velocities,
 movement constraints, or `NUMERICAL_DESCRIPTOR` cannot be represented by the
-target format. Standard XYZ files do not contain a periodic cell; provide
+target format. Trajectories are converted with `file traj`, which reads and
+writes any multi-frame format that ASE supports, so an `extxyz` file becomes
+an ASE `.traj`, a plain `.xyz` or an `.xsf` for a viewer of choice. Standard XYZ files do not contain a periodic cell; provide
 `--cell` when converting one to `STRU`.
 
 Complete ABACUS input directories can be prepared with a resource library
@@ -215,17 +329,31 @@ resources:
       orb: /path/to/Dojo-NC-SR/Orbitals
 ```
 
-The KPT file shipped with each generated job is controlled by `--kpt` and
-`--kpt-model`. The gamma and MP models take three or six mesh values, while the
-direct, cartesian and line models take one group per k-point or node, so the
-option is repeated for every group:
+The K-point mesh written by `job prepare` is controlled by `--kpt` and
+`--kpt-model`, which support the two mesh models gamma and MP with three or six
+values:
 
 ```text
 abacustools job prepare -f STRUCTURE --kpt 9 9 9
-abacustools job prepare -f STRUCTURE --kpt 0 0 0 --kpt 0.5 0 0 --kpt-model direct
-abacustools job prepare -f STRUCTURE \
-  --kpt 0 0 0 10 G --kpt 0.5 0.5 0 1 X --kpt-model line
+abacustools job prepare -f STRUCTURE --kpt 9 9 9 0 0 0 --kpt-model mp
 ```
+
+Band paths and explicit k-point lists are prepared with `abacustools file kpt`
+or by placing a KPT file next to the structure.
+
+`--job-type` defaults to `scf`. The basis is selected with `--basis pw|lcao`
+and defaults to `lcao` (the configured `abacus.default_basis`); pass
+`--basis pw` for a plane-wave job.
+
+Magnetic and DFT+U settings are prepared with `--nspin`, `--soc`,
+`--init-mag`, `--afm` and `--dftu-param`. `--dftu-param ELEMENT [ORBITAL] U`
+enables DFT+U for an element: set U in eV, and optionally the correlated
+orbital (`p`, `d` or `f`) before it; the orbital is inferred from the element
+type when omitted. It repeats for several elements. Initial magnetic moments
+require a spin-polarized run (`--nspin 2` or `--nspin 4`), and `--soc`
+requires `--nspin 4`; a conflicting choice is an error rather than a silent
+override. `--kpt-model` applies only together with `--kpt` and warns when it
+is given alone.
 
 Generated jobs are self-contained: the referenced pseudopotentials and orbitals
 are symlinked into the job directory (copied with `--copy-resources`), and the
@@ -234,15 +362,23 @@ preparing directories and a source `STRU` containing a `PAW_FILES` block is
 rejected instead of producing a job with missing files. A
 plane-wave job (`--basis pw`) never ships or references numerical orbitals,
 even when the source `STRU` contains a `NUMERICAL_ORBITAL` block; LCAO jobs
-require an orbital for every element. When neither `--kpt` nor a KPT file,
-`kspacing` or `gamma_only` is available, a 1x1x1 Gamma mesh is written and a
-warning is issued.
+require an orbital for every element. The packaged templates set
+`kspacing 0.14`, so a prepared job gets a real k-point mesh instead of a
+single Gamma point: no `KPT` file is written and ABACUS builds the mesh from
+`kspacing`. An explicit `--kpt` overrides the template `kspacing`, and a `KPT`
+file next to the structure is used when `kspacing` was not set explicitly.
+When the k sampling is disabled (`kspacing 0`) and no KPT file is available, a
+1x1x1 Gamma mesh is written and a warning is issued. A structure with a vacuum
+layer (slab, wire or molecule) triggers a warning that suggests the
+three-value `kspacing` form with a large value along the vacuum.
 
 The basis defaults of `basis_settings` (solver, diagonalization settings) are
 applied for the basis the job ends up using, so `--set basis_type pw` also
 selects the plane-wave solver. The basis may be given only once: `--basis` and
 `--set basis_type`, or `--basis` and a template with another `basis_type`, are
-rejected instead of producing a mixed INPUT.
+rejected instead of producing a mixed INPUT. A `ks_solver` that does not belong
+to the selected basis (for example `genelpa` with `--basis pw`) is rejected
+before any directory is created.
 
 The names given to `--set` are checked against the ABACUS parameter list shipped
 in `input-params.json`, so a mistyped parameter is reported with a suggestion
@@ -253,6 +389,40 @@ Generated folder names default to a zero-padded index. `--folder-syntax` builds
 them from an f-string over `{x}` (the source file name) and `{i}` (the index),
 such as `{x[:-5]}` or `{i:03d}`; any other expression, conversion or path that
 escapes the output directory is rejected.
+
+A whole batch can be handed to a runner such as `abacustest` with one
+configuration file next to the generated directories:
+
+```text
+abacustools job prepare -f 'structures/*.cif' -o runs/ --submit-config
+abacustools job prepare -f 'structures/*.cif' -o runs/ --submit-config \
+    --abacus-command 'mpirun -np 32 abacus'
+```
+
+`--submit-config` writes `submission.batch.filename` (`job.json`) into the
+output directory, with the generated directory names listed in the `{examples}`
+placeholder, so the `run_dft` entry of an abacustest or Bohrium job points at
+exactly the directories that were prepared. The template is the inline
+`submission.batch.template`, or the file named by
+`submission.batch.template_file`:
+
+```yaml
+submission:
+  batch:
+    generate: false          # --submit-config turns it on for one run
+    filename: "job.json"
+    template_file: /path/to/my/abacustest.json
+```
+
+The placeholders are `{examples}` (the directory names as a JSON array),
+`{count}`, `{job_type}` and `{abacus_command}`. Braces that are not one of them,
+such as the ones of the JSON itself, are left alone, so a JSON template needs no
+escaping and an unknown placeholder is an error rather than a silently broken
+file. `--submit-config` forces the file on for one run; when it is absent the
+configured `submission.batch.generate` decides, and there is no command-line
+switch to turn an enabled default off. The
+packaged template is an abacustest job for Bohrium; review its image, machine
+type, account and command before submitting.
 
 Pseudopotential and orbital paths are configured through libraries rather than
 through command-line paths: `--library NAME` selects one entry of
@@ -390,6 +560,28 @@ largest cutoff encoded in their file names (such as the `150Ry` of
 orbital with a 100 Ry one gets 150 Ry. An explicitly requested `ecutwfc` is
 kept, but a value below the orbital cutoff is reported as a warning.
 
+An existing job can be moved to another library, or to another orbital variant
+of the same library, without preparing it again. `job setpporb`
+re-resolves every element of the job's `STRU` from the selected library,
+rewrites the `ATOMIC_SPECIES` pseudopotential name and the `NUMERICAL_ORBITAL`
+entry of each species, installs the new files, and drops the resource files the
+`STRU` no longer references:
+
+```text
+abacustools job setpporb JOB --library sg15
+abacustools job setpporb JOB1 JOB2 --library apns --variant precision
+abacustools job setpporb JOB --library sg15 --variant SZ --copy-resources
+abacustools job setpporb JOB --library sg15 --dry-run
+```
+
+`--library` and `--variant` read the same `resources` configuration as
+`job prepare`, and `--dry-run` reports the resolved names and the files it would
+install or remove without writing anything. New files are copied when the job
+already held copies and symlinked when it held symlinks; `--copy-resources` and
+`--symlink` force either. Only files whose name the old `STRU` referenced are
+removed, and when the new numerical orbitals carry a higher plane-wave cutoff
+than the job's `ecutwfc`, a warning reports the shortfall.
+
 Both the top-level parser and each subcommand provide their own help text:
 
 ```text
@@ -505,6 +697,26 @@ The postprocessing stage reports total energy per atom, convergence deltas,
 incomplete tasks, a recommended first value within the tolerance, a JSON
 report, and a convergence plot.
 
+A band structure along the seekpath high-symmetry path is prepared from a
+reference input directory:
+
+```text
+abacustools workflow band prepare -j JOB --npoints 20
+abacustools workflow band postprocess -j JOB
+```
+
+The prepare stage writes `band_scf/`, an SCF job that also stores the charge
+density, and `band_nscf/`, an NSCF job whose line-mode KPT follows the path and
+which reads the SCF density back and writes `BANDS_1.dat`; run the SCF first.
+`--nbands` sets the number of bands of the NSCF step. The path itself follows
+the dimensionality of the structure as in `file kpt --path`: seekpath for a 3D
+bulk, the in-plane path of the 2D lattice for a slab with the vacuum direction
+at `k = 0`, and the periodic axis for a 1D wire. `--min-vacuum` and
+`--path-mode auto|bulk|slab|wire` control that choice, and the workflow manifest
+records the dimensionality and the method that produced the path. The postprocess stage
+reports the band gap with its VBM and CBM, writes `band_results.json` next to
+the workflow manifest, and plots the bands to `band.png`.
+
 The equation of state can be fitted from volume-scaled calculations:
 
 ```text
@@ -608,6 +820,29 @@ the k-point weights come from the `dm*_nao.txt` density-matrix headers.
 This is an ABACUS-NAO COHP/COOP implementation and is not a standard LOBSTER
 pCOHP projection.
 
+An ABACUS LCAO wavefunction can be exported to the Molden format, for example
+to visualize the orbitals in Molden, Multiwfn or Avogadro:
+
+```text
+abacustools postprocess molden -j JOB
+abacustools postprocess molden -j JOB -o orbitals.molden --gto-primitives 8
+abacustools postprocess molden -j JOB --atoms-unit angstrom --json
+```
+
+The command reads the LCAO coefficients from `WFC_NAO_GAMMA*` (or the
+develop `wf*_nao.txt` names and the `WFC_NAO_K*` files), expands every
+numerical atomic orbital into a contracted Gaussian fit, and writes
+`wfc.molden` below `JOB`. Valence counts for the `[Nval]` block come from the
+pseudopotentials, and `[5D7F]`/`[9G]` are written whenever the basis reaches
+that angular momentum, so the pure spherical harmonics of ABACUS are kept.
+`nspin 2` jobs write both spin channels into one file.
+
+The Molden format stores a single real set of orbitals, so the job must be a
+`gamma_only 1` run, or a non-gamma run whose selected k-point is real; use
+`--kpoint` to pick one k-point of the latter. `--gto-primitives` sets the
+number of Gaussians per numerical orbital (default 6) and the printed report
+quotes the largest relative radial fit error.
+
 DOS and projected DOS can be processed from an ABACUS output directory:
 
 ```text
@@ -626,6 +861,128 @@ Use `--combined` to overlay the total DOS with the species-projected DOS
 with `--atom-index` for single-atom projections, and `--list` (optionally with
 `--json`) to list the available species, shells, orbitals and atoms.
 
+Charge densities can be inspected without leaving the command line. The
+command reads the density of a job, reports the integrated electrons next to
+the valence electrons of the atoms, and writes it as a cube, a planar profile
+or a two-dimensional slice:
+
+```text
+abacustools postprocess chg -j JOB
+abacustools postprocess chg -j JOB --cube charge.cube
+abacustools postprocess chg -j JOB --spin difference --cube magnetization.cube
+abacustools postprocess chg -j JOB --difference OTHER_JOB --cube bonding.cube
+abacustools postprocess chg -j JOB --profile c
+abacustools postprocess chg -j JOB --slice c --slice-index 0.5 --slice-plot
+abacustools postprocess chg -j JOB --json
+```
+
+`--spin` selects what every action works on: the total density, the up or down
+channel of an `nspin 2` calculation, or their difference, whose integral is the
+magnetization in Bohr magneton. `--difference OTHER_JOB` subtracts another job
+before the analysis and turns the command into a general density-difference
+tool, as long as both grids match, so a bonding or adsorption difference no
+longer needs a prepared `workflow chgdiff` set.
+
+The density is taken from the cubes that an SCF calculation writes with
+`out_chg 1`, and both ABACUS naming conventions are read: the LTS branch writes
+`SPIN1_CHG.cube` while develop writes `chg.cube` or `chgs1.cube`, and a
+geometry-step token such as `chgs1g3.cube` is recognised, with the last step
+used when the job wrote one file per step. A job that only stores the
+`*-CHARGE-DENSITY.restart` backup, which is what `out_chg 0` leaves behind, is
+converted from `rho(G)` instead: the structure and its pseudopotentials give
+the cell and the valence charges, and the FFT grid comes from the log of the
+current calculation, with `--grid NX NY NZ` as an override. A `gamma_only`
+restart file, the usual case at the Gamma point, stores one G-vector of every
+`+G`/`-G` pair, and the missing half is rebuilt with `rho(-G) = conj(rho(G))`.
+The summary compares the
+integrated charge with the valence charge of the atoms that the cube stores, so
+a deviation reports either a charged cell or the truncation of the real-space
+grid; the comparison is left out for a spin channel or a difference, where it
+has no meaning.
+
+`--quantity` moves the analysis to a field derived from the selected density,
+with the definitions of Quantum ESPRESSO's `pp.x`: `rdg` is the reduced density
+gradient (`plot_num=19`), `sl2rho` is `sign(lambda_2) rho` built from the middle
+eigenvalue of the density Hessian (`plot_num=20`), and `dori` is the density
+overlap regions indicator (`plot_num=123`). The derivatives are evaluated in
+reciprocal space, as `pp.x` does, so the two codes agree on the same grid, and
+`--cube`, `--profile` and `--slice` work on the derived field as well.
+`--nci-plot` draws the non-covalent interaction plot of the density, the
+reduced density gradient against `sign(lambda_2) rho`, keeping the grid points
+below `--nci-rho-max` (`0.05` e/Bohr^3 by default) so that the cores and the
+bonds stay out of the plot.
+
+`iri` is the interaction region indicator of Multiwfn, `|grad rho| / rho**1.1`,
+which shows covalent and non-covalent interactions in one function; points
+below `5e-5` e/Bohr^3 are replaced by zero instead of the placeholder Multiwfn
+uses. The `-promolecular` variants and `dg` build the promolecular reference
+from the `PP_RHOATOM` table of the same UPF files that the calculation used:
+the reference is the superposition of the pseudoatomic densities of the atoms,
+and `dg` is the independent gradient model function `sum_A |grad rho_A| -
+|grad rho|`, whose plot against `sign(lambda_2) rho` comes from `--igm-plot`.
+These three need the structure and its pseudopotentials, so they cannot be
+combined with `--difference`, and `--promolecular-plot` draws the NCI plot of
+the reference density itself.
+
+The Hirshfeld-partitioned independent gradient model, IGMH, replaces the frozen
+promolecular atomic densities with `rho_A = w_A rho`, where the weights come
+from the Hirshfeld partition of the calculated density. The `igmh-i` variant
+uses the self-consistent Hirshfeld-I weights instead:
+
+```text
+abacustools postprocess chg -j JOB --quantity igmh --igmh-plot
+abacustools postprocess chg -j JOB --quantity igmh-i --igmh-plot
+```
+
+Both quantities are written in the same units as `dg` and can be exported with
+`--cube`, `--profile` or `--slice`. The partition uses the total density of the
+job and the same pseudopotential references as `postprocess hirshfeld`, so these
+analyses require `--spin total`, cannot be combined with `--difference`, and
+need a pseudopotential with `PP_RHOATOM` for Hirshfeld; the Hirshfeld-I variant
+additionally needs `PP_PSWFC`. The data API also accepts explicit reference
+densities for that variant.
+Without `--igmh-plot`, `igmh` and `igmh-i` are still available as fields through
+`--quantity`.
+
+`--profile AXIS` writes the in-plane average of every plane in e/Angstrom^3 to
+`chg_profile_<axis>_average.dat`, or the charge of every plane in e with
+`--profile-kind integral`, whose sum is the total number of electrons.
+`--slice AXIS` writes the plane closest to the fractional `--slice-index` (0.5
+by default) as three columns with the two in-plane axes and the value, and
+`--slice-plot` draws it as a colour map together with the atoms that the plane
+crosses; `--no-atoms` leaves those markers out and `--vmin`/`--vmax` fix the
+colour range. `--data-output`, `--slice-output`, `--plot` and `--slice-plot`
+change the file names, and a plot flag without a name writes
+`chg_profile_<axis>_<kind>.png` or `chg_slice_<axis>_<position>.png`.
+
+Molecular-dynamics trajectories are written to standard formats. ABACUS
+appends one block per dumped step to `OUT.<suffix>/MD_dump`, holding the cell,
+the positions and, when `dump_force`, `dump_vel` and `dump_virial` are enabled,
+the forces, the velocities and the virial; `postprocess md` turns those blocks
+into a trajectory file, with the energy, temperature and pressure of every step
+attached from the running log:
+
+```text
+abacustools postprocess md -j JOB
+abacustools postprocess md -j JOB -o traj.extxyz --first 100 --last 2000 --stride 5
+abacustools postprocess md -j JOB -o trajectory.traj --json
+```
+
+The suffix of the output selects the format, which is any format ASE writes,
+such as `extxyz`, `xyz`, `traj` or `xsf`, and `--format` sets it explicitly.
+Positions are in Angstrom, forces in eV/Angstrom, velocities in Angstrom/fs and
+the virial in kBar, as in `MD_dump` itself. A job that wrote no `MD_dump` is
+read from its per-step `STRU_MD_*` structures instead, which is what `out_stru 1`
+produces in the job directory of the LTS branch and in a directory per step of
+develop; those frames carry positions and velocities but no forces or virial.
+
+`file traj` converts a trajectory between formats with the same machinery:
+
+```text
+abacustools file traj trajectory.extxyz trajectory.xyz
+abacustools file traj dump.traj dump.extxyz --stride 10
+```
+
 Mayer bond orders can be analyzed from an ABACUS LCAO calculation with
 `out_mat_hs=1` (and `out_dm=1` for gamma-only jobs):
 
@@ -642,6 +999,173 @@ layout (`data-*-S` with `SPIN1_DM`/`SPIN2_DM` or `WFC_NAO_K*.txt`) and the
 develop layout (`sk*_nao.txt` with `dm*_nao.txt`), including the gamma-only
 names that omit the k-point index. The develop density matrices are used
 directly, so no wavefunction reconstruction is needed there.
+
+A run that reduced the k-point mesh (`symmetry 1`) is analyzed on the full
+mesh. The analyzer reads the mesh and the irreducible k-points from
+`OUT.*/kpoints`, rebuilds the space-group operations from the structure, and
+evaluates every star member through the atom permutation of the operation that
+reaches it. A bond order is quadratic in the k-resolved density matrix, so the
+star cannot be folded into a k-point weight; expanding it is what makes a
+`symmetry 1` run agree with the `symmetry 0` and `symmetry -1` runs of the same
+calculation, which the analyzer reads directly. The weights are rebuilt from
+the star sizes as well, because the `kpoints` file prints them with four
+decimals only, which would bias the totals by about 0.2%.
+
+An output that does not record how the mesh was reduced - an older format, or a
+magnetic `symmetry 2`/`symmetry 3` run whose reduction is not the
+crystallographic one - cannot be expanded; the analyzer says so and asks for a
+`symmetry 0` or `symmetry -1` calculation instead.
+
+Bader charges are integrated over the Bader volumes of a job with the external
+[Henkelman](https://theory.cm.utexas.edu/henkelman/code/bader/) program or with
+the Python [baderkit](https://github.com/SWeavz/baderkit) library:
+
+```text
+abacustools postprocess bader -j JOB
+abacustools postprocess bader -j JOB --backend baderkit
+abacustools postprocess bader -j JOB --reference OTHER.cube --vacuum auto --keep-cubes
+abacustools postprocess bader -j JOB --json -o bader.json
+```
+
+Both backends partition the same density, which comes from the `SPIN*_CHG.cube`
+of `out_chg 1` or from the `*-CHARGE-DENSITY.restart` backup, converted from
+`rho(G)` with the FFT grid of the running log (`--grid NX NY NZ` overrides it)
+and the lattice constant of the STRU (`--lat0`). `--cube` selects another cube
+and `--reference` partitions with another density. `--vacuum off|auto|DENSITY`
+follows the flag of the external program, where `auto` is the 1e-3
+e/Angstrom^3 cutoff. An `nspin 2` job integrates the magnetization over the
+Bader volumes of the total density, which is what gives the per-atom spin
+moments in Bohr magneton.
+
+The external program is resolved from `--bader-exe`, the `BADER_EXE`
+environment variable or `bader.exe` in `~/.abacustools/config.yaml`, and writes
+its `ACF.dat` into the working directory that `--workdir` or `--keep-cubes`
+preserves. The `baderkit` backend needs the optional package
+(`pip install abacustools[baderkit]`) and runs the partition in the Python
+process instead, so it needs no executable. `--baderkit-method` selects one of
+its `neargrid`, `neargrid-weight`, `ongrid` and `weight` algorithms; the
+default `neargrid` is the partitioning the external program applies, which
+makes the two backends agree to a few 1e-3 e on the same cube.
+
+Charges are reported next to the valence electron count of the pseudopotential,
+so `net charge = z_valence - bader_charge` is positive for an electron-poor
+atom. Positions and distances are in Angstrom and volumes in Angstrom^3, for
+both backends.
+
+Hirshfeld (stockholder) atomic charges are computed directly from the
+charge density of a job, using the spherically averaged free-atom densities of
+the pseudopotentials as the promolecule:
+
+```text
+abacustools postprocess hirshfeld -j JOB
+abacustools postprocess hirshfeld -j JOB --json
+```
+
+The density is read from the charge-density cube or the `*-CHARGE-DENSITY.restart`
+file, and the proatoms are summed over lattice images so the promolecule is
+periodic. CM5 charges (Marenich, Jerome, Cramer and Truhlar, *J. Chem. Theory
+Comput.* 2012, 8, 527) add Pauling-bond-order weighted pairwise corrections to
+the Hirshfeld charges; the parameters of the paper's Table 1 and its covalent
+radii are built in, so no extra file is needed:
+
+```text
+abacustools postprocess hirshfeld -j JOB
+abacustools postprocess hirshfeld -j JOB --no-cm5
+```
+
+Hirshfeld-I (Bultinck, Van Alsenoy, Ayers and Carbo-Dorca, *J. Chem. Phys.*
+2007, 126, 144111) makes the promolecule self-consistent instead of fixing it
+to the neutral atoms.  Each iteration rebuilds every atomic reference density at
+the population the previous iteration assigned to the atom, which removes the
+dependence on an arbitrary reference and gives charges that track the
+electrostatic-potential ones much better.  The reference densities at integer
+populations come from the pseudo-atomic wavefunctions (`PP_PSWFC`) of the
+pseudopotentials, filled by Aufbau around the neutral configuration and summed
+over lattice images like the plain promolecule:
+
+```text
+abacustools postprocess hirshfeld -j JOB --hirshfeld-i
+abacustools postprocess hirshfeld -j JOB --hirshfeld-i --json
+abacustools postprocess hirshfeld -j JOB --hirshfeld-i --max-iter 300 --tol 1e-4
+```
+
+A pseudopotential without `PP_PSWFC` (many ONCV files) has no charged reference
+states, so pass a directory of reference densities with `--references DIR`
+instead.  Every `<element>_<population>.dat` file there holds two columns, `r`
+in Angstrom and `rho(r)` in `e/Angstrom^3`, with one file per integer valence
+population the iteration may need.
+
+DDEC6 and DDEC3 net atomic charges, spin moments and bond orders are
+computed with the external [Chargemol](https://ddec.sourceforge.net) program,
+which partitions the valence density of a job:
+
+```text
+abacustools postprocess ddec -j JOB
+abacustools postprocess ddec -j JOB --charge-type DDEC3 --json -o ddec.json
+abacustools postprocess ddec -j JOB --no-spin --threshold 0.1
+abacustools postprocess ddec -j JOB --pairs 1-2,1-3 --cutoff 3.0
+abacustools postprocess ddec -j JOB --no-bos --threads 16
+abacustools postprocess ddec -j JOB --core-electrons "26 10" --workdir ddec
+```
+
+The command writes the `valence_density.cube` (and the `spin_density.cube` of
+an `nspin 2` job) that the program expects, together with its
+`job_control.txt`, into a working directory, runs Chargemol there and parses
+the `*.xyz` results, so the tables list the net charge, the sum of bond orders
+and, for a spin-polarized job, the DDEC spin moment of every atom next to the
+bond orders and their periodic images. `--workdir` and `--keep` preserve that
+directory, `--output` writes the complete report as JSON and `--json` prints
+it. The executable and the reference density tables are set by
+`chargemol.exe` and `chargemol.atomic_densities` in
+`~/.abacustools/config.yaml`, and can also come from the `CHARGEMOL_EXE` and
+`CHARGEMOL_ATOMIC_DENSITIES` environment variables or from
+`--chargemol-exe` and `--atomic-densities`.
+
+A valence-only cube makes Chargemol insert the core electrons from its
+`atomic_densities` tables, which fixes the number of core electrons of every
+element to `Z - z_valence` of the pseudopotential; the command derives that
+number from the atom columns of the density and checks the tables before the
+program starts, so the trivalent lanthanide pseudopotentials of the APNS
+library, whose 4f electrons sit in the core, or any other element whose core
+count the distribution does not ship, are reported instead of failing inside
+Chargemol. `--core-electrons "26 10"` overrides the count of one element. The
+charge density should come from `out_chg 1 10` so that the cube carries enough
+digits, its grid has to be finer than 0.25 Bohr per direction (0.14 Bohr is
+the recommended spacing), and a charge-density cube of a PAW or ultrasoft
+calculation does not integrate to the valence charge, so only norm-conserving
+pseudopotentials work. A molecule in a box wants
+`--periodicity false false false`.
+
+The net charge of the cell follows the `nelec` and `nelec_delta` keywords of
+INPUT: `nelec 0`, the default, means that the electrons are the sum of the
+valence charges of the atoms, so the cell is neutral, while a positive value
+describes a charged cell, and `--net-charge` overrides the derived value. The
+command also compares the electrons of the cube with the charge of the cell
+before Chargemol runs and stops with an explanation when they disagree, which
+happens when the cube and INPUT belong to different calculations or when the
+density comes from another grid or another `--cube`.
+
+A job that kept no cube is read from its `*-CHARGE-DENSITY.restart` file with
+the same conversion that `postprocess chg` uses: the finest FFT grid the
+running log reports, the valence charges of the pseudopotentials and the
+`LATTICE_CONSTANT` of STRU, with `--grid` and `--lat0` as overrides. Both
+routes agree to about 1e-4 e, so a job whose `out_chg` was turned off can still
+be analysed.
+
+Bond orders and overlap populations are the expensive part of a Chargemol run:
+the time grows with the number of atoms times the number of grid points. On 16
+threads, 64 atoms on a 135^3 grid (2.5 million points) took 15 s, 224 atoms on
+a 256x250x150 grid (9.6 million points) 66 s and 224 atoms on a 320x320x180
+grid (18 million points) more than two minutes, while the same job with
+`--no-bos` finished in 109 s. The charges and spin moments are identical with
+and without bond orders, so a large system is best analysed with `--no-bos`
+first. `--threads` sets `OMP_NUM_THREADS` of the OpenMP binary, and one
+Chargemol instance should run at a time.
+
+Chargemol 3.5 crashes on a valence-only cube when a spin density is present,
+because `module_format_valence_cube_density` never allocates the arrays that
+its spin reader uses. The command recognises the crash, explains it and
+suggests either a patched build of Chargemol or `--no-spin`.
 
 Complex calculation workflows are organized by task and stage. The BSSE
 workflow currently provides the preparation and postprocessing framework:
@@ -671,8 +1195,85 @@ sbatch runabacus.sh  # submit from each generated job directory
 abacustools workflow elastic postprocess -j JOB
 ```
 
-The fitted elastic tensor and Voigt moduli are written to
-`elastic_results.json` under `JOB`.
+The preparation stage analyses the reference cell and records its point group,
+space group and the number of independent elastic constants in
+`workflow_elastic.json`. The postprocessing stage fits the unconstrained 6x6
+tensor from the stresses and then projects it onto the subspace the crystal
+symmetry allows, so the numerical noise of the stresses no longer shows up as
+components the symmetry forbids or as a tensor that is not symmetric in its
+two index pairs. Both tensors, the largest change the projection made, the
+independent constants and the Voigt moduli are written to
+`elastic_results.json` under `JOB`:
+
+```text
+symmetrization residual: <largest component the projection changed>, in GPa
+independent constants (GPa): C11 = <...>, C12 = <...>, C44 = <...>
+```
+
+Use `--no-symmetrize` to keep the raw fit; `--symprec` sets the tolerance of
+the symmetry analysis, which defaults to 0.01 Angstrom so that a relaxed cell
+is still recognised as symmetric.
+
+A two dimensional material is recognised automatically: when the reference
+cell has vacuum along one direction, only the strain components of the two
+periodic axes are prepared and fitted, because the components that involve the
+vacuum direction are set by the cell rather than by the material. The report
+then carries the in-plane block in `elastic_tensor_2d`, converted to the two
+dimensional unit N/m with the cell height along the vacuum direction, its
+independent constants, and the directional in-plane Young's modulus and
+Poisson ratio:
+
+```text
+abacustools workflow elastic prepare -j JOB --dimension auto --strains independent
+abacustools workflow elastic postprocess -j JOB
+```
+
+`--dimension 3d` forces the three dimensional treatment, and `--dimension 2d`
+refuses a cell without vacuum. For a hexagonal sheet the in-plane symmetry
+leaves two independent constants, so a single strain direction is enough and
+the run needs five calculations instead of twenty five.
+
+For a crystal with symmetry there is a second, cheaper route: strain only one
+representative of every symmetry orbit of strain directions and fit the
+independent constants directly, instead of straining all six directions and
+fitting the full tensor:
+
+```text
+abacustools workflow elastic prepare -j JOB --strains independent
+abacustools workflow elastic postprocess -j JOB --fit independent
+```
+
+The preparation stage picks the directions whose information raises the rank
+of the fit, so a cubic crystal needs two of them (`xx` and `yz`, nine jobs
+instead of twenty five), a hexagonal or trigonal one three, and a tetragonal
+one four; when no symmetry relates the directions all six are kept. The
+postprocessing stage then writes the stiffness matrix as a combination of the
+symmetry allowed basis tensors and fits its coefficients in one least squares,
+which reports the independent constants without a separate symmetrisation
+step.
+
+Elastic constants can also be obtained from the curvature of the total energy
+instead of from the stresses. The `energy-strain` workflow strains the cell
+along a set of patterns and fits
+
+```text
+E(e) = E0 + (V0 / 2) sum_k a_k (e B_k e)
+```
+
+```text
+abacustools workflow energy-strain prepare -j JOB
+sbatch runabacus.sh  # submit from each generated job directory
+abacustools workflow energy-strain postprocess -j JOB
+```
+
+The patterns are picked so that their curvature covers every independent
+constant: three for a cubic crystal (`xx`, `yz` and `xx + yy`, twelve strained
+calculations), and one per constant in the lower symmetry classes. Every
+pattern is strained with amplitudes that are symmetric about zero, which keeps
+the stress of the reference cell out of the curvature; that stress is reported
+separately, projected on the patterns, as a check of the reference. The fit,
+the independent constants, the moduli and the root mean square energy residual
+are written to `energy_strain_results.json` under `JOB`.
 
 Phonon spectra can be calculated with finite differences using Phonopy. The
 prepare stage generates displaced supercell SCF jobs, and the postprocess
@@ -688,6 +1289,126 @@ Use `--supercell A B C` to set the supercell explicitly. Without it, the
 supercell is selected so each lattice vector is at least 10 Angstrom long.
 Custom paths can be passed as JSON with `--qpath` and
 `--high-symm-points`.
+
+The report carries the entropy, the free energy and the heat capacity at
+`--temperature`, which defaults to 298.15 K. They are written in eV and eV/K
+per cell of the reference structure, the unit the vibration workflow reports
+its thermochemistry in, and the `units` block of the JSON names them. Phonopy
+states its thermal properties per mole of cells, a free energy in kJ/mol and an
+entropy and heat capacity in J/(K mol), so they are converted on the way into
+the report rather than passed through with the wrong label.
+
+Every report carries the Gamma point modes with their degeneracy. Three
+optional analyses extend it, and each one is off by default because it either
+costs time or enlarges the report:
+
+```text
+abacustools workflow phonon postprocess -j JOB --debye
+abacustools workflow phonon postprocess -j JOB --pdos --pdos-plot PDOS.png
+abacustools workflow phonon postprocess -j JOB --irreps
+```
+
+`--debye` fits a Debye frequency to the total DOS and reports it in THz and as
+a temperature. The Debye model is fitted below the quarter point of the
+spectrum and extrapolated to the `3 N` modes of the cell, so for a material
+whose optical branches carry much of the DOS the cut off can exceed the highest
+calculated frequency; the value is then a thermodynamic Debye temperature
+rather than the low temperature calorimetric one. `--pdos` reports the DOS projected onto every atom and
+Cartesian direction as one labelled record per projection, and plots the
+projections against the total DOS. `--irreps` resolves the space-group
+irreducible representation of each Gamma point mode by its Mulliken symbol,
+using `--symprec` as the symmetry tolerance, and plots the modes labelled with
+their symbols. `--irreps` needs a structure whose symmetry can be found, so it
+fails with an explicit message when the tolerance does not match the geometry.
+Phonopy leaves the symbol unset for point groups whose character table it
+cannot index unequivocally, such as the `-3m` of a diamond-like primitive
+cell; those modes are reported by their dimension and point group instead,
+for example `3D (-3m)`. `--debye` warns and omits the value when the fit does
+not converge, which happens when the DOS has no Debye-like low-frequency
+region.
+
+The projections are summed on the same mesh as the total DOS, and the mesh is
+recorded in the report so that a reader can tell which sampling produced them.
+Note that without Born effective charges the Gamma point longitudinal optical
+modes carry no non-analytical correction, so a polar material is described
+without its LO-TO splitting.
+
+Polar materials need the non-analytical correction, which the long range
+Coulomb field of a longitudinal optical vibration adds. Pass the Born effective
+charges and the dielectric tensor, both as JSON, and the limit of the q to zero
+is taken along a direction:
+
+```text
+abacustools workflow phonon postprocess -j JOB --irreps \
+  --dielectric "[2.34,0,0,0,2.34,0,0,0,2.34]" \
+  --born "[[[1.12,0,0],[0,1.12,0],[0,0,1.12]],[[-1.12,0,0],[0,-1.12,0],[0,0,-1.12]]]"
+```
+
+`--dielectric` accepts a scalar, three diagonal values, a flat nine value matrix
+or a 3x3 matrix, and `--born` holds one 3x3 tensor per atom of the reference
+cell in its atom order. The charges can also be read from the `bec_results.json`
+that `workflow bec` writes, with `--bec-results`, which avoids transcribing
+tensors by hand: that file already stores them with the rows as the displacement
+directions and the columns as the Cartesian polarization directions, which is
+the layout the correction expects. In the same way `--dielectric-results` reads
+the dielectric tensor of the `dielectric_results.json` that `workflow
+dielectric` writes, and the two files together describe a polar material
+without transcribing a single number. Born charges and dielectric tensor must
+both be given; either one alone is refused, and so is a dielectric tensor that
+is given both as JSON and as a results file. The correction is applied to the dispersion, to the
+total and projected DOS and to the thermal properties, because the mesh takes
+the limit with the direction of each of its own q points. The Gamma point modes
+need an explicit direction, which `--nac-direction` sets and which defaults to
+the first lattice vector; without it the longitudinal mode keeps the transverse
+frequency and the two stay degenerate, so the correction would be reported but
+invisible. The report records the tensors and the direction that was used.
+
+The largest frequency of the spectrum is taken over the dispersion rather than
+over the commensurate points of the supercell, because a polar material reaches
+it in the longitudinal optical mode at Gamma, which the supercell does not
+carry. Each Gamma point mode is labelled `LO`, `TO` or `acoustic`: the
+longitudinal one is the mode the correction moves, which distinguishes it from
+an optical mode that is merely non-degenerate in a low symmetry crystal.
+
+The displaced calculations live in `disp-NNNN`, numbered by their index in the
+Phonopy displacement dataset, and `workflow_phonon.json` records both that
+index and the displaced atom of every task. Postprocessing therefore maps each
+force set onto its displacement through the manifest rather than through the
+order of the task list, and refuses a manifest whose task list and displacement
+entries disagree. A displaced supercell is written in the Phonopy atom order,
+because `AbacusSTRU.supercell` orders atoms by lattice point and mixing the two
+orders would attach every force to the wrong atom.
+
+The mode Grueneisen parameters, which measure how the frequency of each mode
+follows the volume, come from the same displaced calculations at three volumes.
+The prepare stage writes three ordinary phonon workflows, one per volume, whose
+lattice vectors are scaled by `(1 ± strain) ** (1/3)` so that their volume
+differs from the reference one by `±strain`:
+
+```text
+abacustools workflow gruneisen prepare -j JOB --strain 0.01 --supercell 4 4 4
+```
+
+Submit and postprocess the displaced calculations of the three volumes exactly
+like a plain phonon workflow, then average them:
+
+```text
+abacustools workflow gruneisen postprocess -j JOB
+```
+
+`gruneisen_mesh.yaml` and `gruneisen_band.yaml` hold the phonopy mesh and band
+results with their plots, and `gruneisen_results.json` adds the q weighted mean,
+range and count of the mode parameters and the thermodynamic parameter
+`gamma(T) = sum(C_v gamma) / sum(C_v)` at `--temperature`, together with a curve
+over `--tmin/--tmax/--tstep`. Every volume has to be computed with the same
+supercell, k mesh and displacement step, because the three force constant fits
+are compared with each other, and the strain has to stay where the central
+difference of the frequencies is meaningful, which is why `--strain` is limited
+to 0.1 to 5 percent. The zero frequency translations at Gamma carry no parameter
+at all; modes whose parameter comes out as a non-finite number are left out of
+the averages and counted in the report. The non-analytical correction is not
+applied, since its parameters would have to be computed for every volume as
+well, and it only affects the longitudinal optical mode at Gamma.
 
 Lattice thermal conductivities can be calculated with phono3py using third-order
 force constants. The prepare stage generates the displaced supercells below
@@ -774,6 +1495,27 @@ the entropy and the free energy. In both backends the reported zero-point
 energy keeps the convention of adding the magnitude of an imaginary mode, while
 the thermochemistry of a temperature is evaluated from the stable modes only.
 
+`--gaussian-log [FILE]` writes a fake Gaussian frequency output next to the
+results (`gaussian_fake.log` by default), in the spirit of OfakeG and
+CP2KfakeG, so that GaussView can open the file and animate the modes:
+
+```text
+abacustools workflow vibration postprocess -j JOB --gaussian-log
+abacustools workflow vibration postprocess -j JOB --gaussian-log modes.log --no-cell
+```
+
+Because an ABACUS structure is periodic, the geometry follows Gaussian's
+periodic convention: an `Input orientation` block whose last three centers are
+the translation vectors of the cell, written as atomic-number `-2` pseudo-atoms
+and followed by the `Lengths of translation vectors` and `Angles of translation
+vectors` lines, which is how GaussView reads the unit cell. `--no-cell` leaves
+the cell out and writes a plain `Standard orientation` block instead. The
+frequency block carries the signed frequencies in `cm^-1`, the reduced masses
+in `amu`, the force constants in `mDyne/Angstrom` and the Cartesian normal
+coordinates of every atom. The IR intensities are written as zero, because the
+workflow does not compute the dipole derivatives, and the thermal section is
+filled from the zero-point energy and the thermochemistry of the results.
+
 Workflow submission scripts can be generated from `~/.abacustools/config.yaml`.
 The packaged defaults support local execution and Slurm, PBS, and LSF
 submission. Script generation is disabled by default; enable it globally with
@@ -823,7 +1565,9 @@ postprocessing with an explicit error.
 Surface work functions can be calculated from the averaged electrostatic
 potential. The prepare stage enables `out_pot=2` and writes a calculation
 under `workfunc_job`; the postprocess stage identifies vacuum plateaus and
-writes the work-function results and potential profile:
+writes the work-function results and potential profile. Both branch names of
+that cube are read, `ElecStaticPot.cube` in the LTS branch and `potes.cube` in
+develop, together with the `pot_es.cube` that the develop manual mentions:
 
 ```text
 abacustools workflow workfunc prepare -j JOB
@@ -852,6 +1596,54 @@ The BEC tensors and task diagnostics are written to `bec_results.json` under
 `JOB`. Missing or incomplete Berry-phase task output is retained as missing
 tensor entries so other completed displacement directions can still be reported.
 
+The clamped-ion (electronic) dielectric tensor `epsilon_inf` is the other half
+of a polar material's non-analytical correction, and ABACUS does not write it.
+It is obtained by a tight-binding Kubo-Greenwood sum over the Hamiltonian,
+overlap and position matrices of an LCAO calculation, which the `pyatb` package
+evaluates on a dense Brillouin zone grid. The prepare stage generates the one
+self consistent calculation that has to be rerun for those matrices to appear:
+
+```text
+abacustools workflow dielectric prepare -j JOB
+```
+
+The generated `dielectric` directory is the source job with `out_mat_hs2`,
+`out_mat_r` and `symmetry 0`, and `workflow_dielectric.json` records the task
+and the keywords that were switched on, as every other workflow manifest does.
+Run it, bring the `OUT.*` matrices back, and postprocess them:
+
+```text
+abacustools workflow dielectric postprocess -j JOB
+```
+
+The tensor is written to `dielectric_results.json` under `JOB` together with
+the dense grid, the photon energy window, the spin channels, the occupied band
+count and Fermi energy of the source calculation and the `pyatb` version, so
+the number can be traced back to what produced it. `--grid`, `--omega`,
+`--domega` and `--eta` set the sum, and `--workdir` moves the pyatb working
+directory that holds the copied matrices and its own output. The sum runs
+locally, on the machine that holds the matrices and the `abacustools`
+environment, which needs the optional `pyatb` package and an MPI runtime:
+`pip install 'abacustools[pyatb]'` and a conda MPI such as `mpich` provide both,
+and `--pyatb-command 'mpirun -np 4 pyatb'` runs the sum out of process on
+several ranks instead of in process.
+
+The occupation of the sum is pinned to the `occupied bands` count that ABACUS
+autosets and prints in its running log, not to a Fermi level. For an insulator
+any level inside the gap gives the same occupation, ABACUS places its `EFERMI`
+at one such value, and the transition energies the sum is built from are
+differences that do not depend on the energy reference at all; the Fermi energy
+is still written into the pyatb input, because pyatb asks for it, but it does
+not enter the result. The photon energy window has to start at zero, since its
+first row is the static limit, and to reach well above the band gap, since the
+sum covers every transition: a window that sits inside the gap captures no
+transition and leaves an empty spectrum, and for NaCl a 20 eV window gives a
+tensor about one percent low. `--omega 0 80` is the default and a window that
+starts above zero or ends below 40 eV is reported as a warning. The dense grid
+of the sum is what the tensor converges with; the k mesh of the source SCF only
+has to converge the density, and for NaCl 20x20x20 already agrees with
+50x50x50 to five digits.
+
 Piezoelectric stress tensors can be calculated from finite-strain changes in
 the Berry-phase polarization. The workflow generates the six independent
 Voigt strain modes (`xx`, `yy`, `zz`, `yz`, `xz`, and `xy`), with forward,
@@ -868,6 +1660,45 @@ calculation. The tensor and per-task diagnostics are written under `JOB`:
 ```text
 abacustools workflow piezoelectric postprocess -j JOB
 ```
+
+The tensor is a polar third-rank tensor, so the point group of the reference
+cell fixes how many of its 18 components are independent: one for `-43m`,
+three for `6mm`, four for `3m`, none for a centrosymmetric crystal. The
+preparation stage records the point group and the number of independent
+components in `workflow_piezoelectric.json`, and `--strains independent`
+prepares only the strain modes those components need - three of the six for a
+wurtzite cell. The postprocessing stage symmetrises the fitted tensor with the
+point group, which removes the components the symmetry forbids and enforces
+the relations between the ones that survive:
+
+```text
+abacustools workflow piezoelectric prepare -j JOB --strains independent
+abacustools workflow piezoelectric postprocess -j JOB --fit independent
+```
+
+Both the fitted tensor, the symmetrised tensor, the largest change the
+symmetrisation made and the independent components are written to
+`piezoelectric_results.json` under `JOB`; `--no-symmetrize` keeps the raw
+components.
+
+The strain is a Cartesian deformation of the lattice vectors with the
+fractional coordinates held fixed, so the six modes are the strain tensor
+components of the IEEE convention: a shear of nominal size `s` puts `s/2` in
+each off-diagonal element, and `S_4 = 2 eps_yz` equals `s`. The reported shear
+columns are therefore `dP/dS` with the same meaning as in the literature and in
+DFPT codes, and a requested one percent shear is a one percent shear in the
+same sense the elastic workflow uses. `--relax` adds one self consistent
+relaxation of the ionic positions at each strained cell, which is what turns
+the clamped-ion tensor into the relaxed-ion one; it respects the `force_thr_ev`
+of the source `INPUT`, and tightening that value (the ABACUS default is 0.01
+eV/Angstrom) matters because the internal strain it produces is exactly the
+difference between the two.
+
+ABACUS accepts `use_k_continuity` only for plane wave calculations that are not
+a non self consistent run, and the Berry-phase steps of this workflow are
+exactly such a run, so the option is off by default. `--use-k-continuity` is
+kept for versions that lift the restriction; on LTSv3.10.1 it makes every
+generated calculation stop with `use_k_continuity only works for PW basis`.
 
 Hubbard `U` parameters can be derived from first principles with the linear
 response method, which screens the occupation of the correlated orbitals
@@ -1040,54 +1871,184 @@ relaxation, cell-relaxation, NEB, MD, or `fixed_density()` band workflows.
 Use `result_to_dict()` or `write_result()` to place ASE results in the
 repository's JSON-compatible result format.
 
-## Materials Project database
+## Structure databases
 
-The `mp` command family searches the Materials Project and downloads structures
-as ABACUS or common structure files. It needs the optional `mp-api` client and
-an API key:
+`abacustools database` searches and downloads crystal structures from the
+materials databases that are open to everyone, and writes them as ABACUS or
+common structure files:
+
+```text
+abacustools database list                     # what can be queried, and how
+abacustools database providers                # the OPTIMADE providers behind -d optimade
+abacustools database search -d cod --formula Fe2O3 --limit 5
+abacustools database download -d aflow aflow:608f86003961ee94
+```
+
+Two access routes cover the databases that need no subscription. The first is
+the Materials Project client (`mp-api`, an API key, the full set of summary
+fields), registered as `mp`. The second is
+[OPTIMADE](https://www.optimade.org), a REST protocol spoken by most other open
+structure databases and implemented once here: every deployment is a database
+name of its own, and `-d optimade` queries all of them and stops as soon as the
+answer is full.
+
+`ABACUSTOOLS_DATABASE` sets the database used when `--database` is omitted;
+without it the default is `mp`.
+
+### Available databases
+
+| database | content | access route |
+| --- | --- | --- |
+| `mp` | Materials Project: DFT energies, stability, structures | `mp-api`, API key |
+| `mp-optimade` | the public OPTIMADE endpoint of the Materials Project | OPTIMADE |
+| `aflow` | AFLOW: calculated alloys and compounds | OPTIMADE |
+| `oqmd` | OQMD: formation energies and thermodynamic stability | OPTIMADE |
+| `nomad` | NOMAD: parsed ab initio calculations | OPTIMADE |
+| `jarvis` | NIST JARVIS-DFT: optoelectronic and elastic data | OPTIMADE |
+| `cod` | Crystallography Open Database: experimental structures | OPTIMADE |
+| `tcod` | Theoretical Crystallography Open Database | OPTIMADE |
+| `alexandria` | Alexandria materials database (PBE+SOL) | OPTIMADE |
+| `c2db` | Computational 2D Materials Database (DTU), with its computed data | query table + OPTIMADE |
+| `c2db-optimade` | the same structures over OPTIMADE only, without the computed data | OPTIMADE |
+| `mc3d`, `mc2d` | Materials Cloud three- and two-dimensional crystals | OPTIMADE |
+| `twodmatpedia` | 2DMatPedia: 2D materials exfoliated from the Materials Project | OPTIMADE |
+| `matterverse` | Matterverse: machine-learning property predictions | OPTIMADE |
+| `odbx` | Open Database of Xtals | OPTIMADE |
+| `mpds` | Materials Platform for Data Science | OPTIMADE, token |
+| `optimade` | every catalogued provider at once | OPTIMADE |
+
+`abacustools database list` shows which databases are ready, which need an API
+key, and which selectors each one accepts. Databases reached over OPTIMADE
+accept `--formula`, `--chemsys`, `--elements` and `--id`; the Materials Project
+also accepts `--stable`, `--theoretical` and `--fields`, and C2DB adds
+`--where` for its own property expressions and `--show` for extra columns (see
+below). Asking a database for a selector it does not know is an error rather
+than a silent partial match.
+
+The OPTIMADE catalogue follows the official index at
+`https://providers.optimade.org/providers.json`; `abacustools database
+providers --refresh` prints the live list, and `--base-url` sends a query to an
+OPTIMADE endpoint that the catalogue does not contain. Providers differ in what
+they publish: `cod` and `tcod` report cell parameters but no atomic
+coordinates, so they answer searches while a download of one of their entries
+reports that there is no structure to write; `c2db-optimade` ignores filters on
+the entry id and does not publish the computed data, which is why the `c2db`
+database reads the query table of the C2DB web application instead.
+
+### C2DB computed data
+
+C2DB stores much more than the geometry: PBE, HSE06 and G0W0 band gaps, the
+energy above the convex hull, the heat of formation, effective masses, elastic
+and piezoelectric constants, magnetic states, optical properties and so on.
+`abacustools database fields -d c2db` lists all 88 keys with their units, and
+`--where` filters on them with the expression language of the C2DB search page:
+
+```text
+abacustools database fields -d c2db
+abacustools database search -d c2db --formula MoS2 --limit 5
+abacustools database search -d c2db --elements Mo S --where 'gap>1.5' --limit 5
+abacustools database search -d c2db --where 'is_magnetic=True' --where 'ehull<0.05'
+abacustools database search -d c2db --formula MoS2 --show gap_hse,emass_cbm
+```
+
+A `--where` expression compares one key, as in `gap>1.5`, `ehull<0.05`,
+`xc=PBE` or `nspecies=3`; several expressions and the standard selectors are
+combined with "and", `|` combines alternatives and `~` negates a term, exactly
+as on the search page. `--show` adds the named keys as columns, and every
+search record also carries them under `extra` in `--json`. Entries are
+identified by their C2DB uid, such as `1MoS2-1`:
+
+```text
+abacustools database download -d c2db 1MoS2-1 --format cif
+abacustools database download -d c2db 1MoS2-1 --json
+```
+
+A download joins the property row of the query table with the geometry of the
+OPTIMADE endpoint, so the JSON record reports the formula, the site count, the
+PBE gap, the energy above the hull, and the tabulated properties.
+
+### Materials Project
+
+The `mp` command family is the short spelling of `database --database mp`, kept
+so that existing scripts keep working. It needs the optional `mp-api` client
+and an API key:
 
 ```bash
 pip install 'abacustools[mp]'
 export MP_API_KEY="your_key_here"   # https://materialsproject.org/api
 ```
 
-`mp search` accepts the usual Materials Project selectors; at least one of
-`--formula`, `--chemsys`, `--elements`, or `--material-id` is required:
+Searches need at least one of `--formula`, `--chemsys`, `--elements`, or
+`--id` (also spelled `--material-id`):
 
 ```text
 abacustools mp search --formula Fe2O3 --limit 10
 abacustools mp search --chemsys Li-Fe-O --stable --limit 5 --json
-abacustools mp search --elements Li Fe O --output li-fe-o.json
-abacustools mp search --material-id mp-149 --material-id mp-22862
+abacustools database search -d mp --elements Li Fe O --output li-fe-o.json
+abacustools database search -d cod --formula Fe2O3 --limit 5
 ```
 
-The table reports the material id, formula, chemical system, number of sites,
-energy above the convex hull, band gap, stability, and whether the entry is
-theoretical. `--json` prints the same records as JSON and `--output` also
-writes them to a file. The command returns a non-zero exit status when nothing
-matches the query.
+The table reports the database, the identifier, the formula, the chemical
+system, the number of sites, the energy above the convex hull, the band gap,
+stability, and whether the entry is theoretical. `--json` prints the same
+records as JSON and `--output` also writes them to a file. The command returns
+a non-zero exit status when nothing matches the query.
 
-`mp download` writes one directory per material, which can be used as an
-ABACUS job directory directly:
+Downloading writes one directory per entry, which can be used as an ABACUS job
+directory directly:
 
 ```text
 abacustools mp download mp-149
 abacustools mp download mp-149 mp-22862 --output structures --format poscar
-abacustools mp download mp-149 --format cif --json
+abacustools database download -d cod 1000000 --format cif
+abacustools database download -d aflow aflow:608f86003961ee94 --group-by-database
 ```
 
-Every structure goes to `OUTPUT/<material_id>/`, named `STRU`, `POSCAR`,
+Every structure goes to `OUTPUT/<id>/`, named `STRU`, `POSCAR`,
 `structure.cif`, `structure.xyz`, `structure.extxyz`, or `structure.xsf`
-according to `--format`. Materials Project structures carry no pseudopotential
-or numerical-orbital information, so the `ATOMIC_SPECIES` files required by
-ABACUS still have to be filled in, for example with the library settings
-described above or `abacustools file stru`.
+according to `--format`; `--group-by-database` adds the database name as
+another directory level, which keeps identifiers of different databases apart.
+Downloaded structures carry no pseudopotential or numerical-orbital
+information, so the `ATOMIC_SPECIES` files required by ABACUS still have to be
+filled in, for example with the library settings described above or
+`abacustools file stru`.
 
-The same operations are available from Python, and every call accepts a
-pre-constructed `client` so that no connection is made when one is supplied:
+Each JSON record holds `database`, `id`, `formula`, `chemsys`, `nsites`,
+`volume`, `energy_above_hull`, `band_gap`, `is_stable`, `theoretical`, and
+`extra`, where `extra` keeps the provider-specific values of the entry.
+
+### Python API
+
+Every database is reached through the same interface, and each call accepts a
+pre-constructed client or transport so that no connection is made when one is
+supplied:
 
 ```python
 from pathlib import Path
+from abacustools.integrations.databases import (
+    DatabaseQuery,
+    get_database,
+    structure_path,
+    write_structure,
+)
+
+database = get_database("cod")
+for summary in database.search(DatabaseQuery(formula="Fe2O3", limit=5)):
+    print(summary.database, summary.identifier, summary.formula, summary.chemsys)
+
+structure = database.fetch(summary.identifier)
+write_structure(
+    structure,
+    structure_path(Path("structures"), structure.identifier, database="cod"),
+)
+```
+
+`get_database(name)` returns the adapter of any registered database, and
+`databases()`, `database_names()`, `describe_databases()` and
+`default_database()` describe the registry. The Materials Project adapter is
+also available on its own, as before:
+
+```python
 from abacustools.integrations.materials_project import (
     material_directory,
     search_materials,

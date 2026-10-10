@@ -15,33 +15,34 @@ to obtain per-atom spin moments.
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
-import numpy as np
-from ase.data import atomic_numbers, chemical_symbols
+from ase.data import chemical_symbols
 
 from abacustools.core.config import CONFIG
 from abacustools.core.constant import ANG_TO_BOHR, BOHR_TO_ANG
-from abacustools.data.grid import Charge, RestartCharge
+from abacustools.data.charge import (
+    ChargeDensityError,
+    combine,
+    fft_grid_from_log,
+    find_density_source,
+    read_cube_charges,
+    read_restart_charges,
+    total_charge,
+    valence_electrons as _valence_electrons,
+)
+from abacustools.data.grid import Charge
 from abacustools.io.abacus import ReadInput
-from abacustools.io.pseudo import UPF
 from abacustools.io.stru import AbacusSTRU
 
 
-BOHR2A = BOHR_TO_ANG
 A2BOHR = ANG_TO_BOHR
-
-# ABACUS LTS logs write "fft grid", develop writes "FFT grid".
-_FFT_GRID_PATTERN = re.compile(
-    r"fft grid for charge/potential\s*=\s*\[([^\]]+)\]", re.IGNORECASE
-)
-
+BOHR3_TO_ANG3 = BOHR_TO_ANG**3
 
 class BaderError(RuntimeError):
     """Raised when a Bader analysis cannot be completed."""
@@ -49,7 +50,20 @@ class BaderError(RuntimeError):
 
 @dataclass
 class BaderAtom:
-    """Bader analysis result for a single atom."""
+    """Bader analysis result for a single atom.
+
+    Attributes:
+        index: One-based atom index.
+        element: Element symbol.
+        position: Cartesian position in Angstrom.
+        z_valence: Number of valence electrons of the pseudopotential.
+        bader_charge: Electrons inside the Bader volume of the atom.
+        min_distance: Distance from the atom to the nearest point of its Bader
+            surface in Angstrom, as reported by the backend.
+        atomic_volume: Volume of the Bader volume in Angstrom**3.
+        spin_moment: Up minus down electrons inside the Bader volume, ``None``
+            for ``nspin 1``.
+    """
 
     index: int
     element: str
@@ -79,6 +93,7 @@ class BaderAnalysis:
     workdir: Path
     bader_stdout: str = ""
     reference: Optional[Path] = None
+    backend: str = "bader"
 
     @property
     def total_net_charge(self) -> float:
@@ -92,6 +107,7 @@ class BaderAnalysis:
         return {
             "job": str(self.job),
             "nspin": self.nspin,
+            "backend": self.backend,
             "charge_source": self.charge_source,
             "reference": str(self.reference) if self.reference else None,
             "workdir": str(self.workdir),
@@ -123,7 +139,8 @@ def read_acf(path: str | os.PathLike) -> Tuple[List[dict], float, float, float]:
     Returns:
         A tuple ``(records, vacuum_charge, vacuum_volume, number_of_electrons)``
         where every record is a dict with ``index``, ``position``, ``charge``,
-        ``min_distance`` and ``atomic_volume``.
+        ``min_distance`` and ``atomic_volume``. The file stores lengths in Bohr
+        and volumes in Bohr**3; the caller converts them.
     """
     lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
     records: List[dict] = []
@@ -214,102 +231,6 @@ def run_bader(
     return completed.stdout
 
 
-def fft_grid_from_log(log_path: str | os.PathLike) -> Optional[Tuple[int, int, int]]:
-    """Read the charge/potential FFT grid dimensions from an ABACUS log."""
-    path = Path(log_path)
-    if not path.is_file():
-        return None
-    match = _FFT_GRID_PATTERN.search(path.read_text(encoding="utf-8", errors="replace"))
-    if match is None:
-        return None
-    values = re.findall(r"\d+", match.group(1))
-    if len(values) != 3:
-        return None
-    return (int(values[0]), int(values[1]), int(values[2]))
-
-
-def _valence_electrons(stru: AbacusSTRU, pseudo_dir: Optional[str], job: Path) -> List[float]:
-    if not pseudo_dir:
-        raise BaderError("INPUT does not define pseudo_dir, cannot read valence charges")
-    directory = Path(pseudo_dir)
-    if not directory.is_absolute():
-        directory = job / directory
-    cache: Dict[str, float] = {}
-    valences: List[float] = []
-    for pp in stru.pps:
-        if pp is None:
-            raise BaderError("STRU atom is missing a pseudopotential filename")
-        if pp not in cache:
-            upf_path = directory / pp
-            if not upf_path.is_file():
-                raise BaderError(f"pseudopotential file not found: {upf_path}")
-            cache[pp] = float(UPF.read_from_file(upf_path).z_valence)
-        valences.append(cache[pp])
-    return valences
-
-
-def _atomic_numbers(elements: Sequence[Optional[str]]) -> List[int]:
-    numbers = []
-    for element in elements:
-        if element is None or element not in atomic_numbers:
-            raise BaderError(f"unknown element in STRU: {element!r}")
-        numbers.append(int(atomic_numbers[element]))
-    return numbers
-
-
-def _restart_charges(
-    restart_file: Path,
-    grid_shape: Tuple[int, int, int],
-    stru: AbacusSTRU,
-    valences: Sequence[float],
-    lat0: float,
-) -> List[Charge]:
-    restart = RestartCharge.read(str(restart_file))
-    if restart.nspin > 2:
-        raise BaderError(f"nspin={restart.nspin} is not supported (only 1 and 2)")
-    real = restart.to_real(grid_shape)
-    cell_ang = np.linalg.inv(restart.reciprocal_lattice) * lat0 * BOHR2A
-    positions = np.asarray(stru.coords, dtype=float)
-    types = _atomic_numbers(stru.elements)
-    charges = [float(value) for value in valences]
-    result = []
-    for ispin in range(restart.nspin):
-        result.append(
-            Charge(real[ispin] / BOHR2A**3, cell_ang, positions, types, charges)
-        )
-    return result
-
-
-def _cube_charges(cube_paths: Sequence[Path]) -> List[Charge]:
-    return [Charge.from_cube(str(path), format="abacus") for path in cube_paths]
-
-
-def _resolve_cube_paths(job: Path, outdir: Path, nspin: int, cube: Optional[str]) -> Optional[List[Path]]:
-    if cube is not None:
-        path = Path(cube)
-        if not path.is_absolute():
-            path = job / path
-        if path.is_dir():
-            found = sorted(path.glob("SPIN*_CHG.cube"))
-            return found or None
-        return [path]
-    expected = [outdir / f"SPIN{index + 1}_CHG.cube" for index in range(nspin)]
-    if all(path.is_file() for path in expected):
-        return expected
-    return None
-
-
-def _combine(first: Charge, second: Charge, sign: float) -> Charge:
-    return Charge(
-        first.data + sign * second.data,
-        first.cell,
-        first.atom_positions,
-        first.atom_types,
-        first.atom_charges,
-        first.origin,
-    )
-
-
 def _vacuum_arguments(vacuum: Optional[object]) -> List[str]:
     if vacuum is None:
         return []
@@ -332,32 +253,67 @@ def _build_atoms(
             BaderAtom(
                 index=record["index"],
                 element=element or "",
-                position=record["position"],
+                position=tuple(
+                    float(value) * BOHR_TO_ANG for value in record["position"]
+                ),
                 z_valence=float(valence),
                 bader_charge=record["charge"],
-                min_distance=record["min_distance"],
-                atomic_volume=record["atomic_volume"],
+                min_distance=float(record["min_distance"]) * BOHR_TO_ANG,
+                atomic_volume=float(record["atomic_volume"]) * BOHR3_TO_ANG3,
             )
         )
     return atoms
 
 
-def analyze_bader(
+@dataclass
+class BaderDensity:
+    """Charge density of one job, ready for a Bader partition.
+
+    Attributes:
+        total: Total density (up + down) that defines the partition.
+        magnetization: Up minus down density, ``None`` for ``nspin 1``.
+        elements: Element symbol of every atom.
+        valences: Number of valence electrons of every atom.
+        charge_source: Description of the files the density was read from.
+        nspin: Number of spin channels the job declares.
+    """
+
+    total: Charge
+    magnetization: Optional[Charge]
+    elements: List[str]
+    valences: List[float]
+    charge_source: str
+    nspin: int
+
+
+def read_bader_density(
     job: str | os.PathLike,
     *,
     cube: Optional[str] = None,
-    reference: Optional[str] = None,
-    exe: Optional[str] = None,
     grid_shape: Optional[Tuple[int, int, int]] = None,
-    lat0: float = A2BOHR,
-    vacuum: Optional[object] = None,
-    workdir: Optional[str | os.PathLike] = None,
-    keep: bool = False,
-) -> BaderAnalysis:
-    """Run a full Bader analysis on an ABACUS job directory.
+    lat0: Optional[float] = None,
+) -> BaderDensity:
+    """Assemble the density that every Bader backend partitions.
 
-    The charge density is taken from ``SPIN*_CHG.cube`` when present, otherwise
-    from ``*-CHARGE-DENSITY.restart`` (which is converted with an inverse FFT).
+    The density is taken from ``SPIN*_CHG.cube`` when present, otherwise from
+    ``*-CHARGE-DENSITY.restart`` (which is converted with an inverse FFT). The
+    valence electron count of every atom comes from the cube header or, for a
+    restart file, from the pseudopotentials the STRU names.
+
+    Args:
+        job: ABACUS job directory.
+        cube: Explicit charge-density cube file or directory, relative to
+            ``job``.
+        grid_shape: FFT grid of a restart file, read from the log when omitted.
+        lat0: ``LATTICE_CONSTANT`` of the job in Bohr, taken from the STRU when
+            omitted.
+
+    Returns:
+        The assembled density.
+
+    Raises:
+        BaderError: If the job has no usable charge density or declares an
+            ``nspin`` that no Bader partition supports.
     """
     job_path = Path(job).expanduser().absolute()
     inputs = ReadInput(str(job_path / "INPUT"))
@@ -370,41 +326,74 @@ def analyze_bader(
     if not outdir.is_dir():
         raise BaderError(f"output directory not found: {outdir}")
 
-    cube_paths = _resolve_cube_paths(job_path, outdir, nspin, cube)
-    if cube_paths is not None:
-        spin_charges = _cube_charges(cube_paths)
-        charge_source = "cube"
-        valences = [float(charge) for charge in spin_charges[0].atom_charges]
-        elements = [chemical_symbols[int(number)] for number in spin_charges[0].atom_types]
-    else:
-        restarts = sorted(outdir.glob("*-CHARGE-DENSITY.restart"))
-        if not restarts:
-            raise BaderError(
-                f"no charge density in {outdir}: expected SPIN*_CHG.cube or "
-                "*-CHARGE-DENSITY.restart"
+    try:
+        source = find_density_source(job_path, inputs, cube=cube)
+        if source.kind == "cube":
+            spin_charges = read_cube_charges(source)
+            charge_source = source.describe()
+            valences = [float(charge) for charge in spin_charges[0].atom_charges]
+            elements = [
+                chemical_symbols[int(number)] for number in spin_charges[0].atom_types
+            ]
+        else:
+            stru = AbacusSTRU.read(str(job_path / "STRU"))
+            valences = _valence_electrons(stru, inputs.get("pseudo_dir"), job_path)
+            elements = list(stru.elements)
+            shape = grid_shape or fft_grid_from_log(outdir / "running_scf.log")
+            if shape is None:
+                raise BaderError(
+                    "could not determine the FFT grid; pass --grid nx ny nz"
+                )
+            constant = lat0
+            if constant is None:
+                constant = float(stru.metadata.get("lattice_constant", 1.0) or 1.0)
+            spin_charges = read_restart_charges(
+                source,
+                structure=stru,
+                valences=valences,
+                grid_shape=shape,
+                lat0=constant,
             )
-        stru = AbacusSTRU.read(str(job_path / "STRU"))
-        valences = _valence_electrons(stru, inputs.get("pseudo_dir"), job_path)
-        elements = list(stru.elements)
-        shape = grid_shape or fft_grid_from_log(outdir / "running_scf.log")
-        if shape is None:
-            raise BaderError(
-                "could not determine the FFT grid; pass --grid nx ny nz"
-            )
-        spin_charges = _restart_charges(restarts[0], shape, stru, valences, lat0)
-        charge_source = f"restart ({restarts[0].name}, grid={shape})"
+            charge_source = source.describe(grid=shape)
+        total = total_charge(spin_charges)
+        magnetization = None
+        if nspin == 2:
+            magnetization = combine(spin_charges[0], spin_charges[1], -1.0)
+    except ChargeDensityError as error:
+        raise BaderError(str(error)) from error
 
-    if len(spin_charges) != nspin:
-        raise BaderError(
-            f"found {len(spin_charges)} spin channel(s) but INPUT has nspin={nspin}"
-        )
+    return BaderDensity(
+        total=total,
+        magnetization=magnetization,
+        elements=elements,
+        valences=valences,
+        charge_source=charge_source,
+        nspin=nspin,
+    )
 
-    total = spin_charges[0]
-    for extra in spin_charges[1:]:
-        total = _combine(total, extra, 1.0)
-    magnetization = None
-    if nspin == 2:
-        magnetization = _combine(spin_charges[0], spin_charges[1], -1.0)
+
+def analyze_bader(
+    job: str | os.PathLike,
+    *,
+    cube: Optional[str] = None,
+    reference: Optional[str] = None,
+    exe: Optional[str] = None,
+    grid_shape: Optional[Tuple[int, int, int]] = None,
+    lat0: Optional[float] = None,
+    vacuum: Optional[object] = None,
+    workdir: Optional[str | os.PathLike] = None,
+    keep: bool = False,
+) -> BaderAnalysis:
+    """Run a full Bader analysis on an ABACUS job directory.
+
+    The charge density is taken from ``SPIN*_CHG.cube`` when present, otherwise
+    from ``*-CHARGE-DENSITY.restart`` (which is converted with an inverse FFT).
+    The partition itself is done by the external Henkelman ``bader`` program;
+    :func:`abacustools.integrations.baderkit.analyze_baderkit` runs the same
+    partition with the ``baderkit`` library instead.
+    """
+    job_path = Path(job).expanduser().absolute()
+    density = read_bader_density(job_path, cube=cube, grid_shape=grid_shape, lat0=lat0)
 
     if workdir is not None:
         work = Path(workdir).expanduser().absolute()
@@ -416,7 +405,7 @@ def analyze_bader(
 
     try:
         total_cube = work / "charge_total.cube"
-        total.save_cube(str(total_cube), format="abacus")
+        density.total.save_cube(str(total_cube), format="abacus")
         reference_path = None
         if reference is not None:
             reference_path = Path(reference)
@@ -430,11 +419,13 @@ def analyze_bader(
             extra_args=_vacuum_arguments(vacuum),
         )
         records, vacuum_charge, vacuum_volume, number_of_electrons = read_acf(work / "ACF.dat")
-        atoms = _build_atoms(records, elements, valences)
+        # the footer stores the vacuum volume in Bohr**3 like the atomic volumes
+        vacuum_volume *= BOHR3_TO_ANG3
+        atoms = _build_atoms(records, density.elements, density.valences)
 
-        if magnetization is not None:
+        if density.magnetization is not None:
             spin_cube = work / "charge_spin.cube"
-            magnetization.save_cube(str(spin_cube), format="abacus")
+            density.magnetization.save_cube(str(spin_cube), format="abacus")
             run_bader(
                 spin_cube.name,
                 reference=total_cube.name,
@@ -451,13 +442,14 @@ def analyze_bader(
 
     return BaderAnalysis(
         job=job_path,
-        nspin=nspin,
+        nspin=density.nspin,
         atoms=atoms,
         vacuum_charge=vacuum_charge,
         vacuum_volume=vacuum_volume,
         number_of_electrons=number_of_electrons,
-        charge_source=charge_source,
+        charge_source=density.charge_source,
         workdir=work,
         bader_stdout=stdout,
         reference=reference_path,
+        backend="bader",
     )

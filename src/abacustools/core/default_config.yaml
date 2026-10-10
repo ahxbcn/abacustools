@@ -30,6 +30,15 @@ abacus:
 bader:
   exe: "bader"
 
+# Chargemol settings for `postprocess ddec`. `exe` names the binary (the
+# serial or OpenMP build of the distribution), `atomic_densities` the directory
+# that holds its `core_*` and `c2_*` reference density tables. Both can also be
+# overridden with the CHARGEMOL_EXE and CHARGEMOL_ATOMIC_DENSITIES environment
+# variables or with --chargemol-exe and --atomic-densities.
+chargemol:
+  exe: "chargemol"
+  atomic_densities: null
+
 # Fill these machine-dependent paths in ~/.abacustools/config.yaml.
 resources:
   default: apns
@@ -68,6 +77,7 @@ resources:
 input_templates:
   scf:
     calculation: "scf"
+    kspacing: 0.14
     symmetry: 1
     scf_thr: 1e-7
     scf_nmax: 100
@@ -77,6 +87,7 @@ input_templates:
     mixing_beta: 0.8
   relax:
     calculation: "relax"
+    kspacing: 0.14
     symmetry: 0
     scf_thr: 1e-7
     scf_nmax: 100
@@ -90,6 +101,7 @@ input_templates:
     force_thr_ev: 0.02
   cell-relax:
     calculation: "cell-relax"
+    kspacing: 0.14
     symmetry: 0
     scf_thr: 1e-7
     scf_nmax: 100
@@ -105,6 +117,7 @@ input_templates:
     stress_thr: 0.5
   md:
     calculation: "md"
+    kspacing: 0.14
     symmetry: 0
     scf_thr: 1e-7
     scf_nmax: 100
@@ -186,3 +199,52 @@ submission:
         submit_command: "bsub"
         dependency_option: "-w done({dependency_id})"
         id_filter: "sed -n 's/.*<\\([0-9][0-9]*\\)>.*/\\1/p'"
+  # One configuration file for a whole batch of prepared jobs, written next to
+  # the generated directories by `job prepare --submit-config`. The template is
+  # rendered with {examples} (the directory names as a JSON array), {count},
+  # {job_type} and {abacus_command}; braces that are not one of those
+  # placeholders, such as the ones of a JSON object, are left alone. Point
+  # `template_file` at a file of your own - an abacustest or Bohrium job file,
+  # for example - to use it instead of the packaged template. Review the image,
+  # the machine type and the command of the packaged template before submitting.
+  batch:
+    generate: false
+    filename: "job.json"
+    template_file: null
+    template: |
+      {
+        "comments": [
+          "Batch configuration written by `abacustools job prepare --submit-config`.",
+          "Fill in the Bohrium account, image and machine type, then submit it",
+          "with `abacustest submit -j job.json` from this directory."
+        ],
+        "config": {
+          "bohrium_username": "",
+          "bohrium_password": "",
+          "bohrium_project_id": 0
+        },
+        "save_path": "result",
+        "run_dft": [
+          {
+            "image": "registry.dp.tech/dptech/abacus-stable:LTSv3.10",
+            "example": {examples},
+            "bohrium": {
+              "scass_type": "c32_m128_cpu",
+              "job_type": "container",
+              "platform": "ali"
+            },
+            "command": "{abacus_command} > log",
+            "outputs": []
+          }
+        ],
+        "post_dft": {
+          "image": "registry.dp.tech/dptech/abacustest:latest",
+          "metrics": {
+            "path": {examples},
+            "dft_type": "abacus",
+            "metrics_name": ["scf_steps", "total_time", "converge", "normal_end"],
+            "save_file": "metrics.json"
+          },
+          "outputs": []
+        }
+      }

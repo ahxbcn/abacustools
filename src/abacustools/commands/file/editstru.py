@@ -9,6 +9,11 @@ from typing import Any
 
 import numpy as np
 
+from abacustools.data.doping import (
+    DopantResources,
+    resolve_dopant_resources,
+    substitute_atoms,
+)
 from abacustools.data.structure import (
     build_slab,
     find_conventional,
@@ -17,10 +22,13 @@ from abacustools.data.structure import (
     generate_all_slabs,
     make_supercell,
     select_atoms,
+    select_indices,
     set_coordinate_mode,
     standardize_cell,
+    symmetrize_structure,
     with_vacuum,
 )
+from abacustools.data.symmetry import crystallographic_symmetry
 from abacustools.io.stru import AbacusSTRU
 
 
@@ -383,6 +391,85 @@ def _register_conventional(subparsers) -> None:
 
 
 
+def _register_substitute(subparsers) -> None:
+    """Register ``file editstru substitute``."""
+    parser = subparsers.add_parser(
+        "substitute",
+        help="Replace the selected atoms by another element and pick its files.",
+    )
+    _add_common_arguments(parser, "substitute")
+    _add_selection_arguments(parser)
+    parser.add_argument(
+        "--element", required=True, metavar="ELEMENT",
+        help="Element symbol that is substituted in.",
+    )
+    parser.add_argument(
+        "--label", default=None,
+        help="Label of the substituted atoms, default: the element symbol.",
+    )
+    parser.add_argument(
+        "--library", default=None,
+        help=(
+            "Configured resource library used when the element is absent from the "
+            "structure; the configured default by default."
+        ),
+    )
+    parser.add_argument(
+        "--variant", default=None,
+        help="Orbital variant such as DZP for the library lookup.",
+    )
+    parser.add_argument(
+        "--pp", default=None, metavar="FILE",
+        help="Pseudopotential file name used instead of the resolved one.",
+    )
+    parser.add_argument(
+        "--orb", default=None, metavar="FILE",
+        help="Orbital file name used instead of the resolved one.",
+    )
+    parser.add_argument(
+        "--basis", choices=["auto", "lcao", "pw"], default="auto",
+        help=(
+            "Whether the dopant needs an orbital: follow the input structure, or "
+            "force lcao/pw; default: auto."
+        ),
+    )
+    parser.add_argument(
+        "--keep-moments", action="store_true",
+        help="Keep the magnetic moment and angles of the replaced atoms.",
+    )
+
+
+def _register_symmetrize(subparsers) -> None:
+    """Register ``file editstru symmetrize``."""
+    parser = subparsers.add_parser(
+        "symmetrize",
+        help="Remove small numerical errors and make the symmetry of the structure exact.",
+    )
+    _add_common_arguments(parser, "symmetrize")
+    parser.add_argument(
+        "--symprec",
+        type=_non_negative_float,
+        default=1e-5,
+        metavar="ANGSTROM",
+        help=(
+            "Distance tolerance in Angstrom, default: 1e-5. Deviations larger than "
+            "this are not treated as noise, so raise it to clean a rougher file."
+        ),
+    )
+    parser.add_argument(
+        "--angle-tolerance",
+        type=_non_negative_float,
+        default=5.0,
+        metavar="DEGREES",
+        help="Angle tolerance in degrees, default: 5.",
+    )
+    parser.add_argument(
+        "--keep-cell",
+        action="store_true",
+        help="Idealize the atomic positions only and leave the lattice as it is.",
+    )
+
+
 def _register_all_slabs(subparsers) -> None:
     """Register ``file editstru all-slabs``."""
     parser = subparsers.add_parser(
@@ -496,11 +583,13 @@ def register_parser(subparsers) -> None:
     _register_vacuum(actions)
     _register_slab(actions)
     _register_select(actions)
+    _register_substitute(actions)
     _register_fix(actions)
     _register_coordinate_actions(actions)
     _register_primitive(actions)
     _register_standardize(actions)
     _register_conventional(actions)
+    _register_symmetrize(actions)
     _register_all_slabs(actions)
 
 
@@ -515,6 +604,15 @@ def _formula(structure: AbacusSTRU) -> str:
 def _cell_lengths(structure: AbacusSTRU) -> list[float]:
     """Return the three lattice-vector lengths in Angstrom."""
     return [float(value) for value in np.linalg.norm(structure.cell, axis=1)]
+
+
+def _max_displacement(before: AbacusSTRU, after: AbacusSTRU) -> float:
+    """Return the largest periodic atom shift between two structures in Angstrom."""
+    delta = np.asarray(after.coords_direct, dtype=float) - np.asarray(
+        before.coords_direct, dtype=float
+    )
+    delta -= np.rint(delta)
+    return float(np.max(np.linalg.norm(delta @ np.asarray(after.cell, dtype=float), axis=1)))
 
 
 def _edited_structure(
@@ -566,10 +664,48 @@ def _edited_structure(
             symprec=args.symprec,
             angle_tolerance=args.angle_tolerance,
         )
+    if args.action == "symmetrize":
+        return symmetrize_structure(
+            structure,
+            symprec=args.symprec,
+            angle_tolerance=args.angle_tolerance,
+            keep_cell=args.keep_cell,
+        )
     if args.action == "all-slabs":
         # This is handled specially in _run_action
         raise RuntimeError("all-slabs is handled separately")
+    if args.action == "substitute":
+        # This is handled specially in _run_action
+        raise RuntimeError("substitute is handled separately")
     raise RuntimeError(f"unknown editstru action: {args.action}")
+
+
+def _substitute(
+    args: argparse.Namespace, structure: AbacusSTRU
+) -> tuple[AbacusSTRU, DopantResources, list[int]]:
+    """Replace the selected atoms by the dopant element of the action."""
+    indices = select_indices(structure, **_selection(args))
+    orbital = args.basis == "lcao" or (
+        args.basis == "auto" and any(atom.orb for atom in structure.atoms)
+    )
+    resources = resolve_dopant_resources(
+        structure,
+        args.element,
+        pp=args.pp,
+        orb=args.orb,
+        library=args.library,
+        variant=args.variant,
+        orbital=orbital,
+    )
+    edited = substitute_atoms(
+        structure,
+        element=args.element,
+        indices=indices,
+        resources=resources,
+        label=args.label,
+        keep_moments=args.keep_moments,
+    )
+    return edited, resources, indices
 
 
 def _run_action(args: argparse.Namespace) -> int:
@@ -627,7 +763,18 @@ def _run_action(args: argparse.Namespace) -> int:
                 print(f"    [{i}] {f}")
         return 0
     
-    edited = _edited_structure(args, structure)
+    substitution = None
+    if args.action == "substitute":
+        edited, resources, substituted = _substitute(args, structure)
+        substitution = (resources, substituted)
+    else:
+        edited = _edited_structure(args, structure)
+
+    symmetry = None
+    if args.action == "symmetrize":
+        symmetry = crystallographic_symmetry(
+            edited, symprec=args.symprec, angle_tolerance=args.angle_tolerance
+        )
 
     output = Path(args.output).expanduser()
     if output.exists() and not args.override:
@@ -652,6 +799,15 @@ def _run_action(args: argparse.Namespace) -> int:
     }
     if args.action in {"direct", "cartesian"}:
         payload["coordinates"] = args.action
+    if substitution is not None:
+        resources, substituted = substitution
+        payload.update(resources.as_dict())
+        payload["substituted_atoms"] = [index + 1 for index in substituted]
+    if args.action == "symmetrize":
+        payload["space_group"] = symmetry.get("space_group_symbol")
+        payload["space_group_number"] = symmetry.get("space_group_number")
+        payload["max_displacement_angstrom"] = _max_displacement(structure, edited)
+        payload["cell_idealized"] = not args.keep_cell
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
@@ -660,6 +816,27 @@ def _run_action(args: argparse.Namespace) -> int:
     print(f"  formula: {payload['formula']}")
     if args.action in {"direct", "cartesian"}:
         print(f"  coordinates: {args.action}")
+    if substitution is not None:
+        resources, substituted = substitution
+        atoms = ", ".join(str(index + 1) for index in substituted)
+        print(f"  dopant: {resources.element} for {len(substituted)} atom(s): {atoms}")
+        print(f"  pseudopotential: {resources.pp or '-'}")
+        print(f"    why: {resources.pp_reason}")
+        print(f"  orbital: {resources.orb or '-'}")
+        print(f"    why: {resources.orb_reason}")
+    if args.action == "symmetrize":
+        number = payload["space_group_number"]
+        symbol = payload["space_group"] or "unavailable"
+        label = symbol if number is None else f"{symbol} (No. {number})"
+        print(f"  symmetry: {label}")
+        print(f"  max displacement: {payload['max_displacement_angstrom']:.6g} Angstrom")
+        if not payload["cell_idealized"]:
+            print("  lattice: kept")
+        if number == 1:
+            print(
+                "  note: no symmetry beyond P1 was found; "
+                "raise --symprec if the file should be more symmetric"
+            )
     if payload["fixed_atoms"]:
         print(f"  fixed atoms: {payload['fixed_atoms']} of {payload['atoms_after']}")
     print(

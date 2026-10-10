@@ -1,0 +1,4 @@
+interface:
+  display_name: "ABACUS SCF Convergence"
+  short_description: "Tune SCF convergence in ABACUS"
+  default_prompt: "Use $abacus-scf-convergence to fix an SCF that oscillates or converges slowly."

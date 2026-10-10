@@ -1,0 +1,4 @@
+interface:
+  display_name: "ABACUS Calculation Recipes"
+  short_description: "Parameter recipes for common ABACUS runs"
+  default_prompt: "Use $abacus-calculation-recipes to set the parameters for this scf/relax/nscf/md calculation."

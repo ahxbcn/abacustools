@@ -12,16 +12,17 @@ import numpy as np
 
 from abacustools.data.versions import default_version
 
+from abacustools.data.vibration import selected_atom_indices, validate_stepsize
+from abacustools.core.job import read_job_structure
+
 from .common import (
     clear_generated_jobs,
     kpoint_filename,
-    read_job_structure,
     read_manifest,
     register_stages,
     write_abacus_job,
     write_manifest,
 )
-from .vibration import _selected_atoms, _validate_stepsize
 
 
 _ROOT = "fdforce"
@@ -102,7 +103,7 @@ def _selection(structure, selected_atoms: Any, directions: Any, info: Any, job: 
         raise ValueError("--info and --index cannot be used together")
     if info is not None:
         return _resolve_info_selections(structure, _read_info(Path(info) if Path(info).is_absolute() else job / info))
-    atoms = _selected_atoms(selected_atoms, structure.natoms)
+    atoms = selected_atom_indices(selected_atoms, structure.natoms)
     return [(index + 1, list(directions)) for index in atoms]
 
 
@@ -129,7 +130,7 @@ def prepare(args: argparse.Namespace) -> int:
     job = Path(args.job).absolute()
     if not job.is_dir():
         raise RuntimeError(f"job directory does not exist: {job}")
-    _validate_stepsize(args.stepsize)
+    validate_stepsize(args.stepsize)
     _validate_number(args.number)
     inputs, stru_filename, structure = read_job_structure(job)
     selection = _selection(
@@ -199,13 +200,13 @@ def postprocess(args: argparse.Namespace) -> int:
     try:
         stepsize = float(manifest["stepsize"])
         number = int(manifest["number"])
-        selected_atoms = _selected_atoms(manifest["selected_atoms"], structure.natoms)
+        selected_atoms = selected_atom_indices(manifest["selected_atoms"], structure.natoms)
         directions = manifest["directions"]
         selections = manifest["selections"]
         displacements = manifest["displacements"]
     except (KeyError, TypeError, ValueError) as error:
         raise RuntimeError("fdforce workflow manifest has invalid metadata") from error
-    _validate_stepsize(stepsize)
+    validate_stepsize(stepsize)
     _validate_number(number)
     if not isinstance(directions, list) or any(direction not in _DIRECTIONS for direction in directions):
         raise RuntimeError("fdforce workflow manifest has invalid directions")

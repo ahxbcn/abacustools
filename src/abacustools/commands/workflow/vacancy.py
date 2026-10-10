@@ -17,12 +17,12 @@ from abacustools.data.vacancy import (
 from abacustools.data.versions import default_version
 from abacustools.io.abacus import WriteInput
 from abacustools.io.stru import AbacusATOM, AbacusSTRU
+from abacustools.core.job import read_job_structure
 
 from .common import (
     clear_generated_jobs,
     copy_referenced_files,
     kpoint_filename,
-    read_job_structure,
     read_manifest,
     register_stages,
     write_abacus_job,

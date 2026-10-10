@@ -9,8 +9,8 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
-from abacustools.core.constant import ANG_TO_BOHR
 from abacustools.data.bader import BaderAnalysis, BaderError, analyze_bader
+from abacustools.integrations.baderkit import DEFAULT_METHOD, METHODS, analyze_baderkit
 
 
 def _job_directory(value: str) -> Path:
@@ -28,20 +28,41 @@ def _output_path(job: Path, value: str) -> Path:
 def _register_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("-j", "--job", required=True, type=_job_directory, help="ABACUS job directory.")
     parser.add_argument("-o", "--output", default=None, help="Write a JSON report, relative to JOB by default.")
-    parser.add_argument("--bader-exe", default=None, help="Bader executable (default: BADER_EXE env var or config).")
-    parser.add_argument("--cube", default=None, help="Explicit SPIN*_CHG.cube file or directory, relative to JOB.")
+    parser.add_argument(
+        "--backend",
+        choices=("bader", "baderkit"),
+        default="bader",
+        help="Bader implementation: the external Henkelman program or the baderkit library.",
+    )
+    parser.add_argument(
+        "--baderkit-method",
+        choices=METHODS,
+        default=DEFAULT_METHOD,
+        help="Partitioning method of the baderkit backend (default matches the external program).",
+    )
+    parser.add_argument(
+        "--bader-exe",
+        default=None,
+        help="Bader executable of the bader backend (default: BADER_EXE env var or config).",
+    )
+    parser.add_argument("--cube", default=None, help="Explicit charge-density cube file or directory, relative to JOB.")
     parser.add_argument("--reference", default=None, help="Reference charge cube passed to bader -ref.")
     parser.add_argument("--grid", type=int, nargs=3, metavar=("NX", "NY", "NZ"), default=None, help="FFT grid for restart input when it cannot be read from the log.")
-    parser.add_argument("--lat0", type=float, default=ANG_TO_BOHR, help="ABACUS LATTICE_CONSTANT in Bohr (default: 1.889726).")
-    parser.add_argument("--vacuum", default=None, help="Vacuum handling for bader -vac: 'off', 'auto' or a density value.")
+    parser.add_argument("--lat0", type=float, default=None, help="ABACUS LATTICE_CONSTANT in Bohr (default: the value in STRU).")
+    parser.add_argument("--vacuum", default=None, help="Vacuum handling: 'off', 'auto' (1e-3 e/Angstrom^3) or a density value.")
     parser.add_argument("--workdir", default=None, help="Keep the generated cubes and bader output in this directory.")
-    parser.add_argument("--keep-cubes", action="store_true", help="Keep the temporary cubes and bader output.")
+    parser.add_argument("--keep-cubes", action="store_true", help="Keep the temporary cubes and the partition output.")
     parser.add_argument("--json", action="store_true", help="Print the complete JSON report to stdout.")
 
 
 def _print_table(analysis: BaderAnalysis) -> None:
     console = Console()
-    table = Table(title=f"Bader charges: {analysis.job.name} (nspin={analysis.nspin})")
+    table = Table(
+        title=(
+            f"Bader charges: {analysis.job.name} "
+            f"(nspin={analysis.nspin}, {analysis.backend})"
+        )
+    )
     table.add_column("#", justify="right")
     table.add_column("Element")
     table.add_column("Z_valence", justify="right")
@@ -72,19 +93,21 @@ def _print_table(analysis: BaderAnalysis) -> None:
 
 def run(args: argparse.Namespace) -> int:
     job = Path(args.job)
+    common = dict(
+        cube=args.cube,
+        reference=args.reference,
+        grid_shape=tuple(args.grid) if args.grid else None,
+        lat0=args.lat0,
+        vacuum=args.vacuum,
+        workdir=args.workdir,
+        keep=args.keep_cubes,
+    )
     try:
-        analysis = analyze_bader(
-            job,
-            cube=args.cube,
-            reference=args.reference,
-            exe=args.bader_exe,
-            grid_shape=tuple(args.grid) if args.grid else None,
-            lat0=args.lat0,
-            vacuum=args.vacuum,
-            workdir=args.workdir,
-            keep=args.keep_cubes,
-        )
-    except BaderError as error:
+        if args.backend == "baderkit":
+            analysis = analyze_baderkit(job, method=args.baderkit_method, **common)
+        else:
+            analysis = analyze_bader(job, exe=args.bader_exe, **common)
+    except (BaderError, ImportError) as error:
         print(f"Bader analysis failed: {error}")
         return 1
 

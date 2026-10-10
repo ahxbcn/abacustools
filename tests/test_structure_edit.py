@@ -17,7 +17,14 @@ from abacustools.data.structure import (
     select_atoms,
     select_indices,
     set_coordinate_mode,
+    symmetrize_structure,
     with_vacuum,
+)
+from abacustools.core.config import CONFIG
+from abacustools.data.doping import (
+    SubstitutionError,
+    resolve_dopant_resources,
+    substitute_atoms,
 )
 from abacustools.io.stru import AbacusATOM, AbacusSTRU
 from abacustools.main import main
@@ -632,6 +639,156 @@ def test_standardize_cell_to_primitive(tmp_path):
     assert standardized.natoms <= structure.natoms
 
 
+def _rutile(noise: float = 0.0, seed: int = 3) -> AbacusSTRU:
+    """Return a rutile-like tetragonal cell, perturbed when ``noise`` is set."""
+    lattice = np.diag([4.594, 4.594, 2.959]).astype(float)
+    u = 0.3053
+    fractional = np.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.5, 0.5, 0.5],
+            [u, u, 0.0],
+            [-u, -u, 0.0],
+            [0.5 + u, 0.5 - u, 0.5],
+            [0.5 - u, 0.5 + u, 0.5],
+        ]
+    )
+    if noise:
+        generator = np.random.default_rng(seed)
+        lattice = lattice + generator.normal(0.0, noise, lattice.shape)
+        fractional = fractional + generator.normal(0.0, noise, fractional.shape)
+    atoms = [
+        AbacusATOM(
+            label=symbol,
+            element=symbol,
+            coord=(0.0, 0.0, 0.0),
+            pp=f"{symbol}.upf",
+            orb=f"{symbol}.orb",
+            move=(True, True, True),
+        )
+        for symbol in ("Ti", "Ti", "O", "O", "O", "O")
+    ]
+    structure = AbacusSTRU(
+        cell=lattice.tolist(), atoms=atoms, metadata={"atom_type": "direct"}
+    )
+    structure.coords_direct = fractional.tolist()
+    return structure
+
+
+def _space_group_number(structure: AbacusSTRU, symprec: float) -> int:
+    """Return the spglib space group number of a structure."""
+    import spglib
+    from ase.data import atomic_numbers
+
+    numbers = [
+        int(atomic_numbers[str(atom.element or atom.label).capitalize()])
+        for atom in structure.atoms
+    ]
+    dataset = spglib.get_symmetry_dataset(
+        (
+            np.asarray(structure.cell, dtype=float),
+            np.asarray(structure.coords_direct, dtype=float),
+            numbers,
+        ),
+        symprec=symprec,
+    )
+    return 0 if dataset is None else int(dataset.number)
+
+
+def test_symmetrize_removes_small_errors_and_keeps_the_atoms(tmp_path):
+    """Noise below symprec is averaged away and the symmetry becomes exact."""
+    noisy = _rutile(noise=1e-4)
+    assert _space_group_number(noisy, symprec=1e-8) == 1
+    before = np.asarray(noisy.coords_direct, dtype=float)
+
+    clean = symmetrize_structure(noisy, symprec=1e-2)
+
+    assert _space_group_number(clean, symprec=1e-8) == 136
+    metric = np.asarray(clean.cell, dtype=float) @ np.asarray(clean.cell, dtype=float).T
+    assert metric[0, 0] == pytest.approx(metric[1, 1])
+    assert metric[0, 1] == pytest.approx(0.0, abs=1e-10)
+    assert metric[1, 2] == pytest.approx(0.0, abs=1e-10)
+    assert clean.natoms == noisy.natoms
+    assert clean.labels == noisy.labels
+    assert clean.atoms[0].pp == "Ti.upf"
+    assert clean.atoms[0].orb == "Ti.orb"
+    assert clean.atoms[0].move == (True, True, True)
+    # The recipe copies the structure instead of editing it in place.
+    assert np.array_equal(np.asarray(noisy.coords_direct, dtype=float), before)
+
+
+def test_symmetrize_keep_cell_leaves_the_lattice_alone():
+    noisy = _rutile(noise=1e-4)
+
+    clean = symmetrize_structure(noisy, symprec=1e-2, keep_cell=True)
+
+    assert np.array_equal(np.asarray(clean.cell, dtype=float), np.asarray(noisy.cell, dtype=float))
+    shift = np.asarray(clean.coords_direct, dtype=float) - np.asarray(
+        noisy.coords_direct, dtype=float
+    )
+    shift -= np.rint(shift)
+    assert np.max(np.abs(shift)) > 0
+
+
+def test_symmetrize_leaves_an_ideal_structure_unchanged():
+    ideal = _rutile()
+
+    clean = symmetrize_structure(ideal)
+
+    shift = np.asarray(clean.coords_direct, dtype=float) - np.asarray(
+        ideal.coords_direct, dtype=float
+    )
+    shift -= np.rint(shift)
+    assert np.allclose(shift, 0.0, atol=1e-12)
+    assert np.allclose(np.asarray(clean.cell, dtype=float), np.asarray(ideal.cell, dtype=float))
+
+
+def test_symmetrize_needs_a_periodic_cell():
+    structure = _rutile()
+    structure.cell = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+
+    with pytest.raises(StructureEditError, match="periodic cell"):
+        symmetrize_structure(structure)
+
+
+def test_editstru_symmetrize_writes_a_clean_file(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "noisy.STRU"
+    assert _rutile(noise=1e-4).write(str(source))
+    output = tmp_path / "clean.STRU"
+
+    assert main([
+        "file", "editstru", "symmetrize", str(source),
+        "-o", str(output), "--symprec", "0.01", "--json",
+    ]) == 0
+
+    stdout = capsys.readouterr().out
+    payload = json.loads(stdout[stdout.index("{"):])
+    assert payload["action"] == "symmetrize"
+    assert payload["space_group_number"] == 136
+    assert payload["space_group"] == "P4_2/mnm"
+    assert payload["cell_idealized"] is True
+    assert payload["max_displacement_angstrom"] > 0
+    assert payload["atoms_before"] == payload["atoms_after"] == 6
+
+    clean = AbacusSTRU.read(str(output))
+    assert clean is not None
+    assert _space_group_number(clean, symprec=1e-8) == 136
+
+
+def test_editstru_symmetrize_notes_a_p1_result(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "noisy.STRU"
+    assert _rutile(noise=1e-4).write(str(source))
+    output = tmp_path / "clean.STRU"
+
+    assert main([
+        "file", "editstru", "symmetrize", str(source), "-o", str(output),
+    ]) == 0
+
+    stdout = capsys.readouterr().out
+    assert "P1 (No. 1)" in stdout
+    assert "raise --symprec" in stdout
+
+
 def test_editstru_primitive_cli(tmp_path):
     """Test the primitive CLI command."""
     from abacustools.io.stru import AbacusSTRU
@@ -705,3 +862,183 @@ def test_editstru_standardize_cli(tmp_path):
     result = main()
     assert result == 0
     assert output_file.exists()
+
+
+# Tests for substituting atoms and choosing the dopant resources
+
+
+def _host_structure() -> AbacusSTRU:
+    """Return a Si2O structure whose atoms carry resources and moments."""
+    return AbacusSTRU(
+        cell=[[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]],
+        atoms=[
+            AbacusATOM(
+                label="Si", element="Si", coord=(0.0, 0.0, 0.0),
+                pp="Si.upf", orb="Si.orb", mag=0.5, angle1=90.0,
+            ),
+            AbacusATOM(
+                label="Si", element="Si", coord=(2.0, 2.0, 2.0),
+                pp="Si.upf", orb="Si.orb",
+            ),
+            AbacusATOM(
+                label="O", element="O", coord=(1.0, 1.0, 1.0),
+                pp="O.upf", orb="O.orb",
+            ),
+        ],
+        metadata={"atom_type": "cartesian"},
+    )
+
+
+def _dopant_library(tmp_path: Path) -> Path:
+    """Return a library directory holding iron files."""
+    library = tmp_path / "library"
+    library.mkdir()
+    (library / "Fe.upf").write_text("pseudo", encoding="utf-8")
+    (library / "Fe_gga_7au_100Ry_2s2p1d.orb").write_text("orb", encoding="utf-8")
+    return library
+
+
+def _configure_library(monkeypatch, library: Path) -> None:
+    """Point the default resource library at a temporary directory."""
+    monkeypatch.setitem(
+        CONFIG,
+        "resources",
+        {
+            "default": "test",
+            "orb_variant": "DZP",
+            "libraries": {"test": {"pp": str(library), "orb": str(library)}},
+        },
+    )
+
+
+def test_substitute_reuses_the_files_of_an_element_in_the_structure() -> None:
+    host = _host_structure()
+
+    resources = resolve_dopant_resources(host, "O")
+
+    assert resources.pp == "O.upf"
+    assert resources.orb == "O.orb"
+    assert resources.pp_source == "structure"
+    assert resources.orb_source == "structure"
+    assert "already present" in resources.pp_reason
+    assert "reused" in resources.orb_reason
+
+    edited = substitute_atoms(host, element="O", indices=[0], resources=resources)
+
+    assert edited.atoms[0].element == "O"
+    assert edited.atoms[0].label == "O"
+    assert edited.atoms[0].pp == "O.upf"
+    assert edited.atoms[0].orb == "O.orb"
+    assert edited.atoms[0].mass == pytest.approx(15.999, abs=1e-3)
+    assert edited.atoms[2].pp == "O.upf"
+    assert host.atoms[0].element == "Si"
+
+
+def test_substitute_uses_the_configured_library_for_a_missing_element(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _configure_library(monkeypatch, _dopant_library(tmp_path))
+    host = _host_structure()
+
+    resources = resolve_dopant_resources(host, "Fe")
+
+    assert resources.pp == "Fe.upf"
+    assert resources.orb == "Fe_gga_7au_100Ry_2s2p1d.orb"
+    assert resources.pp_source == "library"
+    assert resources.orb_source == "library"
+    assert resources.library == "test"
+    assert "not present" in resources.pp_reason
+    assert "'test'" in resources.orb_reason
+    assert "DZP" in resources.orb_reason
+
+    edited = substitute_atoms(host, element="Fe", indices=[0, 1], resources=resources)
+
+    assert [atom.element for atom in edited.atoms] == ["Fe", "Fe", "O"]
+    assert {atom.label for atom in edited.atoms} == {"Fe", "O"}
+    assert edited.atoms[0].pp == "Fe.upf"
+    assert edited.atoms[0].mass == pytest.approx(55.845, abs=1e-3)
+
+
+def test_substitute_clears_the_moments_unless_they_are_kept() -> None:
+    host = _host_structure()
+    resources = resolve_dopant_resources(host, "O")
+
+    cleared = substitute_atoms(host, element="O", indices=[0], resources=resources)
+    assert cleared.atoms[0].mag is None
+    assert cleared.atoms[0].angle1 is None
+    assert cleared.atoms[0].type_mag == 0.0
+
+    kept = substitute_atoms(
+        host, element="O", indices=[0], resources=resources, keep_moments=True
+    )
+    assert kept.atoms[0].mag == 0.5
+    assert kept.atoms[0].angle1 == 90.0
+
+
+def test_substitute_rejects_an_element_with_several_resources() -> None:
+    host = _host_structure()
+    host.atoms[1].pp = "Si_other.upf"
+
+    with pytest.raises(SubstitutionError, match="several pp"):
+        resolve_dopant_resources(host, "Si")
+
+
+def test_substitute_rejects_a_label_that_belongs_to_another_element() -> None:
+    host = _host_structure()
+    resources = resolve_dopant_resources(host, "O")
+
+    with pytest.raises(SubstitutionError, match="already belongs"):
+        substitute_atoms(
+            host, element="O", indices=[0], resources=resources, label="Si"
+        )
+
+
+def test_editstru_substitute_explains_the_choice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    _configure_library(monkeypatch, _dopant_library(tmp_path))
+    source = tmp_path / "STRU"
+    assert _host_structure().write(str(source))
+    output = tmp_path / "doped.STRU"
+
+    assert main([
+        "file", "editstru", "substitute", str(source),
+        "-o", str(output), "--element", "Fe", "--indices", "1",
+    ]) == 0
+    report = capsys.readouterr().out
+
+    assert "Fe is not present in the input structure" in report
+    assert "configured resource library 'test'" in report
+    assert "pseudopotential: Fe.upf" in report
+    assert "orbital: Fe_gga_7au_100Ry_2s2p1d.orb" in report
+
+    doped = AbacusSTRU.read(str(output))
+    assert doped is not None
+    assert doped.atoms[0].element == "Fe"
+    assert doped.atoms[0].pp == "Fe.upf"
+    assert doped.atoms[0].orb == "Fe_gga_7au_100Ry_2s2p1d.orb"
+    assert doped.atoms[1].pp == "Si.upf"
+
+
+def test_editstru_substitute_accepts_explicit_files(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "STRU"
+    assert _host_structure().write(str(source))
+    output = tmp_path / "doped.STRU"
+
+    assert main([
+        "file", "editstru", "substitute", str(source), "-o", str(output),
+        "--element", "Fe", "--elements", "Si",
+        "--pp", "MY.upf", "--orb", "MY.orb", "--json",
+    ]) == 0
+    stdout = capsys.readouterr().out
+    payload = json.loads(stdout[stdout.index("{"):])
+
+    assert payload["dopant"] == "Fe"
+    assert payload["pseudopotential"] == "MY.upf"
+    assert payload["pseudopotential_source"] == "command line"
+    assert payload["orbital"] == "MY.orb"
+    assert payload["substituted_atoms"] == [1, 2]
+
+    doped = AbacusSTRU.read(str(output))
+    assert doped is not None
+    assert [atom.pp for atom in doped.atoms] == ["MY.upf", "MY.upf", "O.upf"]

@@ -78,13 +78,22 @@ def _resolve_choice(raw: str, choices: Sequence) -> Optional[str]:
     return None
 
 
-def _ask(action: argparse.Action, ctx: MenuContext, prompt: Optional[str] = None) -> str:
+def _question(
+    action: argparse.Action,
+    prompt: Optional[str] = None,
+    show_choices: bool = True,
+    show_default: bool = True,
+) -> str:
     suffix = ""
-    if action.choices:
+    if show_choices and action.choices:
         suffix += " {" + ", ".join(str(choice) for choice in action.choices) + "}"
-    if action.default is not None and not action.required:
+    if show_default and action.default is not None and not action.required:
         suffix += f" [default: {action.default}]"
-    return ctx.ask(f"{prompt or _label(action)}{suffix}").strip()
+    return f"{prompt or _label(action)}{suffix}"
+
+
+def _ask(action: argparse.Action, ctx: MenuContext, prompt: Optional[str] = None) -> str:
+    return ctx.ask(_question(action, prompt)).strip()
 
 
 def _prompt_flag(action: argparse.Action, ctx: MenuContext) -> list[str]:
@@ -95,12 +104,22 @@ def _prompt_flag(action: argparse.Action, ctx: MenuContext) -> list[str]:
 
 def _prompt_choice(action: argparse.Action, ctx: MenuContext, multiple: bool) -> list[str]:
     choices = list(action.choices or [])
-    for index, choice in enumerate(choices, start=1):
-        ctx.write(escape(f"  {index}) {choice}"))
     if multiple:
-        raw = _ask(action, ctx, prompt=f"{_label(action)} (numbers/values, blank to finish)")
-        if not raw:
-            return []
+        question = f"{_label(action)} (numbers/values, blank to finish)"
+    else:
+        question = f"{_label(action)} (number or value)"
+    default = action.default if action.default in choices else None
+    mark = not multiple and default is not None
+    options = "\n".join(
+        f"  {index}) {choice}" + (" (default)" if mark and choice == default else "")
+        for index, choice in enumerate(choices, start=1)
+    )
+    question_text = _question(action, question, show_choices=False, show_default=not mark)
+    prompt = "\n".join((question_text, options, "Select"))
+    raw = ctx.ask(prompt).strip()
+    if not raw:
+        return []
+    if multiple:
         values = []
         for part in raw.replace(",", " ").split():
             value = _resolve_choice(part, choices)
@@ -109,9 +128,6 @@ def _prompt_choice(action: argparse.Action, ctx: MenuContext, multiple: bool) ->
                 return []
             values.append(value)
         return values
-    raw = _ask(action, ctx, prompt=f"{_label(action)} (number or value)")
-    if not raw:
-        return []
     value = _resolve_choice(raw, choices)
     if value is None:
         ctx.write(escape(f"Unknown choice: {raw}"))

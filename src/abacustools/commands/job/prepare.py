@@ -11,12 +11,36 @@ from abacustools.core.input_prep import (
     available_resource_libraries,
     parse_input_value,
 )
+from abacustools.core.submission import write_batch_config
 
 
 def _pairs(values, *, value_type=float) -> dict:
     result = {}
     for key, value in values or []:
         result[key] = value_type(value)
+    return result
+
+
+def _dftu_pairs(values) -> dict:
+    """Return ``{element: U}`` or ``{element: [orbital, U]}`` settings.
+
+    ``--dftu-param`` accepts ``ELEMENT U`` (the orbital is inferred from the
+    element) or ``ELEMENT ORBITAL U`` (the orbital is explicit).
+    """
+    result = {}
+    for entry in values or []:
+        fields = list(entry)
+        if len(fields) == 3:
+            element, orbital, u_value = fields
+            result[element] = [orbital, u_value]
+        elif len(fields) == 2:
+            element, u_value = fields
+            result[element] = u_value
+        else:
+            raise ValueError(
+                "--dftu-param takes ELEMENT U or ELEMENT ORBITAL U, got: "
+                + " ".join(str(field) for field in fields)
+            )
     return result
 
 
@@ -32,7 +56,12 @@ def register_parser(subparsers) -> None:
     )
     parser.add_argument("--ftype", default=None, help="Input structure format; inferred by default.")
     parser.add_argument("-o", "--output-dir", default=".", type=Path, help="Directory for generated jobs.")
-    parser.add_argument("--job-type", default="scf", choices=available_job_types(), help="ABACUS calculation type.")
+    parser.add_argument(
+        "--job-type",
+        default="scf",
+        choices=available_job_types(),
+        help="ABACUS calculation type; default: scf.",
+    )
     parser.add_argument(
         "--library", choices=available_resource_libraries(), default=None,
         help="Configured pseudopotential/orbital library; uses the configured default by default.",
@@ -45,30 +74,35 @@ def register_parser(subparsers) -> None:
     parser.add_argument(
         "--kpt",
         default=None,
-        action="append",
         nargs="+",
         type=parse_input_value,
-        metavar="VALUE",
-        help=(
-            "KPT values. Gamma/MP take three or six mesh values; the direct, "
-            "cartesian and line models take one group per k-point or node, so "
-            "repeat the option for each group."
-        ),
+        metavar="N",
+        help="K-point mesh for the gamma or MP model: three or six values.",
     )
     parser.add_argument(
-        "--kpt-model", default="gamma",
-        choices=("gamma", "mp", "direct", "cartesian", "line", "line_cartesian"),
+        "--kpt-model",
+        default=None,
+        choices=("gamma", "mp"),
         help="KPT model used with --kpt, default: gamma.",
     )
-    basis = parser.add_mutually_exclusive_group()
-    basis.add_argument("--basis", choices=("pw", "lcao"), default=None)
-    basis.add_argument("--lcao", dest="basis", action="store_const", const="lcao", help="Use the LCAO basis.")
-    parser.add_argument("--nspin", default=1, type=int, choices=(1, 2, 4))
-    parser.add_argument("--soc", action="store_true", help="Enable spin-orbit coupling.")
-    parser.add_argument("--dftu", action="store_true", help="Enable DFT+U.")
+    # The effective default is lcao (``abacus.default_basis``); leaving the
+    # argparse default as None keeps an INPUT template or ``--set basis_type``
+    # able to choose the basis without conflicting with an implicit --basis.
     parser.add_argument(
-        "--dftu-param", action="append", nargs=2, metavar=("ELEMENT", "U"),
-        help="DFT+U value for an element; repeat for multiple elements.",
+        "--basis",
+        choices=("pw", "lcao"),
+        default=None,
+        help="Basis (pw or lcao); default: lcao.",
+    )
+    parser.add_argument("--nspin", default=None, type=int, choices=(1, 2, 4))
+    parser.add_argument("--soc", action="store_true", help="Enable spin-orbit coupling.")
+    parser.add_argument(
+        "--dftu-param", action="append", nargs="+", metavar="ELEMENT [ORBITAL] U",
+        help=(
+            "Enable DFT+U for an element: set U in eV, and optionally the "
+            "correlated orbital (p, d or f) before it; the orbital is inferred "
+            "from the element when omitted. Repeat for multiple elements."
+        ),
     )
     parser.add_argument(
         "--init-mag", action="append", nargs=2, metavar=("ELEMENT", "MAG"),
@@ -92,12 +126,23 @@ def register_parser(subparsers) -> None:
         ),
     )
     parser.add_argument("--override", "--overwrite", dest="override", action="store_true", help="Replace existing folders.")
+    parser.add_argument(
+        "--submit-config",
+        dest="generate_config",
+        action="store_true",
+        default=None,
+        help="Write the configured batch submission file next to the prepared jobs.",
+    )
+    parser.add_argument(
+        "--abacus-command",
+        help="ABACUS command used in the batch submission file; otherwise use the config default.",
+    )
     parser.set_defaults(handler=run)
 
 
 def run(args: argparse.Namespace) -> int:
     """Prepare one or more complete ABACUS input directories."""
-    dftu_param = _pairs(args.dftu_param)
+    dftu_param = _dftu_pairs(args.dftu_param)
     init_mag = _pairs(args.init_mag)
     set_params = {name.lower(): parse_input_value(value) for name, value in args.set or []}
     jobs = InputPreparer(
@@ -113,7 +158,7 @@ def run(args: argparse.Namespace) -> int:
         basis=args.basis,
         nspin=args.nspin,
         soc=args.soc,
-        dftu=args.dftu,
+        dftu=bool(dftu_param),
         dftu_param=dftu_param,
         init_mag=init_mag,
         afm=args.afm,
@@ -125,4 +170,17 @@ def run(args: argparse.Namespace) -> int:
     print("Prepared ABACUS jobs:")
     for job in jobs:
         print(f"  {job.path}  (source: {job.source})")
+    if jobs:
+        submission = write_batch_config(
+            jobs[0].path.parent,
+            [job.path for job in jobs],
+            job_type=args.job_type,
+            generate=args.generate_config,
+            abacus_command=args.abacus_command,
+        )
+        if submission is not None:
+            print(
+                f"  batch config: {jobs[0].path.parent / submission['config_file']}"
+                f"  ({submission['job_count']} jobs)"
+            )
     return 0

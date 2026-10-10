@@ -4,6 +4,7 @@ from . import checkinput as checkinput_command
 from . import monitor as monitor_command
 from . import monitor_many as monitor_many_command
 from . import prepare as prepare_command
+from . import setpporb as setpporb_command
 from . import status as status_command
 from . import validate as validate_command
 
@@ -21,6 +22,7 @@ def register_parser(subparsers) -> None:
         required=True,
     )
     prepare_command.register_parser(job_subparsers)
+    setpporb_command.register_parser(job_subparsers)
     checkinput_command.register_parser(job_subparsers)
     validate_command.register_parser(job_subparsers)
     status_command.register_parser(job_subparsers)

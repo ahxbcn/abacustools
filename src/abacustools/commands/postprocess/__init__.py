@@ -2,9 +2,14 @@
 
 from . import bader as bader_command
 from . import band as band_command
+from . import chg as chg_command
 from . import cohp as cohp_command
+from . import ddec as ddec_command
 from . import dos as dos_command
+from . import hirshfeld as hirshfeld_command
 from . import mayer as mayer_command
+from . import md as md_command
+from . import molden as molden_command
 from . import result as result_command
 
 
@@ -23,7 +28,12 @@ def register_parser(subparsers) -> None:
     )
     bader_command.register_parser(postprocess_subparsers)
     band_command.register_parser(postprocess_subparsers)
+    chg_command.register_parser(postprocess_subparsers)
     cohp_command.register_parser(postprocess_subparsers)
+    ddec_command.register_parser(postprocess_subparsers)
     dos_command.register_parser(postprocess_subparsers)
+    hirshfeld_command.register_parser(postprocess_subparsers)
     mayer_command.register_parser(postprocess_subparsers)
+    md_command.register_parser(postprocess_subparsers)
+    molden_command.register_parser(postprocess_subparsers)
     result_command.register_parser(postprocess_subparsers)

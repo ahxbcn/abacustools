@@ -177,6 +177,7 @@ class AbacusAtomType(BaseModel):
     element: Optional[str] = None
     mass: Optional[float] = None
     pp: Optional[str] = None
+    pp_type: Optional[str] = None
     orb: Optional[str] = None
     paw: Optional[str] = None
     type_mag: float = 0.0
@@ -194,6 +195,7 @@ class AbacusAtomType(BaseModel):
                 self.element == other.element and
                 mass1 == mass2 and
                 self.pp == other.pp and
+                self.pp_type == other.pp_type and
                 self.orb == other.orb and
                 self.paw == other.paw and
                 mag1 == mag2)
@@ -203,6 +205,7 @@ class AbacusAtomType(BaseModel):
         out.append(self.element if self.element is not None else "")
         out.append(self.mass if self.mass is not None else 0.0)
         out.append(self.pp if self.pp is not None else "")
+        out.append(self.pp_type if self.pp_type is not None else "")
         out.append(self.orb if self.orb is not None else "")
         out.append(self.paw if self.paw is not None else "")
         out.append(self.type_mag)
@@ -257,6 +260,7 @@ class AbacusATOM(BaseModel):
     element: Optional[str] = None
     mass: Optional[float] = None
     pp: Optional[str] = None
+    pp_type: Optional[str] = None
     orb: Optional[str] = None
     paw: Optional[str] = None
     type_mag: Optional[float] = 0.0
@@ -264,6 +268,7 @@ class AbacusATOM(BaseModel):
     velocity: Optional[Tuple[float, float, float]] = None
     constrain: Optional[Union[bool, Tuple[bool, bool, bool]]] = None
     lambda_: Optional[Union[float, Tuple[float, float, float]]] = None
+    force: Optional[Tuple[float, float, float]] = None  # force in eV/Angstrom
 
     mag: Optional[Union[float, Tuple[float, float, float]]] = None  # magnitude of magnetic moment
     angle1: Optional[float] =  None  # angle between magnetic moment and z-axis
@@ -303,6 +308,7 @@ class AbacusATOM(BaseModel):
             element=self.element,
             mass=self.mass,
             pp=self.pp,
+            pp_type=self.pp_type,
             orb=self.orb,
             paw=self.paw,
             type_mag=self.type_mag,
@@ -544,8 +550,17 @@ def _guess_format(path: str) -> str:
     return None
 
 
-def _normalize_structure_format(fmt: Optional[str], filename: str) -> str:
-    """Normalize a structure format name, using the filename when needed."""
+def normalize_structure_format(fmt: Optional[str], filename: str) -> str:
+    """Return the canonical format a read or write will use.
+
+    Args:
+        fmt: Explicit format name, or ``None`` to guess it from the filename.
+        filename: Structure file the format belongs to.
+
+    Returns:
+        str: Canonical format name: ``stru``, ``poscar``, ``cif``, ``xyz``,
+        ``extxyz`` or ``xsf``.
+    """
     if fmt is None:
         fmt = _guess_format(filename) or "stru"
     fmt = fmt.lower()
@@ -629,7 +644,7 @@ def conversion_loss_report(structure: "AbacusSTRU", target_format: str) -> List[
     silently incomplete structure, especially for calculations where masses,
     constraints, or magnetic moments affect the result.
     """
-    target = _normalize_structure_format(target_format, target_format)
+    target = normalize_structure_format(target_format, target_format)
     if target in ("stru", "abacus/stru"):
         return []
 
@@ -1083,21 +1098,17 @@ class AbacusSTRU:
         if not os.path.exists(filename):
             print(f"Error: file '{filename}' does not exist.")
             return None
-        fmt = _normalize_structure_format(fmt, filename)
+        fmt = normalize_structure_format(fmt, filename)
         try:
             if fmt in ["stru", "abacus/stru"]:
                 stru_data = read_stru_file(stru=filename)
                 cell = (np.array(stru_data["cell"]) * stru_data['lattice_constant'] * BOHR2A).tolist()
-                if stru_data["cartesian"]:
-                    coords = (np.array(stru_data["coord"]) * stru_data['lattice_constant'] * BOHR2A).tolist()
-                else:
-                    coords = Unitcell(cell).frac_to_cart(
-                        stru_data["coord"], wrap=False
-                    )
+                coords = _convert_stru_coords(stru_data, cell)
                 atom_list = []
                 label_tot = get_total_property(stru_data, "label")
                 mass_tot = get_total_property(stru_data, "mass")
                 pp_tot = get_total_property(stru_data, "pp")
+                pp_type_tot = get_total_property(stru_data, "pp_type")
                 orb_tot = get_total_property(stru_data, "orb")
                 paw_tot = get_total_property(stru_data, "paw")
                 type_mag_tot = get_total_property(stru_data, "magmom")
@@ -1109,6 +1120,7 @@ class AbacusSTRU:
                         element=None,
                         mass=None if len(stru_data["mass"]) == 0 else mass_tot[i],
                         pp=None if len(stru_data['pp']) == 0 else pp_tot[i],
+                        pp_type=None if len(stru_data.get('pp_type') or []) == 0 else pp_type_tot[i],
                         orb=None if len(stru_data['orb']) == 0 else orb_tot[i],
                         paw=None if len(stru_data['paw']) == 0 else paw_tot[i],
                         type_mag=type_mag_tot[i],
@@ -1119,6 +1131,7 @@ class AbacusSTRU:
                         velocity=stru_data["velocity"][i],
                         constrain=stru_data["constrain"][i],
                         lambda_=stru_data["lambda_"][i],
+                        force=(stru_data["force"][i] if stru_data.get("force") else None),
                     )
                     atom_list.append(atom)
                 dpks = stru_data.get("dpks", None)
@@ -1175,7 +1188,7 @@ class AbacusSTRU:
         Returns:
             bool: True if write succeeded, False otherwise.
         """
-        fmt = _normalize_structure_format(fmt, filename)
+        fmt = normalize_structure_format(fmt, filename)
         _warn_conversion_losses(
             conversion_loss_report(self, fmt),
             "STRU",
@@ -1213,6 +1226,7 @@ class AbacusSTRU:
                                 direct=direct,
                                 pp =[ut.pp for ut in unique_types],
                                 mass = [ut.mass for ut in unique_types],
+                                pp_type = [ut.pp_type for ut in unique_types],
                                 orb = [ut.orb for ut in unique_types],
                                 paw = [ut.paw for ut in unique_types],
                                 magmom_global=[ut.type_mag for ut in unique_types],
@@ -1224,6 +1238,7 @@ class AbacusSTRU:
                                 angle2 = [atom.angle2 for atom in atom_list],
                                 constrain = [atom.constrain for atom in atom_list],
                                 lambda_ = [atom.lambda_ for atom in atom_list],
+                                force = [atom.force for atom in atom_list],
                                 dpks = self.dpks)
             elif fmt in  ["poscar", "vasp"]:
                 write_poscar(cell = self.cell,
@@ -1634,6 +1649,7 @@ def parse_stru_position(pos_line):
     angle2 = None
     constrain = None
     lambda1 = None
+    force = None
     if len(sline) > 3:
         mag_list = []
         velocity_list = []
@@ -1642,6 +1658,7 @@ def parse_stru_position(pos_line):
         angle2_list = []
         constrain_list = []
         lambda_list = []
+        force_list = []
         label = "move"
         for i in range(3,len(sline)):
             # firstly read the label
@@ -1666,6 +1683,9 @@ def parse_stru_position(pos_line):
             elif sline[i] in ["lambda"]:
                 label = "lambda"
                 lambda_list = []
+            elif sline[i] in ["f","force","forces"]:
+                label = "force"
+                force_list = []
             
             # the read the value to the list    
             elif label == "move":
@@ -1682,6 +1702,8 @@ def parse_stru_position(pos_line):
                 constrain_list.append(bool(int(sline[i])))
             elif label == "lambda":
                 lambda_list.append(float(sline[i]))
+            elif label == "force":
+                force_list.append(float(sline[i]))
         if len(move_list) == 3:
             move = move_list
         if len(velocity_list) == 3:
@@ -1700,9 +1722,52 @@ def parse_stru_position(pos_line):
             lambda1 = lambda_list
         elif len(lambda_list) == 1:
             lambda1 = lambda_list[0]
-            
-            
-    return pos,move,velocity,magmom,angle1,angle2,constrain,lambda1
+        if len(force_list) == 3:
+            force = force_list
+
+    return pos,move,velocity,magmom,angle1,angle2,constrain,lambda1,force
+
+def _stru_lattice_center(cell, axes: str) -> np.ndarray:
+    """Center of the cell along the requested axes, in units of ``lat0``.
+
+    The ``Cartesian_angstrom_center_*`` coordinate modes shift the positions by
+    half the cell along the axes named in ``axes`` (a string such as ``"xy"``).
+    """
+    cell = np.asarray(cell, dtype=float)
+    center = np.zeros(3)
+    if "x" in axes:
+        center[0] = cell[:, 0].sum() / 2.0
+    if "y" in axes:
+        center[1] = cell[:, 1].sum() / 2.0
+    if "z" in axes:
+        center[2] = cell[:, 2].sum() / 2.0
+    return center
+
+
+def _convert_stru_coords(stru_data: Dict[str, Any], cell) -> list:
+    """Convert the raw STRU coordinates to Cartesian Angstrom.
+
+    Handles every coordinate keyword the current ABACUS reader accepts:
+    ``Direct``, the classic ``Cartesian`` (multiples of ``lat0``), the newer
+    ``Cartesian_angstrom``/``Cartesian_au`` and the centered
+    ``Cartesian_angstrom_center_{xy,xz,yz,xyz}`` modes.
+    """
+    lat0 = stru_data.get("lattice_constant", 1.0)
+    coord = np.asarray(stru_data["coord"], dtype=float)
+    mode = str(stru_data.get("coord_type", "cartesian")).lower()
+    if mode.startswith("dire"):
+        return Unitcell(cell).frac_to_cart(coord.tolist(), wrap=False)
+    if mode == "cartesian_angstrom":
+        return coord.tolist()
+    if mode == "cartesian_au":
+        return (coord * BOHR2A).tolist()
+    if mode.startswith("cartesian_angstrom_center"):
+        axes = mode.rsplit("_", 1)[-1]
+        center = _stru_lattice_center(stru_data["cell"], axes) * lat0 * BOHR2A
+        return (coord + center).tolist()
+    # Classic Cartesian: the values are multiples of lat0, which is in Bohr.
+    return (coord * lat0 * BOHR2A).tolist()
+
 
 def read_stru_file(stru:str = "STRU"):
     '''Read ABACUS STRU file and return a dictionary with structure information.
@@ -1769,6 +1834,7 @@ def read_stru_file(stru:str = "STRU"):
     
     #read species
     pp = []
+    pp_type = []
     labels = []
     mass = []
     for line in atomic_species:
@@ -1777,8 +1843,12 @@ def read_stru_file(stru:str = "STRU"):
         mass.append(float(sline[1]))
         if len(sline) > 2: 
             pp.append(sline[2])
+        if len(sline) > 3:
+            pp_type.append(sline[3])
     if len(pp) == 0:
         pp = None
+    if len(pp_type) != len(labels):
+        pp_type = None
         
     #read orbital
     if numerical_orbital is None:
@@ -1815,6 +1885,7 @@ def read_stru_file(stru:str = "STRU"):
     angle2 = []
     constrain = [] # the constrain of each atom
     lambda1 = [] # the lambda for delta spin
+    force = [] # the force of each atom, in eV/Angstrom
     coord_type = atom_positions[0].split("#")[0].strip().lower()
     if coord_type.startswith("dire"):
         cartesian = False
@@ -1856,7 +1927,8 @@ def read_stru_file(stru:str = "STRU"):
             
         i += 3
         for j in range(atom_number[-1]):
-            pos,imove,ivelocity,imag,iangle1,iangle2,iconstrain,ilambda1 = parse_stru_position(atom_positions[i+j])
+            (pos,imove,ivelocity,imag,iangle1,iangle2,iconstrain,ilambda1,
+             iforce) = parse_stru_position(atom_positions[i+j])
             coords.append(pos)
             move.append(imove)
             velocity.append(ivelocity)
@@ -1865,6 +1937,7 @@ def read_stru_file(stru:str = "STRU"):
             angle2.append(iangle2)
             constrain.append(iconstrain)
             lambda1.append(ilambda1)
+            force.append(iforce)
             
         i += atom_number[-1]
 
@@ -1875,6 +1948,7 @@ def read_stru_file(stru:str = "STRU"):
         "cell": cell,              # 3x3 list of cell vectors
         "coord": coords,       # list of coordinates for each atom
         "pp": real_pp,          # list of pseudopotential files for each atom type
+        "pp_type": pp_type if pp_type is None else [pp_type[labels.index(l)] for l in real_label],
         "orb": real_orb,        # list of orbital files for each atom type
         "paw": real_paw,        # list of PAW files for each atom type
         "lattice_constant": lattice_constant,  # lattice constant value
@@ -1886,8 +1960,10 @@ def read_stru_file(stru:str = "STRU"):
         "angle2": angle2,       # list of angle2 values for each atom
         "constrain": constrain, # list of constrain flags for each atom
         "lambda_": lambda1,     # list of lambda1 values for each atom
+        "force": force,         # list of forces (eV/Angstrom) for each atom
         "dpks": dpks,           # dpks value
-        "cartesian": cartesian  # boolean indicating if coordinates are cartesian
+        "cartesian": cartesian,  # boolean indicating if coordinates are cartesian
+        "coord_type": coord_type  # coordinate keyword as written in the file
     }
 
 
@@ -1901,6 +1977,7 @@ def write_stru_file(
           direct:bool=False,
           pp:Optional[List[str]] = None,
           mass:Optional[List[float]] = None,
+          pp_type:Optional[List[Optional[str]]] = None,
           orb:Optional[List[str]] = None,
           paw:Optional[List[str]] = None,
           magmom_global:Optional[List[float]] = None,
@@ -1912,6 +1989,7 @@ def write_stru_file(
           angle2:Optional[List[Optional[float]]] = None,
           constrain:Optional[List[Optional[Union[bool,Tuple[bool,bool,bool]]]]] = None,
           lambda_:Optional[List[Optional[Union[float,Tuple[float,float,float]]]]] = None,
+          force:Optional[List[Optional[Tuple[float,float,float]]]] = None,
           dpks:Optional[str] = None,
           ):
     '''Write to ABACUS STRU file. 
@@ -1927,11 +2005,12 @@ def write_stru_file(
     natoms = sum(atom_number)
     assert len(coord) == natoms, "coord length mismatch with atom_number"
     for key, lst in [("pp",pp),("mass",mass),("magmom_global",magmom_global),
-                     ("orb",orb),("paw",paw)]:
+                     ("orb",orb),("paw",paw),("pp_type",pp_type)]:
         if lst is not None:
             assert len(lst) == len(label), f"{key} length mismatch with label"
     for key, lst in [("move",move),("magmom",magmom),("velocity",velocity),
-                     ("angle1",angle1),("angle2",angle2),("constrain",constrain),("lambda_",lambda_)]:
+                     ("angle1",angle1),("angle2",angle2),("constrain",constrain),("lambda_",lambda_),
+                     ("force",force)]:
         if lst is not None:
             assert len(lst) == natoms, f"{key} length mismatch with natoms"
     
@@ -1945,9 +2024,12 @@ def write_stru_file(
         else:
             cc += "1.0 "
         if pp and pp[i] is not None:
-            cc += f"{pp[i]}\n"
+            cc += f"{pp[i]}"
         else:
-            cc += "\n"
+            cc += ""
+        if pp_type and pp_type[i]:
+            cc += f" {pp_type[i]}"
+        cc += "\n"
     
     if orb and None not in orb:
         #write orb
@@ -1995,6 +2077,8 @@ def write_stru_file(
                 cc += "%d %d %d " % tuple(move[icoord + j])
             if velocity and velocity[icoord + j] and len(velocity[icoord + j]) == 3:
                 cc += "v %f %f %f " % tuple(velocity[icoord + j])
+            if force and force[icoord + j] and len(force[icoord + j]) == 3:
+                cc += "f %.6f %.6f %.6f " % tuple(force[icoord + j])
             # A moment is either a scalar or a sequence of one or three numbers.
             # Pydantic turns the three components read from a STRU file into a
             # tuple, so both sequences have to be accepted here.
@@ -2114,7 +2198,7 @@ def write_poscar(
     return cc
 
 def get_total_property(stru_data: Dict[str, Any],
-                       prop: Literal['label', 'magmom', 'pp', 'orb', 'paw']):
+                       prop: Literal['label', 'magmom', 'pp', 'pp_type', 'orb', 'paw']):
     """
     Get selected property in stru_data (read by read_stru_file) for each atom stored for each type .
     Args:
@@ -2124,7 +2208,7 @@ def get_total_property(stru_data: Dict[str, Any],
         float: The total property.
     """
     result = []
-    if len(stru_data[prop]) == 0:
+    if len(stru_data.get(prop) or []) == 0:
         return []
     else:
         assert len(stru_data[prop]) == len(stru_data['atom_number'])

@@ -67,6 +67,28 @@ H
 """
 
 
+STRU_VACUUM = """\
+ATOMIC_SPECIES
+H 1.0
+
+LATTICE_CONSTANT
+1.0
+
+LATTICE_VECTORS
+3 0 0
+0 3 0
+0 0 15
+
+ATOMIC_POSITIONS
+Cartesian
+
+H
+0.0
+1
+0 0 0
+"""
+
+
 STRU_WITH_PAW = """\
 ATOMIC_SPECIES
 H 1.0 H.upf
@@ -300,7 +322,52 @@ def test_prepare_lcao_job_keeps_orbitals(tmp_path: Path) -> None:
     assert "NUMERICAL_ORBITAL" in (job / "STRU").read_text(encoding="utf-8")
 
 
-def test_prepare_warns_about_the_default_kpt_mesh(tmp_path: Path) -> None:
+def test_prepare_defaults_to_the_template_kspacing(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+
+    job = InputPreparer(
+        source,
+        output_dir=tmp_path / "jobs",
+        filetype="stru",
+        basis="pw",
+        pp_path=library,
+    ).run()[0].path
+
+    assert float(ReadInput(job / "INPUT")["kspacing"]) == pytest.approx(0.14)
+    assert not (job / "KPT").exists()
+
+
+def test_prepare_explicit_kpt_overrides_the_template_kspacing(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+
+    job = InputPreparer(
+        source,
+        output_dir=tmp_path / "jobs",
+        filetype="stru",
+        basis="pw",
+        pp_path=library,
+        kpt=[2, 2, 2],
+    ).run()[0].path
+
+    assert (job / "KPT").is_file()
+    assert "kspacing" not in ReadInput(job / "INPUT")
+
+
+def test_prepare_warns_about_a_vacuum_layer(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+    source.write_text(STRU_VACUUM, encoding="utf-8")
+
+    with pytest.warns(UserWarning, match="vacuum layer"):
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="pw",
+            pp_path=library,
+        ).run()
+
+
+def test_prepare_warns_when_no_k_sampling_is_available(tmp_path: Path) -> None:
     source, library = _source_and_library(tmp_path)
 
     with pytest.warns(UserWarning, match="no KPT file found"):
@@ -310,9 +377,24 @@ def test_prepare_warns_about_the_default_kpt_mesh(tmp_path: Path) -> None:
             filetype="stru",
             basis="pw",
             pp_path=library,
+            set_params={"kspacing": 0},
         ).run()[0].path
 
     assert (job / "KPT").read_text(encoding="utf-8") == "K_POINTS\n0\nGamma\n1 1 1 0 0 0\n"
+
+
+def test_prepare_rejects_a_solver_of_the_other_basis(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+
+    with pytest.raises(ValueError, match="ks_solver genelpa is not available for basis_type pw"):
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="pw",
+            pp_path=library,
+            set_params={"ks_solver": "genelpa"},
+        )
 
 
 def test_prepare_uses_kspacing_instead_of_a_kpt_file(tmp_path: Path) -> None:
@@ -1067,7 +1149,7 @@ def test_prepare_writes_dftu_settings_per_species(tmp_path: Path) -> None:
         orb_path=library,
         kpt=[1, 1, 1],
         dftu=True,
-        dftu_param={"Si1": 5.0, "Si": 3.0},
+        dftu_param={"Si1": ["p", 5.0], "Si": ["p", 3.0]},
     ).run()[0].path
 
     # Two ATOMIC_SPECIES blocks need two entries, looked up by label first.
@@ -1328,6 +1410,210 @@ def test_job_prepare_help_does_not_expose_resource_paths(capsys) -> None:
     assert error.value.code == 0
     output = capsys.readouterr().out
     assert "--library" in output
+    assert "default: scf" in output
+    assert "--basis" in output
+    assert "--lcao" not in output
     assert "--pp" not in output
     assert "--orb" not in output
     assert "--paw" not in output
+
+
+def test_prepare_rejects_initial_magnets_without_spin_polarization(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+
+    with pytest.raises(ValueError, match="initial magnetic moments"):
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="pw",
+            pp_path=library,
+            init_mag={"H": 1.0},
+        )
+    with pytest.raises(ValueError, match="initial magnetic moments"):
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="pw",
+            pp_path=library,
+            afm=True,
+        )
+
+
+def test_prepare_rejects_soc_with_a_conflicting_nspin(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+
+    with pytest.raises(ValueError, match="--soc implies nspin 4"):
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="pw",
+            pp_path=library,
+            soc=True,
+            nspin=2,
+        )
+
+
+def test_prepare_warns_when_kpt_model_has_no_kpt(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+
+    with pytest.warns(UserWarning, match="--kpt-model has no effect"):
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="pw",
+            pp_path=library,
+            kpt_model="mp",
+        ).run()
+
+
+def test_prepare_warns_and_drops_pw_incompatible_keys(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+
+    with pytest.warns(UserWarning, match="needs numerical atomic orbitals"):
+        job = InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="pw",
+            pp_path=library,
+            set_params={"out_mul": 1, "onsite_radius": 3.0},
+        ).run()[0].path
+
+    inputs = ReadInput(job / "INPUT")
+    assert "out_mul" not in inputs
+    assert "onsite_radius" not in inputs
+
+
+def test_prepare_dftu_param_enables_dftu(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, library = _source_and_library(tmp_path)
+    monkeypatch.setitem(
+        CONFIG,
+        "resources",
+        {"default": "test", "libraries": {"test": {"pp": str(library), "orb": str(library)}}},
+    )
+
+    runs = tmp_path / "runs"
+    assert main(
+        [
+            "job",
+            "prepare",
+            "-f",
+            str(source),
+            "--ftype",
+            "stru",
+            "--basis",
+            "lcao",
+            "-o",
+            str(runs),
+            "--dftu-param",
+            "H",
+            "p",
+            "4.0",
+        ]
+    ) == 0
+
+    inputs = ReadInput(runs / "000000" / "INPUT")
+    assert int(inputs["dft_plus_u"]) == 1
+    # The explicit p orbital for H overrides the element-based inference.
+    orbital = inputs["orbital_corr"]
+    assert (orbital if isinstance(orbital, list) else [orbital]) == [1]
+    hubbard = inputs["hubbard_u"]
+    assert (hubbard if isinstance(hubbard, list) else [hubbard]) == pytest.approx([4.0])
+
+
+def test_prepare_defaults_to_the_lcao_basis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, library = _source_and_library(tmp_path)
+    monkeypatch.setitem(
+        CONFIG,
+        "resources",
+        {"default": "test", "libraries": {"test": {"pp": str(library), "orb": str(library)}}},
+    )
+
+    runs = tmp_path / "runs"
+    assert main(
+        ["job", "prepare", "-f", str(source), "--ftype", "stru", "-o", str(runs)]
+    ) == 0
+
+    inputs = ReadInput(runs / "000000" / "INPUT")
+    assert inputs["basis_type"] == "lcao"
+    assert inputs["ks_solver"] == "genelpa"
+
+
+def test_prepare_infers_the_dftu_orbital_when_omitted(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+
+    job = InputPreparer(
+        source,
+        output_dir=tmp_path / "jobs",
+        filetype="stru",
+        basis="lcao",
+        pp_path=library,
+        orb_path=library,
+        dftu=True,
+        dftu_param={"H": 4.0},
+    ).run()[0].path
+
+    inputs = ReadInput(job / "INPUT")
+    # H is not a magnetic d/f element, so the inferred orbital is p (1).
+    orbital = inputs["orbital_corr"]
+    assert (orbital if isinstance(orbital, list) else [orbital]) == [1]
+    hubbard = inputs["hubbard_u"]
+    assert (hubbard if isinstance(hubbard, list) else [hubbard]) == pytest.approx([4.0])
+
+
+def test_prepare_dftu_param_can_infer_the_orbital(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, library = _source_and_library(tmp_path)
+    monkeypatch.setitem(
+        CONFIG,
+        "resources",
+        {"default": "test", "libraries": {"test": {"pp": str(library), "orb": str(library)}}},
+    )
+
+    runs = tmp_path / "runs"
+    assert main(
+        [
+            "job",
+            "prepare",
+            "-f",
+            str(source),
+            "--ftype",
+            "stru",
+            "--basis",
+            "lcao",
+            "-o",
+            str(runs),
+            "--dftu-param",
+            "H",
+            "4.0",
+        ]
+    ) == 0
+
+    inputs = ReadInput(runs / "000000" / "INPUT")
+    orbital = inputs["orbital_corr"]
+    assert (orbital if isinstance(orbital, list) else [orbital]) == [1]
+
+
+def test_prepare_rejects_an_unknown_dftu_orbital(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+
+    with pytest.raises(ValueError, match="invalid DFT\\+U orbital"):
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="lcao",
+            pp_path=library,
+            orb_path=library,
+            dftu=True,
+            dftu_param={"H": ["s", 4.0]},
+        )

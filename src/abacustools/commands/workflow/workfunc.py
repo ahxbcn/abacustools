@@ -11,13 +11,14 @@ from typing import Any
 import numpy as np
 
 from abacustools.data.dimensionality import largest_vacuum, vacuum_gaps
+from abacustools.data.grid_files import GridFileError, grid_files, output_directory
 from abacustools.data.versions import default_version
+from abacustools.core.job import read_job_structure
 
 from .common import (
     clear_generated_jobs,
     kpoint_filename,
     read_manifest,
-    read_job_structure,
     register_stages,
     write_abacus_job,
     write_manifest,
@@ -329,16 +330,20 @@ def calculate_work_functions(
 
 
 def _potential_file(workfunc_job: Path, inputs: dict[str, Any]) -> Path:
-    """Find the electrostatic-potential cube emitted by ABACUS."""
-    suffix = str(inputs.get("suffix", "ABACUS"))
-    output_dir = workfunc_job / f"OUT.{suffix}"
-    for filename in ("potes.cube", "ElecStaticPot.cube"):
-        path = output_dir / filename
-        if path.is_file():
-            return path
-    raise FileNotFoundError(
-        f"could not find an electrostatic potential cube in {output_dir}"
-    )
+    """Find the electrostatic-potential cube emitted by ABACUS.
+
+    The LTS branch writes ``ElecStaticPot.cube`` and the develop branch
+    ``potes.cube``; both names, and the ``pot_es.cube`` of the develop manual,
+    are recognised by the shared grid-file discovery.
+    """
+    output_dir = output_directory(workfunc_job, inputs)
+    try:
+        found = grid_files(output_dir, "potential_es")
+    except GridFileError as error:
+        raise FileNotFoundError(
+            f"could not find an electrostatic potential cube in {output_dir}"
+        ) from error
+    return found[0].path
 
 
 def _plot_profile(

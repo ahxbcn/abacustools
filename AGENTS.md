@@ -9,11 +9,20 @@ toolkit for DFT calculations with [ABACUS](https://abacus.deepmodeling.com/).
   script (`abacustools.main:main`). No compiled extensions.
 - Requires Python >= 3.9 (developed on 3.11).
 - Runtime dependencies: `numpy`, `rich`, `pymatgen`, `phonopy`, `seekpath`,
-  `matplotlib`, `ase`, `pydantic`.
-- Four command families:
+  `matplotlib`, `ase`, `pydantic`, `spglib`.
+- Command families:
   - `abacustools file ...` — convert/inspect `INPUT`, `STRU`, `KPT`, structures.
   - `abacustools job ...` — prepare, check, validate, and monitor jobs.
-  - `abacustools postprocess ...` — `result`, `band`, `dos`, `cohp`, `mayer`, `bader`.
+  - `abacustools database ...` — search and download structures from external
+    databases (`list`, `fields`, `providers`, `search`, `download`); every
+    database is a `StructureDatabase` in `integrations/databases/`, registered
+    in that package's `__init__`. Prefer OPTIMADE when a database speaks it;
+    C2DB keeps its own adapter because only its web query table publishes the
+    computed properties.
+  - `abacustools mp ...` — the Materials Project spelling of
+    `abacustools database --database mp`.
+  - `abacustools postprocess ...` — `result`, `band`, `dos`, `cohp`, `mayer`,
+    `bader`, `chg`, `ddec`, `md`, `molden`.
   - `abacustools workflow ...` — multi-step workflows (elastic, phonon, ...).
 
 ## Environment setup
@@ -41,25 +50,34 @@ ruff format src tests                     # format
 
 ```text
 src/abacustools/
-  main.py            # argparse entry point; registers the four families
+  main.py            # argparse entry point; registers the command families
   version.py         # __version__
   commands/          # CLI layer (thin): <family>/<command>.py
-    file/ job/ postprocess/ workflow/
+    file/ job/ database/ mp/ postprocess/ workflow/
   data/              # parsing/analysis of ABACUS outputs -> arrays/dataclasses
-  io/                # read/write file formats (STRU, INPUT, KPT, pseudo, NAO)
+  io/                # read/write file formats (STRU, INPUT, KPT, pseudo,
+                     # NAO, Molden, xyz)
   core/              # config, constants, job/process handling, submission
   integrations/      # adapters to external tools (e.g. abacuslite)
   menu/              # interactive multi-level menu (argparse reflection)
 tests/               # pytest suite (test_*.py)
 ```
 
-Layering: `commands/` may import `data/`, `io/`, and `core/`; `data/` and `io/`
-must not import `commands/`. Keep the CLI layer thin — argument parsing and
-rendering only.
+Layering: `commands/` may import `data/`, `io/`, and `core/`; `data/`, `io/`,
+`core/`, and `integrations/` must not import `commands/`. Keep the CLI layer
+thin — argument parsing and rendering only. A helper used by more than one
+command module lives in `data/`, `io/`, or `core/` (for example the job
+readers in `core/job.py`), never in a sibling command module.
 
 ## Adding or changing a command
 
 1. Implement the logic in `data/` (or `io/`, `core/`), not in the command file.
+   Draw the module boundary along the computation, not along the commands: when
+   two command modules need the same helper — a phonopy object, a force reader,
+   a polarization conversion — give it a public home in `data/`, `io/`, or
+   `core/`. A command
+   module must never import a private name out of a sibling command module, and
+   shared helpers must not be copied into a second one.
 2. Create `commands/<family>/<name>.py` containing:
    - `register_parser(subparsers)` that adds the subparser and calls
      `parser.set_defaults(handler=<func>)`;
@@ -72,6 +90,32 @@ rendering only.
 New commands appear in the interactive menu automatically: `abacustools/menu/`
 reflects the argparse tree, so keep argument definitions declarative and avoid
 menu-specific branching in command modules.
+
+## Workflows and manifests
+
+- A workflow records the decisions of its prepare stage in a
+  `workflow_<name>.json` manifest below the job directory, next to a `tasks`
+  list naming the generated calculations. Postprocessing reads that manifest
+  instead of inferring the setup from result files or from the order of a
+  directory listing.
+- A workflow that derives a tensor or a table writes it as JSON next to the
+  manifest — `bec_results.json`, `dielectric_results.json` — including the
+  units, the method and the parameters that produced it, so a later workflow can
+  consume it instead of a user transcribing numbers.
+
+## Optional dependencies
+
+- A feature that needs a package the project does not require declares it as an
+  extra in `pyproject.toml`, imports it lazily inside the function that runs it,
+  and keeps the module importable without it: only the call fails, with a
+  message naming the missing package and how to install it. `integrations/`
+  holds those adapters, `abacuslite` and `pyatb` among them.
+- `workflow dielectric` needs `pyatb`, whose compute core is C++ behind a
+  compiled extension and which parallelises through `mpi4py`. The extra
+  installs the Python package; the MPI runtime comes from the environment
+  (`conda install -c conda-forge mpich`). The step runs where the ABACUS
+  outputs are — locally, next to the `abacustools` environment — while the
+  cluster only runs ABACUS.
 
 ## Code style
 
@@ -91,6 +135,29 @@ menu-specific branching in command modules.
   cell vectors in Angstrom.
 - When writing cube files, keep grid geometry at full precision — low-precision
   cell vectors corrupt the cell volume and make integrated charges non-integer.
+- Phonopy 4 changed two defaults away from phonopy 3: `primitive_matrix`
+  resolves `"auto"` with a symmetry search instead of the identity, and the
+  `get_frequencies`/`get_*_dict` accessors are deprecated in favour of the
+  result objects (`run_qpoints`, `thermal_properties`, `total_dos`,
+  `band_structure`). Pin the matrix and read the objects, keeping a fallback
+  only where an older phonopy has to keep working.
+- The `occupied bands` count ABACUS autosets and prints in its running log is
+  what pins the occupation of the `pyatb` Kubo-Greenwood sum that gives the
+  electronic dielectric tensor. ABACUS's `EFERMI` for an insulator is one
+  arbitrary level inside the gap; the sum is built from transition energies,
+  which are differences, so the energy reference does not enter the result.
+- A phonon non-analytical correction needs both the Born effective charges
+  (`workflow bec`) and the clamped-ion dielectric tensor (`workflow
+  dielectric`). The two results files are read by the phonon postprocessing
+  stage with `--bec-results` and `--dielectric-results`.
+- The Grueneisen workflow (`workflow gruneisen`) is three phonon workflows of
+  the same crystal whose volumes differ by an isotropic strain, because the
+  mode parameter is `-d ln omega / d ln V`. Its prepare stage therefore calls
+  `prepare_phonon_jobs` of the phonon command, and its postprocessing stage
+  rebuilds each volume with `load_workflow_phonon`. The three volumes have to
+  share the supercell, the k mesh and the displacement step: the force
+  constant fits are compared with each other, so anything that differs between
+  them shows up as a spurious parameter.
 
 ## Testing
 
@@ -99,6 +166,17 @@ menu-specific branching in command modules.
 - Use `tmp_path` / `tempfile` for file I/O; never depend on network access or a
   real ABACUS binary. Prefer small synthetic fixtures over large reference files.
 - Run the full suite (`python -m pytest tests`) before considering work done.
+
+## Branching
+
+- Never develop directly on `develop` or `main`. Before the first edit of a
+  task, create a topic branch from the up-to-date base branch:
+  `git switch -c <type>/<topic>` (for example `feat/ddec-postprocess`,
+  `fix/bader-vacuum`).
+- One branch carries one topic. If a new request is unrelated to the branch at
+  hand, branch off the base branch again instead of stacking more work on top.
+- State the branch in the final answer of a task so the user can check it out,
+  and leave the branch checked out when the work is done.
 
 ## Git and commits
 
@@ -111,6 +189,7 @@ menu-specific branching in command modules.
 
 ## Agent checklist
 
+- [ ] The work happened on a topic branch, not on `develop`/`main`.
 - [ ] Logic lives outside the CLI layer; the command file only wires arguments.
 - [ ] New behavior is covered by tests in `tests/`.
 - [ ] `python -m pytest tests` passes.

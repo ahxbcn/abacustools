@@ -62,6 +62,13 @@ def run(args: argparse.Namespace) -> int:
 
 
 def register_parser(subparsers) -> None:
-    parser = subparsers.add_parser("mayer", help="Analyze Mayer bond orders from an ABACUS LCAO calculation.")
+    parser = subparsers.add_parser(
+        "mayer",
+        help=(
+            "Analyze Mayer bond orders from an ABACUS LCAO calculation; "
+            "a symmetry-reduced k-point mesh (symmetry=1) is expanded to the "
+            "full mesh."
+        ),
+    )
     _register_arguments(parser)
     parser.set_defaults(handler=run)

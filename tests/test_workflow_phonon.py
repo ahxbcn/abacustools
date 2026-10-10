@@ -8,14 +8,15 @@ import unittest
 from argparse import Namespace
 from pathlib import Path
 
-from abacustools.commands.workflow.phonon import (
-    _automatic_supercell,
-    _custom_band_path,
-    _initialize_phonopy,
-    _phonopy_supercell_structure,
-    _validate_mesh,
-    _validate_supercell,
-    prepare,
+from abacustools.commands.workflow.phonon import prepare
+from abacustools.data.phonon import (
+    automatic_supercell,
+    band_path,
+    initialize_phonopy,
+    phonopy_supercell_structure,
+    validate_mesh,
+    validate_supercell,
+    workflow_displacements,
 )
 
 
@@ -26,13 +27,13 @@ class TestPhononWorkflow(unittest.TestCase):
             (),
             {"cell": [[3.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 12.0]]},
         )()
-        self.assertEqual(_automatic_supercell(structure, 10.0), [4, 3, 1])
-        self.assertEqual(_validate_supercell([1, 2, 3]), [1, 2, 3])
-        self.assertEqual(_validate_mesh([2, 3, 4]), [2, 3, 4])
+        self.assertEqual(automatic_supercell(structure, 10.0), [4, 3, 1])
+        self.assertEqual(validate_supercell([1, 2, 3]), [1, 2, 3])
+        self.assertEqual(validate_mesh([2, 3, 4]), [2, 3, 4])
         with self.assertRaises(ValueError):
-            _validate_supercell([1, 0, 2])
+            validate_supercell([1, 0, 2])
         with self.assertRaises(ValueError):
-            _validate_mesh([1, 2, 0])
+            validate_mesh([1, 2, 0])
 
     def test_phonopy_generates_displacements(self) -> None:
         from abacustools.io.stru import AbacusATOM, AbacusSTRU
@@ -42,7 +43,7 @@ class TestPhononWorkflow(unittest.TestCase):
             atoms=[AbacusATOM(label="H", element="H", coord=(0.0, 0.0, 0.0))],
             metadata={"atom_type": "cartesian"},
         )
-        phonon = _initialize_phonopy(structure, [1, 1, 1])
+        phonon = initialize_phonopy(structure, [1, 1, 1])
         phonon.generate_displacements(distance=0.01)
         self.assertEqual(len(phonon.supercells_with_displacements), 1)
         self.assertEqual(phonon.dataset["first_atoms"][0]["number"], 0)
@@ -92,15 +93,55 @@ H
             self.assertEqual(manifest["workflow"], "phonon")
             self.assertEqual(manifest["supercell"], [1, 1, 1])
             self.assertEqual(len(manifest["tasks"]), 1)
-            self.assertEqual(manifest["displacements"][0]["number"], 0)
-            self.assertTrue((job / "disp-1" / "STRU").is_file())
-            self.assertIn("scf_thr             1e-07", (job / "disp-1" / "INPUT").read_text())
+            self.assertEqual(manifest["displacements"][0]["index"], 0)
+            self.assertEqual(manifest["displacements"][0]["atom"], 0)
+            self.assertEqual(manifest["displacements"][0]["displacement"], [0.01, 0.0, 0.0])
+            self.assertEqual(manifest["dataset"][0]["number"], 0)
+            self.assertEqual(manifest["tasks"], ["disp-0000"])
+            self.assertTrue((job / "disp-0000" / "STRU").is_file())
+            self.assertIn("scf_thr             1e-07", (job / "disp-0000" / "INPUT").read_text())
+
+    def test_manifest_displacement_validation(self) -> None:
+        from abacustools.io.stru import AbacusATOM, AbacusSTRU
+
+        structure = AbacusSTRU(
+            cell=[[3.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 3.0]],
+            atoms=[
+                AbacusATOM(label="H", element="H", coord=(0.0, 0.0, 0.0)),
+                AbacusATOM(label="H", element="H", coord=(1.5, 1.5, 1.5)),
+            ],
+            metadata={"atom_type": "cartesian"},
+        )
+        phonon = initialize_phonopy(structure, [1, 1, 1])
+
+        # A well-formed dataset round-trips.
+        dataset = workflow_displacements(
+            phonon,
+            {"dataset": [{"number": 1, "displacement": [0.0, 0.01, 0.0]}]},
+        )
+        self.assertEqual(dataset, [{"number": 1, "displacement": [0.0, 0.01, 0.0]}])
+
+        # A displaced atom outside the supercell, a wrong shape and a missing
+        # dataset are all rejected rather than silently mis-fitting forces.
+        for bad in (
+            {"dataset": [{"number": 2, "displacement": [0.0, 0.0, 0.0]}]},
+            {"dataset": [{"number": 0, "displacement": [0.0, 0.0]}]},
+            {"dataset": [{"number": 0, "displacement": [0.0, float("nan"), 0.0]}]},
+            {"dataset": []},
+            {},
+        ):
+            with self.assertRaises(RuntimeError):
+                workflow_displacements(phonon, bad)
 
     def test_custom_band_path(self) -> None:
-        (paths, connections), labels = _custom_band_path(
-            ["G", "X", "G"],
-            {"G": [0, 0, 0], "X": [0.5, 0, 0]},
-            5,
+        structure = type(
+            "Structure", (), {"cell": [[4.0, 0.0, 0.0], [0.0, 4.0, 0.0], [0.0, 0.0, 4.0]]}
+        )()
+        paths, labels, connections = band_path(
+            structure,
+            qpath=["G", "X", "G"],
+            high_symm_points={"G": [0, 0, 0], "X": [0.5, 0, 0]},
+            npoints=5,
         )
         self.assertEqual(len(paths), 2)
         self.assertTrue(all(len(path) == 5 for path in paths))
@@ -129,7 +170,7 @@ H
         )
         phonopy_supercell = get_supercell(unitcell, np.diag([2, 1, 1]))
 
-        supercell = _phonopy_supercell_structure(structure, phonopy_supercell)
+        supercell = phonopy_supercell_structure(structure, phonopy_supercell)
 
         self.assertEqual(supercell.elements, list(phonopy_supercell.symbols))
         np.testing.assert_allclose(
@@ -195,7 +236,7 @@ Ge
                 scaled_positions=np.asarray(parsed.coords_direct, dtype=float),
             )
             expected = get_supercell(unitcell, np.diag([2, 1, 1]))
-            written = AbacusSTRU.read(str(job / "disp-1" / "STRU"))
+            written = AbacusSTRU.read(str(job / "disp-0000" / "STRU"))
 
             self.assertEqual(written.elements, list(expected.symbols))
             np.testing.assert_allclose(

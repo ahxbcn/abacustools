@@ -119,7 +119,7 @@ def test_kpt_round_trip(tmp_path: Path, kpt, model) -> None:
     assert rewritten.read_text(encoding="utf-8") == path.read_text(encoding="utf-8")
 
 
-def test_prepare_writes_explicit_and_line_kpt(tmp_path: Path) -> None:
+def test_prepare_writes_a_mp_mesh(tmp_path: Path) -> None:
     source, library = _source_and_library(tmp_path)
     jobs = InputPreparer(
         source,
@@ -127,26 +127,28 @@ def test_prepare_writes_explicit_and_line_kpt(tmp_path: Path) -> None:
         filetype="stru",
         basis="pw",
         pp_path=library,
-        kpt=[[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]],
-        kpt_model="cartesian",
+        kpt=[4, 4, 4, 0, 0, 0],
+        kpt_model="mp",
     ).run()
 
     content = (jobs[0].path / "KPT").read_text(encoding="utf-8")
-    assert content.startswith("K_POINTS\n2\nCartesian\n")
-    assert "0.50000000000\n" in content
+    assert content.startswith("K_POINTS\n0\nMP\n")
+    assert "4 4 4 0 0 0" in content
 
-    line_jobs = InputPreparer(
-        source,
-        output_dir=tmp_path / "line-jobs",
-        filetype="stru",
-        basis="pw",
-        pp_path=library,
-        kpt=[[0.0, 0.0, 0.0, 10], [0.5, 0.5, 0.0, 1]],
-        kpt_model="line",
-    ).run()
-    assert (line_jobs[0].path / "KPT").read_text(encoding="utf-8").startswith(
-        "K_POINTS\n2\nLine\n"
-    )
+
+def test_prepare_rejects_a_non_mesh_kpt_model(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+
+    with pytest.raises(ValueError, match="unsupported KPT model"):
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="pw",
+            pp_path=library,
+            kpt=[[0.0, 0.0, 0.0, 10], [0.5, 0.5, 0.0, 1]],
+            kpt_model="line",
+        )
 
 
 def test_prepare_rejects_invalid_kpt_before_writing(tmp_path: Path) -> None:

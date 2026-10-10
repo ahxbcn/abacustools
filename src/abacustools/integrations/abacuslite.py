@@ -186,7 +186,7 @@ def calculator_from_job(
     **kwargs: Any,
 ):
     """Create an ASE calculator from an existing ABACUS job directory."""
-    from abacustools.commands.workflow.common import read_job_structure
+    from abacustools.core.job import read_job_structure
 
     job_path = Path(job).absolute()
     inputs, stru_filename, structure = read_job_structure(job_path)

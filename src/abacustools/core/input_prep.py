@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional, Sequence, Union
 
 from abacustools.core.config import CONFIG
+from abacustools.data.dimensionality import classify_dimensionality
 from abacustools.io.abacus import (
     FormatKpt,
     IsEnabled,
@@ -41,7 +42,7 @@ _MAGNETIC_F_ELEMENTS = {
     "Tm", "Yb", "Lu", "Pa", "U", "Np", "Pu", "Am", "Cm", "Bk", "Cf",
     "Es", "Fm", "Md", "No", "Lr",
 }
-_ORBITAL_INDEX = {"p": 1, "d": 2, "f": 3}
+_ORBITAL_INDEX = {"p": 1, "d": 2, "f": 3, "1": 1, "2": 2, "3": 3}
 _ORBITAL_CUTOFF = re.compile(r"(?<![0-9.])(\d+(?:\.\d+)?)\s*Ry", re.IGNORECASE)
 _ORBITAL_RADIUS = re.compile(r"(?<![0-9.])(\d+(?:\.\d+)?)au(?![0-9])", re.IGNORECASE)
 
@@ -90,24 +91,61 @@ def _keyword_hint(name: str, known: Iterable[str]) -> str:
 
 
 def _normalize_kpt(kpt: Sequence[Any], model: str) -> list:
-    """Group a flat or nested KPT argument for the requested model.
+    """Return the mesh values of a gamma or MP k-point setting.
 
-    The gamma/mp models take a single mesh group, while the explicit and line
-    models take one group per k-point or node.  A flat list is treated as one
-    group so that ``kpt=[2, 2, 2]`` keeps working for gamma/mp.
+    ``job prepare`` writes only the two mesh models; a band path or an explicit
+    k-point list is prepared with ``file kpt`` or a KPT file instead.  The mesh
+    itself is validated by the shared KPT writer.
     """
     name = NormalizeKptModel(model)
+    if name not in ("gamma", "mp"):
+        raise ValueError(f"unsupported KPT model for job prepare: {model}")
     values = list(kpt)
     if not values:
         raise ValueError("kpt must not be empty")
-    nested = all(isinstance(value, (list, tuple)) for value in values)
-    if name in ("gamma", "mp"):
-        if nested:
-            if len(values) != 1:
-                raise ValueError("gamma/mp kpt accepts a single mesh group")
-            values = list(values[0])
-        return values
-    return [list(value) for value in values] if nested else [values]
+    if all(isinstance(value, (list, tuple)) for value in values):
+        if len(values) != 1:
+            raise ValueError("gamma/mp kpt accepts a single mesh group")
+        values = list(values[0])
+    return values
+
+
+def _dftu_orbital_and_u(configured: Any, label: str, element: str) -> tuple[int, float]:
+    """Return the correlated orbital index and the U value of one species.
+
+    The orbital may be given explicitly (``p``, ``d`` or ``f``, or the ABACUS
+    codes 1, 2, 3) as ``[orbital, U]``.  When only U is given, the orbital is
+    inferred from the element: d for the magnetic d block, f for the magnetic f
+    block, and p otherwise.
+    """
+    if isinstance(configured, (list, tuple)):
+        if len(configured) != 2:
+            raise ValueError(
+                f"invalid DFT+U setting for {label}: {configured!r}; give the "
+                "orbital and the U value, for example ['d', 4.0]"
+            )
+        orbital = _ORBITAL_INDEX.get(str(configured[0]).lower())
+        if orbital is None:
+            raise ValueError(
+                f"invalid DFT+U orbital for {label}: {configured[0]!r}; use p, d or f"
+            )
+        raw_u = configured[1]
+    else:
+        orbital = (
+            2
+            if element in _MAGNETIC_D_ELEMENTS
+            else 3
+            if element in _MAGNETIC_F_ELEMENTS
+            else 1
+        )
+        raw_u = configured
+    try:
+        u_value = float(raw_u)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f"invalid DFT+U U value for {label}: {raw_u!r}"
+        ) from error
+    return orbital, u_value
 
 
 def _element_from_filename(filename: str) -> Optional[str]:
@@ -638,6 +676,144 @@ def available_resource_libraries() -> tuple[str, ...]:
     return tuple(sorted(libraries))
 
 
+def configured_library(name: Optional[str]) -> Mapping[str, Any]:
+    """Return one configured resource library and validate its name.
+
+    Args:
+        name: Library name from ``resources.libraries``, or ``None``.
+
+    Returns:
+        Mapping: The configured ``pp``/``orb`` paths and their options, empty
+        for ``None``.
+
+    Raises:
+        ValueError: When the name is unknown or the configuration is malformed.
+    """
+    libraries = CONFIG.get("resources", {}).get("libraries", {})
+    if name is None:
+        return {}
+    if name not in libraries:
+        available = ", ".join(sorted(libraries)) or "none"
+        raise ValueError(
+            f"unsupported resource library: {name}; available libraries: {available}"
+        )
+    configured = libraries[name]
+    if not isinstance(configured, Mapping):
+        raise ValueError(f"invalid resource library configuration: resources.libraries.{name}")
+    return configured
+
+
+@dataclass(frozen=True)
+class ResolvedResource:
+    """One pseudopotential or orbital file resolved from a configured library.
+
+    Attributes:
+        element: Element symbol of the resource.
+        kind: ``pp`` or ``orb``.
+        path: Resolved file.
+        library: Configured library the file came from.
+        variant: Orbital variant that was honoured, when one applies.
+    """
+
+    element: str
+    kind: str
+    path: Path
+    library: Optional[str] = None
+    variant: Optional[str] = None
+
+    @property
+    def filename(self) -> str:
+        """Return the file name written into the STRU."""
+        return self.path.name
+
+
+def resolve_library_resource(
+    element: str,
+    kind: str,
+    *,
+    library: Optional[str] = None,
+    variant: Optional[str] = None,
+    pp_path: Optional[PathLike] = None,
+    orb_path: Optional[PathLike] = None,
+) -> ResolvedResource:
+    """Resolve the pseudopotential or orbital file of one element.
+
+    The library, its orbital variant and the fallback environment variables are
+    read exactly as :class:`InputPreparer` reads them, so a structure edited
+    with this helper and a job prepared from it agree on the files.
+
+    Args:
+        element: Element symbol, such as ``Fe``.
+        kind: ``pp`` for a pseudopotential or ``orb`` for a numerical orbital.
+        library: Configured library name, the default when omitted.
+        variant: Orbital variant such as ``DZP``; ignored for a pseudopotential.
+        pp_path: Explicit pseudopotential directory, overriding the library.
+        orb_path: Explicit orbital directory, overriding the library.
+
+    Returns:
+        ResolvedResource: The file and where it came from.
+
+    Raises:
+        ValueError: When the kind or the library name is unknown.
+        InputPreparationError: When no path is configured or the library has no
+            file for the element.
+    """
+    kind = str(kind).lower()
+    if kind not in ("pp", "orb"):
+        raise ValueError(f"unknown resource kind: {kind!r}; use 'pp' or 'orb'")
+    symbol = str(element).strip().capitalize()
+
+    name = library or CONFIG.get("resources", {}).get("default")
+    configured = configured_library(name)
+    override = pp_path if kind == "pp" else orb_path
+    legacy = library is None
+    legacy_env = (
+        os.environ.get("ABACUS_PP_PATH" if kind == "pp" else "ABACUS_ORB_PATH")
+        if legacy
+        else None
+    )
+    root = override if override is not None else configured.get(kind) or legacy_env
+    if root is None:
+        raise InputPreparationError(
+            f"no {kind} path is configured for library {name!r}; set "
+            f"resources.libraries.{name}.{kind} in ~/.abacustools/config.yaml"
+            if name is not None
+            else f"no {kind} path is configured; set resources.default and "
+            "resources.libraries in ~/.abacustools/config.yaml"
+        )
+
+    mapped_variants = configured.get("orb_variants")
+    mapped_variants = mapped_variants if isinstance(mapped_variants, Mapping) else {}
+    selected_variant = None
+    if kind == "orb":
+        configured_variant = (
+            variant
+            if variant is not None
+            else configured.get("orb_variant") or CONFIG.get("resources", {}).get("orb_variant")
+        )
+        if configured_variant is not None:
+            selected_variant = str(configured_variant)
+            root = mapped_variants.get(selected_variant.lower(), root)
+
+    resources = _collect_library(
+        root,
+        kind,
+        variant=selected_variant,
+        elements=[symbol],
+        variant_required=variant is not None
+        and (selected_variant or "").lower() not in mapped_variants,
+    )
+    path = resources.get(symbol)
+    if path is None:
+        raise InputPreparationError(
+            f"library {name!r} has no {kind} for {symbol} below {root}; "
+            "install the file, pick another library or pass --pp/--orb explicitly"
+        )
+    return ResolvedResource(
+        element=symbol, kind=kind, path=path, library=name, variant=selected_variant
+    )
+
+
 class InputPreparer:
     """Generate complete ABACUS input directories from structure files.
 
@@ -658,9 +834,9 @@ class InputPreparer:
         orb_variant: Optional[str] = None,
         input_template: Optional[PathLike] = None,
         kpt: Optional[Sequence[int]] = None,
-        kpt_model: str = "gamma",
+        kpt_model: Optional[str] = None,
         basis: Optional[str] = None,
-        nspin: int = 1,
+        nspin: Optional[int] = None,
         soc: bool = False,
         dftu: bool = False,
         dftu_param: Optional[Mapping[str, Any]] = None,
@@ -707,9 +883,11 @@ class InputPreparer:
         )
         self.input_template = input_template
         self.kpt = list(kpt) if kpt is not None else None
-        self.kpt_model = kpt_model
+        self.kpt_model = kpt_model or "gamma"
+        self.kpt_model_explicit = kpt_model is not None
         self.basis = basis.lower() if basis else None
-        self.nspin = nspin
+        self.nspin = 1 if nspin is None else nspin
+        self.nspin_explicit = nspin is not None
         self.soc = soc
         self.dftu = dftu
         self.dftu_param = dict(dftu_param) if dftu_param is not None else None
@@ -728,18 +906,7 @@ class InputPreparer:
     @staticmethod
     def _resource_library(name: Optional[str]) -> Mapping[str, Any]:
         """Return one configured resource library and validate its name."""
-        libraries = CONFIG.get("resources", {}).get("libraries", {})
-        if name is None:
-            return {}
-        if name not in libraries:
-            available = ", ".join(sorted(libraries)) or "none"
-            raise ValueError(
-                f"unsupported resource library: {name}; available libraries: {available}"
-            )
-        configured = libraries[name]
-        if not isinstance(configured, Mapping):
-            raise ValueError(f"invalid resource library configuration: resources.libraries.{name}")
-        return configured
+        return configured_library(name)
 
     def _validate_options(self) -> None:
         if self.job_type not in available_job_types():
@@ -775,15 +942,81 @@ class InputPreparer:
                     + "; a parameter of a newer ABACUS can be passed through an "
                     "INPUT template (--input) instead"
                 )
+        for key, value in (self.dftu_param or {}).items():
+            _dftu_orbital_and_u(value, str(key), str(key))
         if self.nspin not in (1, 2, 4):
             raise ValueError("nspin must be 1, 2, or 4")
-        if self.soc and self.nspin != 4:
+        if self.soc:
+            if self.nspin_explicit and self.nspin != 4:
+                raise ValueError(
+                    "--soc implies nspin 4; remove --nspin or set it to 4"
+                )
             self.nspin = 4
+        if (self.init_mag or self.afm) and self.nspin == 1:
+            raise ValueError(
+                "initial magnetic moments need a spin-polarized run; "
+                "pass --nspin 2 or --nspin 4"
+            )
+        if self.kpt_model_explicit and self.kpt is None:
+            warnings.warn(
+                "--kpt-model has no effect without --kpt; the k mesh comes from "
+                "kspacing/gamma_only in INPUT or from a KPT file",
+                stacklevel=2,
+            )
+        self._validate_solver_basis()
         self.kpt_model = NormalizeKptModel(self.kpt_model)
         if self.kpt is not None:
             self.kpt = _normalize_kpt(self.kpt, self.kpt_model)
             # Validate before any directory is created.
             FormatKpt(self.kpt, self.kpt_model)
+
+    @staticmethod
+    def _allowed_solvers(basis: str) -> tuple[str, ...]:
+        """Return the ``ks_solver`` values ABACUS accepts for a basis."""
+        if str(basis).startswith("lcao"):
+            # cg_in_lcao is LTS-only and under testing, so it is not accepted.
+            return (
+                "genelpa",
+                "elpa",
+                "lapack",
+                "scalapack_gvx",
+                "cusolver",
+                "cusolvermp",
+                "pexsi",
+            )
+        return ("cg", "dav", "bpcg", "dav_subspace")
+
+    def _validate_solver_basis(self) -> None:
+        """Cross-check a requested diagonalizer against the basis.
+
+        Only the values the tool can inject are checked: ``--set ks_solver``
+        and the configured ``basis_settings`` default. An INPUT template keeps
+        arbitrary keywords and stays an escape hatch, so its ``ks_solver`` is
+        not validated here.
+        """
+        template_basis = None
+        if self.input_template is not None:
+            template_path = Path(self.input_template).expanduser()
+            if template_path.is_file():
+                template_basis = ReadInput(template_path).get("basis_type")
+        basis = (
+            self.basis
+            or self.set_params.get("basis_type")
+            or template_basis
+            or CONFIG.get("abacus", {}).get("default_basis", "lcao")
+        )
+        basis = str(basis).lower()
+        allowed = self._allowed_solvers(basis)
+        configured = CONFIG.get("basis_settings", {}).get(basis, {})
+        configured_solver = configured.get("ks_solver") if isinstance(configured, Mapping) else None
+        for solver in (self.set_params.get("ks_solver"), configured_solver):
+            if solver is None:
+                continue
+            if str(solver).lower() not in allowed:
+                raise ValueError(
+                    f"ks_solver {solver} is not available for basis_type {basis}; "
+                    f"use one of {', '.join(allowed)}"
+                )
 
     def _sources(self) -> list[Path]:
         sources = []
@@ -804,6 +1037,7 @@ class InputPreparer:
 
     def _base_inputs(self) -> dict[str, Any]:
         inputs = deepcopy(CONFIG["input_templates"][self.job_type])
+        self.kspacing_explicit = "kspacing" in self.set_params
         explicit_basis = self.basis
         if self.input_template is not None:
             template_path = Path(self.input_template).expanduser()
@@ -812,6 +1046,8 @@ class InputPreparer:
             template = ReadInput(template_path)
             template.pop("calculation", None)
             inputs.update(template)
+            if "kspacing" in template:
+                self.kspacing_explicit = True
         if explicit_basis is not None:
             template_basis = inputs.get("basis_type")
             if template_basis is not None and str(template_basis).lower() != explicit_basis:
@@ -822,7 +1058,7 @@ class InputPreparer:
             inputs["basis_type"] = explicit_basis
 
         basis = explicit_basis or str(
-            inputs.get("basis_type", CONFIG["abacus"].get("default_basis", "pw"))
+            inputs.get("basis_type", CONFIG["abacus"].get("default_basis", "lcao"))
         ).lower()
 
         inputs.update(self.set_params)
@@ -849,8 +1085,15 @@ class InputPreparer:
             if basis.startswith("lcao"):
                 inputs["out_mul"] = 1
         if basis.startswith("pw"):
-            inputs.pop("out_mul", None)
-            inputs.pop("onsite_radius", None)
+            for key in ("out_mul", "onsite_radius"):
+                if key in inputs:
+                    warnings.warn(
+                        f"{key} needs numerical atomic orbitals and is ignored "
+                        "for the plane-wave basis; remove it or use the LCAO "
+                        "basis.",
+                        stacklevel=3,
+                    )
+                    inputs.pop(key)
         return inputs
 
     def _dftu_inputs(self, inputs: dict[str, Any], structure: AbacusSTRU) -> None:
@@ -872,25 +1115,20 @@ class InputPreparer:
                 configured = self.dftu_param.get(label)
                 if configured is None:
                     configured = self.dftu_param.get(element)
-            if isinstance(configured, (list, tuple)):
-                orbital = _ORBITAL_INDEX.get(str(configured[0]).lower())
-                if orbital is None or len(configured) != 2:
-                    raise ValueError(f"invalid DFT+U setting for {label}: {configured}")
-                corrections.append(orbital)
-                values.append(float(configured[1]))
-            elif configured is not None:
-                orbital = 2 if element in _MAGNETIC_D_ELEMENTS else 3 if element in _MAGNETIC_F_ELEMENTS else 1
-                corrections.append(orbital)
-                values.append(float(configured))
-            elif self.dftu_param is None and element in _MAGNETIC_D_ELEMENTS:
-                corrections.append(2)
-                values.append(4.0)
-            elif self.dftu_param is None and element in _MAGNETIC_F_ELEMENTS:
-                corrections.append(3)
-                values.append(6.0)
-            else:
-                corrections.append(-1)
-                values.append(0.0)
+            if configured is None:
+                if self.dftu_param is None and element in _MAGNETIC_D_ELEMENTS:
+                    corrections.append(2)
+                    values.append(4.0)
+                elif self.dftu_param is None and element in _MAGNETIC_F_ELEMENTS:
+                    corrections.append(3)
+                    values.append(6.0)
+                else:
+                    corrections.append(-1)
+                    values.append(0.0)
+                continue
+            orbital, u_value = _dftu_orbital_and_u(configured, label, element)
+            corrections.append(orbital)
+            values.append(u_value)
         inputs.update({"dft_plus_u": 1, "orbital_corr": corrections, "hubbard_u": values})
         if any(orbital >= 0 for orbital in corrections):
             if inputs.get("basis_type", "pw").startswith("pw"):
@@ -1010,6 +1248,56 @@ class InputPreparer:
             suffix += 1
         return candidate
 
+    @staticmethod
+    def _source_kpt_path(inputs: Mapping[str, Any], source: Path) -> Optional[Path]:
+        """Return the KPT file next to the source structure, if one exists."""
+        filename = str(inputs.get("kpoint_file", "KPT"))
+        path = source.parent / filename
+        return path if path.is_file() else None
+
+    def _reconcile_ksampling(self, inputs: dict[str, Any], source: Path) -> None:
+        """Make INPUT's k sampling agree with the KPT that will be written.
+
+        An explicit ``--kpt`` wins over the template's ``kspacing``, and a KPT
+        file next to the structure wins over the default kspacing but not over
+        one the user set explicitly.
+        """
+        if IsEnabled(inputs.get("gamma_only")):
+            inputs.pop("kspacing", None)
+            return
+        if self.kpt is not None:
+            inputs.pop("kspacing", None)
+            return
+        if not IsEnabled(inputs.get("kspacing")):
+            return
+        if not getattr(self, "kspacing_explicit", False):
+            if self._source_kpt_path(inputs, source) is not None:
+                inputs.pop("kspacing", None)
+
+    @staticmethod
+    def _warn_about_vacuum(source: Path, structure: AbacusSTRU) -> None:
+        """Warn when the structure carries a vacuum layer.
+
+        A vacuum direction should not carry the same k spacing as the periodic
+        directions; with ``kspacing`` the three-value form lets the vacuum
+        direction be set to a large value.
+        """
+        try:
+            report = classify_dimensionality(structure, min_vacuum=5.0)
+        except (TypeError, ValueError):
+            return
+        if report.get("dimensionality") == "bulk":
+            return
+        directions = ", ".join(report.get("vacuum_directions", [])) or "an axis"
+        warnings.warn(
+            f"{source.name} has a vacuum layer along {directions} and looks like "
+            f"a {report.get('label', 'low-dimensional system')}; the k-point "
+            "sampling should be coarse along the vacuum. With kspacing, give the "
+            "vacuum direction a large value, for example 'kspacing 0.14 0.14 1.0', "
+            "or pass a KPT file.",
+            stacklevel=3,
+        )
+
     def _write_kpt(self, inputs: Mapping[str, Any], source: Path, destination: Path) -> None:
         filename = str(inputs.get("kpoint_file", "KPT"))
         (destination / filename).parent.mkdir(parents=True, exist_ok=True)
@@ -1018,8 +1306,8 @@ class InputPreparer:
             return
         if IsEnabled(inputs.get("gamma_only")) or IsEnabled(inputs.get("kspacing")):
             return
-        source_kpt = source.parent / filename
-        if source_kpt.is_file():
+        source_kpt = self._source_kpt_path(inputs, source)
+        if source_kpt is not None:
             if self.copy_resources:
                 shutil.copy2(source_kpt, destination / filename)
             else:
@@ -1112,6 +1400,8 @@ class InputPreparer:
                     inputs["ecutwfc"] = max(recommendations)
             if self.nspin == 4:
                 self._check_spin_orbit_pseudopotentials(pseudopotentials)
+            self._reconcile_ksampling(inputs, source)
+            self._warn_about_vacuum(source, structure)
 
             destination = self._destination(source, index)
             destination.mkdir(parents=True, exist_ok=False)

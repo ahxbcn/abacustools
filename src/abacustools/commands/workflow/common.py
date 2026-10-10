@@ -13,6 +13,20 @@ def workflow_manifest_path(job: Path, workflow: str) -> Path:
     return job / f"workflow_{workflow}.json"
 
 
+def resolve_output(job: Path, value: str) -> Path:
+    """Resolve an output filename against a job directory.
+
+    Args:
+        job: Directory the output belongs to.
+        value: Filename, absolute or relative to ``job``.
+
+    Returns:
+        The path to write.
+    """
+    path = Path(value)
+    return path if path.is_absolute() else job / path
+
+
 def register_stages(
     subparsers,
     command: str,
@@ -50,31 +64,6 @@ def register_stages(
     )
     add_postprocess_arguments(postprocess_parser)
     postprocess_parser.set_defaults(handler=postprocess_handler)
-
-
-def read_job_input(job: Path) -> dict[str, Any]:
-    """Read an ABACUS job's INPUT file with a consistent error message."""
-    from abacustools.io.abacus import ReadInput
-
-    job = Path(job)
-    input_path = job / "INPUT"
-    if not input_path.is_file():
-        raise FileNotFoundError(f"Could not find INPUT in ABACUS job: {input_path}")
-    return ReadInput(input_path)
-
-
-def read_job_structure(job: Path):
-    """Read an ABACUS job's INPUT and the structure it references."""
-    from abacustools.io.stru import AbacusSTRU
-
-    job = Path(job)
-    inputs = read_job_input(job)
-    stru_filename = str(inputs.get("stru_file", "STRU"))
-    stru_path = job / stru_filename
-    structure = AbacusSTRU.read(stru_path)
-    if structure is None:
-        raise RuntimeError(f"failed to read structure: {stru_path}")
-    return inputs, stru_filename, structure
 
 
 def has_kpoint_setting(inputs: dict[str, Any]) -> bool:

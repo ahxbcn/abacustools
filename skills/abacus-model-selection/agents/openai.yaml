@@ -1,0 +1,4 @@
+interface:
+  display_name: "ABACUS Model Selection"
+  short_description: "Feature support of ABACUS LTS 3.10 and develop"
+  default_prompt: "Use $abacus-model-selection to check whether ABACUS supports this functional, pseudopotential and spin setting."

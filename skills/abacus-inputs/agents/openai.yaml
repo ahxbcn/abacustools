@@ -1,0 +1,4 @@
+interface:
+  display_name: "Abacus Inputs"
+  short_description: "Write and review ABACUS INPUT, STRU, and KPT decks"
+  default_prompt: "Use $abacus-inputs to write a converged ABACUS INPUT and STRU for this structure."
