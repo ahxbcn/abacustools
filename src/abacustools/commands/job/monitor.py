@@ -6,7 +6,7 @@ import argparse
 import csv
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 from abacustools.core.job import status_job, validate_job
 from abacustools.data.abacus_result import (
@@ -66,12 +66,13 @@ _CSV_FIELDS = {
     "relax": [
         "step", "energy", "energy_change",
         "max_force", "force_atom", "force_component", "rms_displacement",
-        "max_displacement", "converged",
+        "max_displacement", "max_displacement_atom", "converged",
     ],
     "cell-relax": [
         "step", "energy", "energy_change",
         "max_force", "force_atom", "force_component",
         "rms_displacement", "max_displacement",
+        "max_displacement_atom",
         "max_stress", "stress_component", "converged",
     ],
     "md": ["step", "energy", "potential", "kinetic", "temperature", "pressure"],
@@ -201,6 +202,15 @@ def _format_force_site(atom: Any, component: Any, label: Any = None) -> str:
         return "-"
     site = str(label) if label else str(atom)
     return f"{site}{component}" if component else site
+
+
+def _format_displacement_site(item: Mapping[str, Any]) -> str:
+    """Format the atom that moved the most, as a label or a 1-based index."""
+    label = item.get("max_displacement_atom_label")
+    if label:
+        return str(label)
+    atom = item.get("max_displacement_atom")
+    return "-" if atom is None else str(int(atom))
 
 
 def _print_table(header: list[str], rows: list[list[str]]) -> None:
@@ -380,18 +390,18 @@ def _print_scf_steps(history: list[dict[str, Any]]) -> None:
         ]
         for item in history
     ]
-    _print_table(["step", "energy(eV)", "dE(eV)", "drho"], rows)
+    _print_table(["step", "E(eV)", "dE(eV)", "drho"], rows)
 
 
 def _print_geometry_steps(task: str, history: list[dict[str, Any]]) -> None:
     header = [
-        "step", "energy(eV)", "dE(eV)",
-        "max_force(eV/A)", "force_atom/component",
-        "rms_displacement(A)", "max_displacement(A)",
+        "step", "E(eV)", "dE(eV)",
+        "Fmax(eV/A)", "F atom/comp",
+        "rms_disp(A)", "max_disp(A)", "disp_atom",
     ]
     if task == "cell-relax":
-        header += ["max_stress(kBar)", "stress_component"]
-    header.append("converged")
+        header += ["Smax(kBar)", "S comp"]
+    header.append("conv")
     rows = []
     for item in history:
         row = [
@@ -406,6 +416,7 @@ def _print_geometry_steps(task: str, history: list[dict[str, Any]]) -> None:
             ),
             _format_metric(item["rms_displacement"]),
             _format_metric(item["max_displacement"]),
+            _format_displacement_site(item),
         ]
         if task == "cell-relax":
             row += [
@@ -420,11 +431,11 @@ def _print_geometry_steps(task: str, history: list[dict[str, Any]]) -> None:
 def _print_md_steps(history: list[dict[str, Any]]) -> None:
     header = [
         "step",
-        "energy(eV)",
-        "potential(eV)",
-        "kinetic(eV)",
-        f"temperature({TEMPERATURE_UNIT})",
-        f"pressure({PRESSURE_UNIT})",
+        "E(eV)",
+        "Epot(eV)",
+        "Ekin(eV)",
+        f"T({TEMPERATURE_UNIT})",
+        f"P({PRESSURE_UNIT})",
     ]
     rows = [
         [

@@ -11,6 +11,7 @@ from abacustools.core.job import JobStatus, JobValidation, status_job, validate_
 from abacustools.data.abacus_result import read_relaxation_history
 
 from .monitor import (
+    _format_displacement_site,
     _format_energy,
     _format_energy_change,
     _format_metric,
@@ -78,6 +79,8 @@ def _summary(job: Path, jobs: list[Path]) -> dict[str, Any]:
         "max_stress": status.progress.get("largest_stress"),
         "rms_displacement": None,
         "max_displacement": None,
+        "max_displacement_atom": None,
+        "max_displacement_atom_label": None,
         "relaxation_steps": None,
         "log": None if status.log is None else str(status.log),
     }
@@ -96,6 +99,8 @@ def _summary(job: Path, jobs: list[Path]) -> dict[str, Any]:
                     "max_stress": latest["max_stress"],
                     "rms_displacement": latest["rms_displacement"],
                     "max_displacement": latest["max_displacement"],
+                    "max_displacement_atom": latest["max_displacement_atom"],
+                    "max_displacement_atom_label": latest["max_displacement_atom_label"],
                     "relaxation_steps": len(history),
                 }
             )
@@ -106,8 +111,8 @@ def _print_jobs(items: list[dict[str, Any]]) -> None:
     """Print one row per job."""
     header = [
         "job", "state", "calculation", "step",
-        "energy(eV)", "dE(eV)", "max_force(eV/A)",
-        "rms_displacement(A)", "max_displacement(A)", "max_stress(kBar)",
+        "E(eV)", "dE(eV)", "Fmax(eV/A)",
+        "rms_disp(A)", "max_disp(A)", "disp_atom", "Smax(kBar)",
     ]
     rows = [
         [
@@ -120,6 +125,7 @@ def _print_jobs(items: list[dict[str, Any]]) -> None:
             _format_metric(item["max_force"]),
             _format_metric(item.get("rms_displacement")),
             _format_metric(item.get("max_displacement")),
+            _format_displacement_site(item),
             _format_metric(item["max_stress"]),
         ]
         for item in items

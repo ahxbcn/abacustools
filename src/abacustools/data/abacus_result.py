@@ -142,9 +142,10 @@ def read_relaxation_history(
     can count the components beyond a convergence threshold.  When the log
     prints Cartesian coordinates, ``rms_displacement`` and
     ``max_displacement`` compare each structure with the preceding one in
-    Angstrom.  Those two metrics need the cell to unfold the periodic wrapping
-    that ABACUS applies after every ionic step, so they are reported only when
-    a pymatgen ``lattice`` is given.
+    Angstrom, and ``max_displacement_atom`` names the atom that moved the
+    most.  Those metrics need the cell to unfold the periodic wrapping that
+    ABACUS applies after every ionic step, so they are reported only when a
+    pymatgen ``lattice`` is given.
 
     Args:
         log_file: ABACUS running log.
@@ -178,7 +179,10 @@ def read_relaxation_history(
             previous_positions, current_positions, lattice
         )
         if displacement is not None:
-            item["rms_displacement"], item["max_displacement"] = displacement
+            rms, maximum, atom = displacement
+            item["rms_displacement"] = rms
+            item["max_displacement"] = maximum
+            item["max_displacement_atom"] = atom
         previous_positions = current_positions
 
     for step, (labels, block) in force_blocks.items():
@@ -192,6 +196,9 @@ def read_relaxation_history(
         item["force_atom"] = atom
         item["force_component"] = component
         item["force_atom_label"] = _atom_label(labels, atom)
+        displacement_atom = item.get("max_displacement_atom")
+        if displacement_atom is not None:
+            item["max_displacement_atom_label"] = _atom_label(labels, displacement_atom)
         item["forces"] = block
 
     for step, tensor in stress_blocks.items():
@@ -243,6 +250,8 @@ def _collect_ionic_steps(
                 "stress": None,
                 "rms_displacement": None,
                 "max_displacement": None,
+                "max_displacement_atom": None,
+                "max_displacement_atom_label": None,
                 "converged": False,
             },
         )
@@ -358,7 +367,7 @@ def _displacement_metrics(
     previous: Optional[List[List[float]]],
     current: List[List[float]],
     lattice: Any = None,
-) -> Optional[tuple[float, float]]:
+) -> Optional[tuple[float, float, int]]:
     """Return the atomic RMS and maximum displacement between structures.
 
     ABACUS wraps fractional coordinates into the cell after every ionic step,
@@ -381,7 +390,11 @@ def _displacement_metrics(
             for first, second in zip(previous_fractional, current_fractional)
         ]
     )
-    return float(np.sqrt(np.mean(distances**2))), float(np.max(distances))
+    return (
+        float(np.sqrt(np.mean(distances**2))),
+        float(np.max(distances)),
+        int(np.argmax(distances)) + 1,  # one-based, as in _force_extremes
+    )
 
 
 def _fill_energy_change(history: List[Dict[str, Any]]) -> None:

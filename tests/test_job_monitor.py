@@ -273,6 +273,34 @@ class TestStepHistories(unittest.TestCase):
         self.assertIsNone(history[1]["forces"])
         self.assertIsNone(history[0]["stress_component"])
 
+    def test_names_the_atom_with_the_largest_displacement(self) -> None:
+        text = (
+            "CARTESIAN COORDINATES ( UNIT = 1.0 Bohr ).\n"
+            "    atom                   x                   y                   z\n"
+            "Ga1 0.0 0.0 0.0\n"
+            "N1  1.0 0.0 0.0\n"
+            "\n STEP OF RELAXATION : 1\n"
+            "------------------------------------------------------------------------------------------\n"
+            " TOTAL-FORCE (eV/Angstrom)\n"
+            "------------------------------------------------------------------------------------------\n"
+            "                       Ga1        -0.0319780969        -0.0319780969         0.0668876704\n"
+            "                        N1         0.0319780969         0.0319780969        -0.0668876704\n"
+            "------------------------------------------------------------------------------------------\n"
+            " final etot is -10.000000 eV\n"
+            "CARTESIAN COORDINATES ( UNIT = 1.0 Bohr ).\n"
+            "    atom                   x                   y                   z\n"
+            "Ga1 0.0 0.0 0.0\n"
+            "N1  1.2 0.0 0.0\n"
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log") as stream:
+            stream.write(text)
+            stream.flush()
+            history = read_relaxation_history(stream.name, lattice=Lattice.cubic(10.0))
+
+        # N1 moved 0.2 Bohr; the label comes from the force table of the step.
+        self.assertEqual(history[0]["max_displacement_atom"], 2)
+        self.assertEqual(history[0]["max_displacement_atom_label"], "N1")
+
     def test_calculates_displacement_from_consecutive_coordinate_blocks(self) -> None:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".log") as stream:
             stream.write(COORDINATE_RELAX_LOG)
@@ -284,6 +312,8 @@ class TestStepHistories(unittest.TestCase):
             (0.025**0.5) * BOHR_TO_ANG,
         )
         self.assertAlmostEqual(history[0]["max_displacement"], 0.2 * BOHR_TO_ANG)
+        self.assertEqual(history[0]["max_displacement_atom"], 2)
+        self.assertEqual(history[1]["max_displacement_atom"], 2)
         self.assertAlmostEqual(
             history[1]["rms_displacement"],
             (((0.05**2 + 0.3**2) / 2) ** 0.5) * BOHR_TO_ANG,
@@ -325,6 +355,8 @@ class TestStepHistories(unittest.TestCase):
         self.assertIsNone(without_cell[0]["max_displacement"])
         self.assertAlmostEqual(with_cell[0]["max_displacement"], 0.3, places=6)
         self.assertAlmostEqual(with_cell[0]["rms_displacement"], 0.3, places=6)
+        self.assertEqual(with_cell[0]["max_displacement_atom"], 1)
+        self.assertIsNone(without_cell[0]["max_displacement_atom"])
 
 
 class TestJobLattice(unittest.TestCase):
@@ -578,7 +610,7 @@ class TestMonitorReports(unittest.TestCase):
                 code, output = _monitor(job, "relax")
 
         self.assertEqual(code, 0)
-        self.assertIn("max_force(eV/A)", output)
+        self.assertIn("Fmax(eV/A)", output)
 
     def test_scf_default_reports_status_and_option_details_iterations(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -623,10 +655,11 @@ class TestMonitorReports(unittest.TestCase):
             self.assertIn("convergence criteria:", output)
             self.assertIn("force_thr_ev: 0.02 eV/Angstrom", output)
             self.assertIn("relax_method: cg", output)
-            self.assertIn("max_force(eV/A)", output)
-            self.assertIn("force_atom/component", output)
-            self.assertIn("rms_displacement(A)", output)
-            self.assertIn("max_displacement(A)", output)
+            self.assertIn("Fmax(eV/A)", output)
+            self.assertIn("F atom/comp", output)
+            self.assertIn("rms_disp(A)", output)
+            self.assertIn("max_disp(A)", output)
+            self.assertIn("disp_atom", output)
             self.assertIn("Ga1z", output)
 
     def test_relax_criteria_fall_back_to_the_log_threshold(self) -> None:
@@ -652,8 +685,8 @@ class TestMonitorReports(unittest.TestCase):
 
             self.assertEqual(code, 0)
             self.assertIn("stress_thr: 0.5 kBar", output)
-            self.assertIn("max_stress(kBar)", output)
-            self.assertIn("stress_component", output)
+            self.assertIn("Smax(kBar)", output)
+            self.assertIn("S comp", output)
             self.assertIn("xx", output)
 
     def test_md_reports_target_values_of_its_type(self) -> None:
@@ -678,7 +711,7 @@ class TestMonitorReports(unittest.TestCase):
             self.assertIn("md_type: npt", output)
             self.assertIn("md_tfirst: 300", output)
             self.assertIn("md_pfirst: 1.0", output)
-            self.assertIn("temperature(K)", output)
+            self.assertIn("T(K)", output)
             self.assertIn("-347.52879", output)
 
     def test_md_of_a_non_thermostat_type_omits_targets(self) -> None:
@@ -710,13 +743,14 @@ class TestMonitorExports(unittest.TestCase):
             code, output = _monitor(job, "relax", csv=csv_path)
             self.assertEqual(code, 0)
             self.assertIn("step history:", output)
-            self.assertIn("force_atom/component", output)
+            self.assertIn("F atom/comp", output)
             with csv_path.open(newline="", encoding="utf-8") as stream:
                 rows = list(csv.DictReader(stream))
             self.assertEqual(list(rows[0]), [
                 "step", "energy", "energy_change",
                 "max_force", "force_atom", "force_component",
-                "rms_displacement", "max_displacement", "converged",
+                "rms_displacement", "max_displacement", "max_displacement_atom",
+                "converged",
             ])
             self.assertEqual(rows[0]["force_atom"], "1")
             self.assertEqual(rows[0]["force_component"], "z")
@@ -770,7 +804,7 @@ class TestMonitorExports(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertIn("step history plot:", output)
             self.assertTrue(plot_path.is_file())
-            self.assertIn("temperature(K)", output)
+            self.assertIn("T(K)", output)
             self.assertIn("-347.52879000", output)
 
     def test_json_stays_machine_readable_beside_a_plot(self) -> None:
