@@ -204,3 +204,127 @@ def test_postprocess_traj_reports_a_missing_trajectory(
     )) == 1
 
     assert "relax or cell-relax" in capsys.readouterr().out
+
+
+LTS_LOG = """
+                  lattice constant (Bohr) = 1.8897261255
+              lattice constant (Angstrom) = 1.0
+DIRECT COORDINATES
+    atom                   x                   y                   z     mag                  vx                  vy                  vz
+taud_Si1            0.0000000000        0.0000000000        0.0000000000  0.0000        0.0000000000        0.0000000000        0.0000000000
+taud_Si2            0.5000000000        0.5000000000        0.5000000000  0.0000        0.0000000000        0.0000000000        0.0000000000
+
+ Lattice vectors: (Cartesian coordinate: in unit of a_0)
+             +5.00000            +0.00000                  +0
+                   +0            +5.00000            +0.00000
+                   +0                  +0            +5.00000
+
+ STEP OF RELAXATION : 1
+ final etot is -10.000000 eV
+DIRECT COORDINATES
+    atom                   x                   y                   z     mag                  vx                  vy                  vz
+taud_Si1            0.0100000000        0.0000000000        0.0000000000  0.0000        0.0000000000        0.0000000000        0.0000000000
+taud_Si2            0.5000000000        0.5000000000        0.5000000000  0.0000        0.0000000000        0.0000000000        0.0000000000
+
+ STEP OF RELAXATION : 2
+ final etot is -10.250000 eV
+"""
+
+
+DEVELOP_LOG = """
+              Lattice constant (Bohr) = 1.8897261255
+              Lattice constant (Angstrom) = 1.0
+ CARTESIAN COORDINATES ( UNIT = 1.88972613 Bohr )
+    atom                   x                   y                   z     mag
+Si            0.000000000000       0.000000000000       0.000000000000  0.0000
+Si            0.500000000000       0.500000000000       0.500000000000  0.0000
+
+ Lattice vectors: (Cartesian coordinate: in unit of a_0)
+             +5.00000            +0.00000                  +0
+                   +0            +5.00000            +0.00000
+                   +0                  +0            +5.00000
+
+ STEP OF RELAXATION : 1
+ final etot is -10.000000 eV
+ CARTESIAN COORDINATES ( UNIT = 1.88972613 Bohr )
+    atom                   x                   y                   z     mag
+Si            0.200000000000       0.000000000000       0.000000000000  0.0000
+Si            0.500000000000       0.500000000000       0.500000000000  0.0000
+
+ STEP OF RELAXATION : 2
+ final etot is -10.250000 eV
+"""
+
+
+def _log_job(tmp_path: Path, log: str, *, calculation: str = "relax") -> Path:
+    """Create a relaxation job whose trajectory exists only in the log."""
+    job = tmp_path / "job"
+    output = job / "OUT.ABACUS"
+    output.mkdir(parents=True)
+    (job / "INPUT").write_text(
+        "INPUT_PARAMETERS\n"
+        f"suffix ABACUS\ncalculation {calculation}\nnspin 1\n",
+        encoding="utf-8",
+    )
+    (job / "STRU").write_text(
+        "ATOMIC_SPECIES\nSi 28.0855 Si.upf\n\n"
+        "LATTICE_CONSTANT\n1.8897261255\n\n"
+        "LATTICE_VECTORS\n5 0 0\n0 5 0\n0 0 5\n\n"
+        "ATOMIC_POSITIONS\nDirect\n\n"
+        "Si\n0.0\n2\n0.0 0.0 0.0 m 1 1 1\n0.5 0.5 0.5 m 1 1 1\n",
+        encoding="utf-8",
+    )
+    (output / f"running_{calculation}.log").write_text(log, encoding="utf-8")
+    return job
+
+
+def test_relaxation_trajectory_falls_back_to_a_direct_log(tmp_path: Path) -> None:
+    frames = read_relax_trajectory(_log_job(tmp_path, LTS_LOG), version="LTS3.10.1")
+
+    assert [frame.step for frame in frames] == [1, 2]
+    assert [frame.energy for frame in frames] == pytest.approx([-10.0, -10.25])
+    assert frames[0].symbols == ["Si", "Si"]
+    np.testing.assert_allclose(frames[0].positions[0], [0.0, 0.0, 0.0])
+    np.testing.assert_allclose(frames[1].positions[0], [0.05, 0.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(np.diag(frames[0].cell), [5.0, 5.0, 5.0], atol=1e-5)
+
+
+def test_relaxation_trajectory_falls_back_to_a_cartesian_log(tmp_path: Path) -> None:
+    frames = read_relax_trajectory(_log_job(tmp_path, DEVELOP_LOG), version="develop")
+
+    assert [frame.step for frame in frames] == [1, 2]
+    assert frames[1].symbols == ["Si", "Si"]
+    np.testing.assert_allclose(frames[1].positions[0], [0.2, 0.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(np.diag(frames[1].cell), [5.0, 5.0, 5.0], atol=1e-5)
+
+
+def test_log_fallback_uses_the_job_structure_for_the_cell(tmp_path: Path) -> None:
+    log = "\n".join(
+        line
+        for line in DEVELOP_LOG.splitlines()
+        if "Lattice vectors" not in line and not line.strip().startswith("+")
+    )
+    frames = read_relax_trajectory(_log_job(tmp_path, log), version="develop")
+
+    assert [frame.step for frame in frames] == [1, 2]
+    np.testing.assert_allclose(np.diag(frames[0].cell), [5.0, 5.0, 5.0], atol=1e-5)
+
+
+def test_postprocess_traj_reads_a_log_only_job(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
+    from ase.io import read
+
+    job = _log_job(tmp_path, LTS_LOG)
+
+    assert postprocess_traj(Namespace(
+        job=job, output="relax_trajectory.extxyz", format=None, first=None,
+        last=None, stride=1, no_energy=False, version="LTS3.10.1", json=True,
+    )) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report["frames"] == 2
+    assert report["has_energy"]
+    structures = read(str(job / "relax_trajectory.extxyz"), index=":")
+    assert len(structures) == 2
+    np.testing.assert_allclose(structures[1].positions[0], [0.05, 0.0, 0.0], atol=1e-6)

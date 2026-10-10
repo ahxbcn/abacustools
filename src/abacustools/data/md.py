@@ -20,9 +20,10 @@ pressure of the running log are attached to the frame of the same step.
 
 Geometry optimizations are read from the per-step structures that
 ``out_stru`` writes: ``STRU_ION<step>_D`` on the 3.10 LTS branch and
-``STRU<step>`` on the develop branch. The energy of every step is attached
-from the ``running_relax.log``/``running_cell-relax.log`` force/stress
-table.
+``STRU<step>`` on the develop branch. When those files are missing, the
+per-step coordinates and cell printed in the
+``running_relax.log``/``running_cell-relax.log`` are used instead. The energy
+of every step is attached from the same running log.
 """
 
 from __future__ import annotations
@@ -34,7 +35,11 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
-from abacustools.data.abacus_result import read_md_history, read_relaxation_history
+from abacustools.data.abacus_result import (
+    read_md_history,
+    read_relax_structures,
+    read_relaxation_history,
+)
 from abacustools.data.charge import output_directory
 from abacustools.io.abacus import ReadInput
 from abacustools.io.stru import AbacusSTRU
@@ -304,8 +309,9 @@ def read_relax_trajectory(
     """Read the trajectory of an ABACUS relax or cell-relax job.
 
     The frames come from the per-step structures ``out_stru`` writes, in step
-    order. The energy of each step is attached from the running relaxation
-    log when it is available.
+    order. When those files are missing the trajectory is rebuilt from the
+    coordinates that the running relaxation log prints for every ionic step.
+    The energy of each step is attached from the running log.
 
     Args:
         job: ABACUS job directory of a ``relax`` or ``cell-relax`` calculation.
@@ -317,7 +323,8 @@ def read_relax_trajectory(
 
     Raises:
         ValueError: If the job is not a relax or cell-relax calculation.
-        FileNotFoundError: If the job wrote no per-step structure.
+        FileNotFoundError: If neither the per-step structures nor a usable
+            running log are available.
     """
     job = Path(job)
     inputs = ReadInput(str(job / "INPUT"))
@@ -328,6 +335,7 @@ def read_relax_trajectory(
             "use 'postprocess md' for a molecular-dynamics trajectory"
         )
     outdir = output_directory(job, inputs)
+    log = outdir / f"running_{calculation}.log"
     steps: Dict[int, Path] = {}
     for path in sorted(outdir.glob("*")) if outdir.is_dir() else []:
         if not path.is_file():
@@ -337,32 +345,76 @@ def read_relax_trajectory(
             if match is not None:
                 steps[int(match.group(1))] = path
                 break
-    if not steps:
+    if steps:
+        frames = []
+        for step in sorted(steps):
+            structure = AbacusSTRU.read(str(steps[step]), fmt="stru")
+            if structure is None:
+                continue
+            frames.append(_frame_from_structure(step, structure))
+        if with_log and frames and log.is_file():
+            _attach_relax_energies(frames, log, version)
+        return frames
+
+    if not log.is_file():
         raise FileNotFoundError(
-            f"no per-step structures in {outdir}; enable out_stru in INPUT so "
-            "ABACUS writes STRU_ION<step>_D (LTS) or STRU<step> (develop)"
+            f"no per-step structures in {outdir} and no {log.name}; enable "
+            "out_stru in INPUT so ABACUS writes STRU_ION<step>_D (LTS) or "
+            "STRU<step> (develop), or keep the running log"
         )
-    frames = []
-    for step in sorted(steps):
-        structure = AbacusSTRU.read(str(steps[step]), fmt="stru")
-        if structure is None:
-            continue
-        frames.append(_frame_from_structure(step, structure))
-    if with_log and frames:
-        log = outdir / f"running_{calculation}.log"
-        if log.is_file():
-            try:
-                history = {
-                    int(record["step"]): record
-                    for record in read_relaxation_history(log, version)
-                }
-            except (OSError, ValueError, KeyError, TypeError):
-                history = {}
-            for frame in frames:
-                record = history.get(frame.step)
-                if record is not None:
-                    frame.energy = record.get("energy")
+    cell, symbols = _job_structure_hint(job, inputs)
+    records = read_relax_structures(log, version, cell=cell, symbols=symbols)
+    if not records:
+        raise FileNotFoundError(
+            f"the running log {log} holds no per-step structure; enable out_stru "
+            "in INPUT so ABACUS writes the per-step structure files"
+        )
+    frames = [
+        TrajectoryFrame(
+            step=int(record["step"]),
+            cell=np.asarray(record["cell"], dtype=float),
+            symbols=list(record["symbols"]),
+            positions=np.asarray(record["positions"], dtype=float),
+            energy=record.get("energy") if with_log else None,
+        )
+        for record in records
+    ]
     return frames
+
+
+def _attach_relax_energies(
+    frames: Sequence[TrajectoryFrame], log: Path, version: Optional[str]
+) -> None:
+    """Copy the energy of every frame from a running relaxation log."""
+    try:
+        history = {
+            int(record["step"]): record
+            for record in read_relaxation_history(log, version)
+        }
+    except (OSError, ValueError, KeyError, TypeError):
+        return
+    for frame in frames:
+        record = history.get(frame.step)
+        if record is not None:
+            frame.energy = record.get("energy")
+
+
+def _job_structure_hint(
+    job: Path, inputs: Any
+) -> tuple[Optional[np.ndarray], Optional[List[str]]]:
+    """Return the cell and symbols of the job's input structure, if it exists."""
+    name = str(inputs.get("stru_file", "STRU"))
+    path = Path(name)
+    if not path.is_absolute():
+        path = job / path
+    if not path.is_file():
+        return None, None
+    structure = AbacusSTRU.read(str(path), fmt="stru")
+    if structure is None:
+        return None, None
+    return np.asarray(structure.cell, dtype=float), [
+        str(element) for element in structure.elements
+    ]
 
 
 def select_frames(

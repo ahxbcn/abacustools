@@ -983,7 +983,8 @@ ionic step of a `relax` or `cell-relax` job, while the develop branch writes
 `STRU<step>` every `out_freq_ion` steps, so set `out_stru 1` and a positive
 `out_freq_ion` to keep them. `postprocess traj` collects those structures in
 step order and attaches the energy of every step from `running_relax.log` or
-`running_cell-relax.log`:
+`running_cell-relax.log`; when the per-step files are absent it rebuilds the
+frames from the coordinates and cell that the running log prints instead:
 
 ```text
 abacustools postprocess traj -j JOB
