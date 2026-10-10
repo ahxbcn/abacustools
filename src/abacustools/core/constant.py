@@ -49,3 +49,12 @@ SPEED_OF_LIGHT = 299792458.0
 #: Energy of one reciprocal centimetre, in eV, which turns spectroscopic
 #: wavenumbers such as vibrational frequencies into photon energies.
 INV_CM_TO_EV = PLANCK_CONSTANT * SPEED_OF_LIGHT * 100.0 / ELEMENTARY_CHARGE
+
+#: One gigapascal as electronvolt per cubic Angstrom.
+GPA_TO_EV_PER_ANGSTROM3 = 1.0 / 160.21766208
+
+#: One kilobar as electronvolt per cubic Angstrom.  ABACUS prints stresses in
+#: kBar with the compression-positive convention, while ASE stores the
+#: tension-positive stress in eV/Angstrom^3, so the two differ by this factor
+#: and a sign.
+KBAR_TO_EV_PER_ANGSTROM3 = 0.1 * GPA_TO_EV_PER_ANGSTROM3

@@ -52,6 +52,22 @@ _COORDINATE_HEADER_RE = re.compile(
     rf"^\s*cartesian\s+coordinates(?:\s*\(\s*unit\s*=\s*({_FLOAT})\s*bohr\s*\))?",
     re.IGNORECASE,
 )
+_DIRECT_COORDINATE_HEADER_RE = re.compile(
+    r"^\s*direct\s+coordinates\s*$",
+    re.IGNORECASE,
+)
+_LATTICE_VECTOR_HEADER_RE = re.compile(
+    r"lattice\s+vectors\s*:?\s*\(\s*cartesian",
+    re.IGNORECASE,
+)
+_LATTICE_CONSTANT_ANGSTROM_RE = re.compile(
+    rf"lattice\s+constant\s*\(\s*angstrom\s*\)\s*=\s*({_FLOAT})",
+    re.IGNORECASE,
+)
+_LATTICE_CONSTANT_BOHR_RE = re.compile(
+    rf"lattice\s+constant\s*\(\s*bohr\s*\)\s*=\s*({_FLOAT})",
+    re.IGNORECASE,
+)
 _STRESS_COMPONENTS = (
     ("xx", "xy", "xz"),
     ("xy", "yy", "yz"),
@@ -215,6 +231,205 @@ def read_relaxation_history(
     history = [records[step] for step in sorted(records)]
     _fill_energy_change(history)
     return history
+
+
+def _lattice_constant_angstrom(lines: Sequence[str]) -> Optional[float]:
+    """Return the lattice constant in Angstrom when the log prints it."""
+    for line in lines:
+        match = _LATTICE_CONSTANT_ANGSTROM_RE.search(line)
+        if match is not None:
+            return _as_float(match.group(1))
+    for line in lines:
+        match = _LATTICE_CONSTANT_BOHR_RE.search(line)
+        if match is not None:
+            return _as_float(match.group(1)) * BOHR_TO_ANG
+    return None
+
+
+def _parse_matrix_block(
+    lines: Sequence[str], start: int, size: int = 3
+) -> Optional[List[List[float]]]:
+    """Read the ``size`` numeric rows that follow a matrix header."""
+    rows: List[List[float]] = []
+    for line in lines[start + 1 : start + 1 + size]:
+        values = _numbers(line)
+        if len(values) < size:
+            return None
+        rows.append(values[:size])
+    return rows if len(rows) == size else None
+
+
+def _parse_coordinate_rows(
+    lines: Sequence[str], start: int
+) -> tuple[List[Optional[str]], List[List[float]]]:
+    """Read the labelled coordinate rows that follow a coordinate header."""
+    labels: List[Optional[str]] = []
+    positions: List[List[float]] = []
+    started = False
+    for line in lines[start + 1 :]:
+        parts = line.split()
+        values: Optional[List[float]] = None
+        label: Optional[str] = None
+        if len(parts) >= 4:
+            try:
+                values = [_as_float(value) for value in parts[1:4]]
+                label = parts[0]
+            except ValueError:
+                values = None
+        if values is None and len(parts) >= 3:
+            try:
+                values = [_as_float(value) for value in parts[:3]]
+                label = None
+            except ValueError:
+                values = None
+        if values is not None:
+            labels.append(label)
+            positions.append(values)
+            started = True
+            continue
+        if started:
+            break
+    return labels, positions
+
+
+def _symbols_from_labels(labels: Sequence[Optional[str]]) -> Optional[List[str]]:
+    """Turn the atom labels of a coordinate table into element symbols."""
+    if not labels or any(label is None for label in labels):
+        return None
+    symbols: List[str] = []
+    for label in labels:
+        cleaned = re.sub(r"^(?:tauc_|taud_)", "", str(label))
+        match = re.match(r"[A-Za-z]{1,2}", cleaned)
+        if match is None:
+            return None
+        symbols.append(match.group(0))
+    return symbols
+
+
+def read_relax_structures(
+    log_file: Union[str, Path],
+    version: Optional[str] = None,
+    *,
+    cell: Any = None,
+    symbols: Optional[Sequence[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Read the per-step structures printed in a geometry-optimization log.
+
+    ABACUS prints the atomic coordinates of every ionic step to the running
+    log, and the cell whenever it changes, so the trajectory of a ``relax`` or
+    ``cell-relax`` job can be rebuilt from the log alone.  The coordinate block
+    that precedes the ``STEP OF RELAXATION`` marker of a step holds the geometry
+    evaluated at that step, so the step numbering matches
+    :func:`read_relaxation_history`.
+
+    Args:
+        log_file: ABACUS running relaxation log.
+        version: ABACUS version hint, as in :func:`read_relaxation_history`.
+        cell: Initial cell in Angstrom, used when the log prints no lattice
+            vectors; the rows are the three cell vectors.
+        symbols: Element symbols used when the coordinate rows carry no label.
+
+    Returns:
+        One record per ionic step, ordered by step, with the step number, the
+        positions in Angstrom, the element symbols, the cell in Angstrom, the
+        per-atom forces in eV/Angstrom, the stress tensor in kBar as ABACUS
+        prints it, and the total energy in eV; a field is ``None`` when the log
+        does not provide it.
+    """
+    path = Path(log_file)
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    profile = resolve_version(
+        version, job_dir=path.parent, text="\n".join(lines[:128])
+    )
+    has_relax_marker = any(
+        _first_match(profile.relax_step_patterns, line) is not None for line in lines
+    )
+    step_patterns = (
+        profile.relax_step_patterns if has_relax_marker else profile.ion_step_patterns
+    )
+    lat0 = _lattice_constant_angstrom(lines)
+
+    markers: List[tuple[int, int]] = []
+    coordinates: List[tuple[int, str, List[Optional[str]], List[List[float]]]] = []
+    lattices: List[tuple[int, List[List[float]]]] = []
+    for index, line in enumerate(lines):
+        step = _first_match(step_patterns, line)
+        if step is not None:
+            markers.append((index, int(step)))
+            continue
+        if _LATTICE_VECTOR_HEADER_RE.search(line) is not None:
+            block = _parse_matrix_block(lines, index)
+            if block is not None and lat0 is not None:
+                lattices.append(
+                    (index, [[value * lat0 for value in row] for row in block])
+                )
+            continue
+        if _DIRECT_COORDINATE_HEADER_RE.match(line) is not None:
+            labels, positions = _parse_coordinate_rows(lines, index)
+            if positions:
+                coordinates.append((index, "direct", labels, positions))
+            continue
+        header = _COORDINATE_HEADER_RE.search(line)
+        if header is None:
+            continue
+        unit = 1.0 if header.group(1) is None else _as_float(header.group(1))
+        labels, positions = _parse_coordinate_rows(lines, index)
+        if positions:
+            coordinates.append(
+                (
+                    index,
+                    "cartesian",
+                    labels,
+                    [
+                        [value * unit * BOHR_TO_ANG for value in row]
+                        for row in positions
+                    ],
+                )
+            )
+
+    if not markers:
+        return []
+
+    history = {
+        int(item["step"]): item for item in read_relaxation_history(path, version)
+    }
+    fallback_cell = None if cell is None else [[float(value) for value in row] for row in cell]
+    structures: List[Dict[str, Any]] = []
+    for marker_index, step in markers:
+        geometry = next(
+            (item for item in reversed(coordinates) if item[0] < marker_index), None
+        )
+        if geometry is None:
+            continue
+        _, mode, labels, positions = geometry
+        block_cell = fallback_cell
+        for lattice_index, lattice in reversed(lattices):
+            if lattice_index < marker_index:
+                block_cell = lattice
+                break
+        if mode == "direct":
+            if block_cell is None:
+                continue
+            matrix = np.asarray(block_cell, dtype=float)
+            positions = (np.asarray(positions, dtype=float) @ matrix).tolist()
+        resolved = _symbols_from_labels(labels)
+        if resolved is None and symbols is not None:
+            resolved = list(symbols)
+        if resolved is None or len(resolved) != len(positions):
+            continue
+        item = history.get(step)
+        structures.append(
+            {
+                "step": step,
+                "cell": block_cell,
+                "symbols": list(resolved),
+                "positions": positions,
+                "forces": None if item is None else item.get("forces"),
+                "stress": None if item is None else item.get("stress"),
+                "energy": None if item is None else item.get("energy"),
+            }
+        )
+    return structures
 
 
 def _collect_ionic_steps(
