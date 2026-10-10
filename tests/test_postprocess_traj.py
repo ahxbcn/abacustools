@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from abacustools.commands.postprocess.traj import run as postprocess_traj
-from abacustools.core.constant import BOHR_TO_ANG
+from abacustools.core.constant import BOHR_TO_ANG, KBAR_TO_EV_PER_ANGSTROM3
 from abacustools.data.md import read_relax_trajectory
 
 
@@ -206,6 +206,23 @@ def test_postprocess_traj_reports_a_missing_trajectory(
     assert "relax or cell-relax" in capsys.readouterr().out
 
 
+
+FORCE_STRESS = """
+    TOTAL-FORCE (eV/Angstrom)
+------------------------------------------------------------------------------------------
+                       Si1         0.1000000000         0.2000000000         0.3000000000
+                       Si2        -0.1000000000        -0.2000000000        -0.3000000000
+------------------------------------------------------------------------------------------
+
+ TOTAL-STRESS (KBAR)
+------------------------------------------------------------------------------------------
+              +10.000000              +0.000000              -0.000000
+              +0.000000             +20.000000              +0.000000
+              -0.000000              +0.000000             +30.000000
+------------------------------------------------------------------------------------------
+"""
+
+
 LTS_LOG = """
                   lattice constant (Bohr) = 1.8897261255
               lattice constant (Angstrom) = 1.0
@@ -221,6 +238,7 @@ taud_Si2            0.5000000000        0.5000000000        0.5000000000  0.0000
 
  STEP OF RELAXATION : 1
  final etot is -10.000000 eV
+""" + FORCE_STRESS + """
 DIRECT COORDINATES
     atom                   x                   y                   z     mag                  vx                  vy                  vz
 taud_Si1            0.0100000000        0.0000000000        0.0000000000  0.0000        0.0000000000        0.0000000000        0.0000000000
@@ -228,7 +246,7 @@ taud_Si2            0.5000000000        0.5000000000        0.5000000000  0.0000
 
  STEP OF RELAXATION : 2
  final etot is -10.250000 eV
-"""
+""" + FORCE_STRESS
 
 
 DEVELOP_LOG = """
@@ -246,6 +264,7 @@ Si            0.500000000000       0.500000000000       0.500000000000  0.0000
 
  STEP OF RELAXATION : 1
  final etot is -10.000000 eV
+""" + FORCE_STRESS + """
  CARTESIAN COORDINATES ( UNIT = 1.88972613 Bohr )
     atom                   x                   y                   z     mag
 Si            0.200000000000       0.000000000000       0.000000000000  0.0000
@@ -253,7 +272,7 @@ Si            0.500000000000       0.500000000000       0.500000000000  0.0000
 
  STEP OF RELAXATION : 2
  final etot is -10.250000 eV
-"""
+""" + FORCE_STRESS
 
 
 def _log_job(tmp_path: Path, log: str, *, calculation: str = "relax") -> Path:
@@ -287,6 +306,10 @@ def test_relaxation_trajectory_falls_back_to_a_direct_log(tmp_path: Path) -> Non
     np.testing.assert_allclose(frames[0].positions[0], [0.0, 0.0, 0.0])
     np.testing.assert_allclose(frames[1].positions[0], [0.05, 0.0, 0.0], atol=1e-6)
     np.testing.assert_allclose(np.diag(frames[0].cell), [5.0, 5.0, 5.0], atol=1e-5)
+    np.testing.assert_allclose(
+        frames[0].forces, [[0.1, 0.2, 0.3], [-0.1, -0.2, -0.3]]
+    )
+    np.testing.assert_allclose(np.diag(frames[1].stress), [10.0, 20.0, 30.0])
 
 
 def test_relaxation_trajectory_falls_back_to_a_cartesian_log(tmp_path: Path) -> None:
@@ -296,6 +319,38 @@ def test_relaxation_trajectory_falls_back_to_a_cartesian_log(tmp_path: Path) -> 
     assert frames[1].symbols == ["Si", "Si"]
     np.testing.assert_allclose(frames[1].positions[0], [0.2, 0.0, 0.0], atol=1e-6)
     np.testing.assert_allclose(np.diag(frames[1].cell), [5.0, 5.0, 5.0], atol=1e-5)
+    assert frames[0].forces is not None and frames[0].stress is not None
+
+
+def test_step_structures_take_forces_and_stress_from_the_log(tmp_path: Path) -> None:
+    job = _log_job(tmp_path, "")
+    output = job / "OUT.ABACUS"
+    (output / "STRU_ION1_D").write_text(
+        LTS_STRU.format(a=5.0), encoding="utf-8"
+    )
+    (output / "running_relax.log").write_text(
+        "DIRECT COORDINATES\n"
+        "    atom                   x                   y                   z\n"
+        "taud_Si1            0.0000000000        0.0000000000        0.0000000000\n"
+        "taud_Si2            0.5000000000        0.5000000000        0.5000000000\n\n"
+        " Lattice vectors: (Cartesian coordinate: in unit of a_0)\n"
+        "             +5.00000            +0.00000                  +0\n"
+        "                   +0            +5.00000            +0.00000\n"
+        "                   +0                  +0            +5.00000\n\n"
+        "                  lattice constant (Bohr) = 1.8897261255\n\n"
+        " STEP OF RELAXATION : 1\n"
+        " final etot is -10.000000 eV\n"
+        + FORCE_STRESS,
+        encoding="utf-8",
+    )
+
+    frames = read_relax_trajectory(job, version="LTS3.10.1")
+
+    assert [frame.step for frame in frames] == [1]
+    np.testing.assert_allclose(
+        frames[0].forces, [[0.1, 0.2, 0.3], [-0.1, -0.2, -0.3]]
+    )
+    np.testing.assert_allclose(np.diag(frames[0].stress), [10.0, 20.0, 30.0])
 
 
 def test_log_fallback_uses_the_job_structure_for_the_cell(tmp_path: Path) -> None:
@@ -324,7 +379,12 @@ def test_postprocess_traj_reads_a_log_only_job(
 
     report = json.loads(capsys.readouterr().out)
     assert report["frames"] == 2
-    assert report["has_energy"]
+    assert report["has_energy"] and report["has_forces"] and report["has_stress"]
     structures = read(str(job / "relax_trajectory.extxyz"), index=":")
     assert len(structures) == 2
     np.testing.assert_allclose(structures[1].positions[0], [0.05, 0.0, 0.0], atol=1e-6)
+    np.testing.assert_allclose(
+        structures[0].get_stress()[:3],
+        -np.array([10.0, 20.0, 30.0]) * KBAR_TO_EV_PER_ANGSTROM3,
+        atol=1e-9,
+    )

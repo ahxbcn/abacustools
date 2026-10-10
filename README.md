@@ -984,7 +984,8 @@ ionic step of a `relax` or `cell-relax` job, while the develop branch writes
 `out_freq_ion` to keep them. `postprocess traj` collects those structures in
 step order and attaches the energy of every step from `running_relax.log` or
 `running_cell-relax.log`; when the per-step files are absent it rebuilds the
-frames from the coordinates and cell that the running log prints instead:
+frames from the coordinates, cell, forces and stress that the running log
+prints instead:
 
 ```text
 abacustools postprocess traj -j JOB
@@ -992,9 +993,12 @@ abacustools postprocess traj -j JOB -o relax.extxyz --stride 2
 abacustools postprocess traj -j JOB --first 1 --last 50 --json
 ```
 
-The develop files also carry the forces when `cal_force` is enabled, so those
-frames hold forces as well; the LTS files hold positions and the cell only.
-`--no-energy` skips the running log, and `postprocess md` reads a
+The forces and stress of every step are read from the `TOTAL-FORCE` and
+`TOTAL-STRESS` tables of the running log, so even the LTS files, which hold
+positions and the cell only, end up with both; the stress is written into the
+trajectory in ASE's units and sign. The develop per-step files also carry
+forces themselves, which the log fills in only when a frame has none.
+`--no-energy` skips only the energy, and `postprocess md` reads a
 molecular-dynamics job the same way.
 
 `file traj` converts a trajectory between formats with the same machinery:

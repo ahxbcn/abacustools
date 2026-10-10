@@ -121,6 +121,7 @@ def run(args: argparse.Namespace) -> int:
         name
         for name, present in (
             ("forces", report["has_forces"]),
+            ("stress", report["has_stress"]),
             ("velocities", report["has_velocities"]),
             ("energies", report["has_energy"]),
         )

@@ -331,9 +331,10 @@ def read_relax_structures(
 
     Returns:
         One record per ionic step, ordered by step, with the step number, the
-        positions in Angstrom, the element symbols, the cell in Angstrom and
-        the total energy in eV; a field is ``None`` when the log does not
-        provide it.
+        positions in Angstrom, the element symbols, the cell in Angstrom, the
+        per-atom forces in eV/Angstrom, the stress tensor in kBar as ABACUS
+        prints it, and the total energy in eV; a field is ``None`` when the log
+        does not provide it.
     """
     path = Path(log_file)
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -423,6 +424,8 @@ def read_relax_structures(
                 "cell": block_cell,
                 "symbols": list(resolved),
                 "positions": positions,
+                "forces": None if item is None else item.get("forces"),
+                "stress": None if item is None else item.get("stress"),
                 "energy": None if item is None else item.get("energy"),
             }
         )
