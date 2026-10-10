@@ -22,10 +22,25 @@ def _pairs(values, *, value_type=float) -> dict:
 
 
 def _dftu_pairs(values) -> dict:
-    """Return ``{element: [orbital, U]}`` from the ``--dftu-param`` triples."""
+    """Return ``{element: U}`` or ``{element: [orbital, U]}`` settings.
+
+    ``--dftu-param`` accepts ``ELEMENT U`` (the orbital is inferred from the
+    element) or ``ELEMENT ORBITAL U`` (the orbital is explicit).
+    """
     result = {}
-    for element, orbital, u_value in values or []:
-        result[element] = [orbital, u_value]
+    for entry in values or []:
+        fields = list(entry)
+        if len(fields) == 3:
+            element, orbital, u_value = fields
+            result[element] = [orbital, u_value]
+        elif len(fields) == 2:
+            element, u_value = fields
+            result[element] = u_value
+        else:
+            raise ValueError(
+                "--dftu-param takes ELEMENT U or ELEMENT ORBITAL U, got: "
+                + " ".join(str(field) for field in fields)
+            )
     return result
 
 
@@ -82,10 +97,11 @@ def register_parser(subparsers) -> None:
     parser.add_argument("--nspin", default=None, type=int, choices=(1, 2, 4))
     parser.add_argument("--soc", action="store_true", help="Enable spin-orbit coupling.")
     parser.add_argument(
-        "--dftu-param", action="append", nargs=3, metavar=("ELEMENT", "ORBITAL", "U"),
+        "--dftu-param", action="append", nargs="+", metavar="ELEMENT [ORBITAL] U",
         help=(
-            "Enable DFT+U for an element and set its correlated orbital "
-            "(p, d or f) and U in eV; repeat for multiple elements."
+            "Enable DFT+U for an element: set U in eV, and optionally the "
+            "correlated orbital (p, d or f) before it; the orbital is inferred "
+            "from the element when omitted. Repeat for multiple elements."
         ),
     )
     parser.add_argument(

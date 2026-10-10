@@ -1520,7 +1520,7 @@ def test_prepare_dftu_param_enables_dftu(
 
     inputs = ReadInput(runs / "000000" / "INPUT")
     assert int(inputs["dft_plus_u"]) == 1
-    # H is not a magnetic d/f element, so the orbital must come from --dftu-param.
+    # The explicit p orbital for H overrides the element-based inference.
     orbital = inputs["orbital_corr"]
     assert (orbital if isinstance(orbital, list) else [orbital]) == [1]
     hubbard = inputs["hubbard_u"]
@@ -1547,20 +1547,60 @@ def test_prepare_defaults_to_the_lcao_basis(
     assert inputs["ks_solver"] == "genelpa"
 
 
-def test_prepare_rejects_a_dftu_param_without_an_orbital(tmp_path: Path) -> None:
+def test_prepare_infers_the_dftu_orbital_when_omitted(tmp_path: Path) -> None:
     source, library = _source_and_library(tmp_path)
 
-    with pytest.raises(ValueError, match="give the orbital"):
-        InputPreparer(
-            source,
-            output_dir=tmp_path / "jobs",
-            filetype="stru",
-            basis="lcao",
-            pp_path=library,
-            orb_path=library,
-            dftu=True,
-            dftu_param={"H": 4.0},
-        )
+    job = InputPreparer(
+        source,
+        output_dir=tmp_path / "jobs",
+        filetype="stru",
+        basis="lcao",
+        pp_path=library,
+        orb_path=library,
+        dftu=True,
+        dftu_param={"H": 4.0},
+    ).run()[0].path
+
+    inputs = ReadInput(job / "INPUT")
+    # H is not a magnetic d/f element, so the inferred orbital is p (1).
+    orbital = inputs["orbital_corr"]
+    assert (orbital if isinstance(orbital, list) else [orbital]) == [1]
+    hubbard = inputs["hubbard_u"]
+    assert (hubbard if isinstance(hubbard, list) else [hubbard]) == pytest.approx([4.0])
+
+
+def test_prepare_dftu_param_can_infer_the_orbital(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, library = _source_and_library(tmp_path)
+    monkeypatch.setitem(
+        CONFIG,
+        "resources",
+        {"default": "test", "libraries": {"test": {"pp": str(library), "orb": str(library)}}},
+    )
+
+    runs = tmp_path / "runs"
+    assert main(
+        [
+            "job",
+            "prepare",
+            "-f",
+            str(source),
+            "--ftype",
+            "stru",
+            "--basis",
+            "lcao",
+            "-o",
+            str(runs),
+            "--dftu-param",
+            "H",
+            "4.0",
+        ]
+    ) == 0
+
+    inputs = ReadInput(runs / "000000" / "INPUT")
+    orbital = inputs["orbital_corr"]
+    assert (orbital if isinstance(orbital, list) else [orbital]) == [1]
 
 
 def test_prepare_rejects_an_unknown_dftu_orbital(tmp_path: Path) -> None:

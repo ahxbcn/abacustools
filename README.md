@@ -346,9 +346,10 @@ and defaults to `lcao` (the configured `abacus.default_basis`); pass
 `--basis pw` for a plane-wave job.
 
 Magnetic and DFT+U settings are prepared with `--nspin`, `--soc`,
-`--init-mag`, `--afm` and `--dftu-param`. `--dftu-param ELEMENT ORBITAL U`
-enables DFT+U for an element and sets the correlated orbital (`p`, `d` or
-`f`) and U in eV; it repeats for several elements. Initial magnetic moments
+`--init-mag`, `--afm` and `--dftu-param`. `--dftu-param ELEMENT [ORBITAL] U`
+enables DFT+U for an element: set U in eV, and optionally the correlated
+orbital (`p`, `d` or `f`) before it; the orbital is inferred from the element
+type when omitted. It repeats for several elements. Initial magnetic moments
 require a spin-polarized run (`--nspin 2` or `--nspin 4`), and `--soc`
 requires `--nspin 4`; a conflicting choice is an error rather than a silent
 override. `--kpt-model` applies only together with `--kpt` and warns when it
