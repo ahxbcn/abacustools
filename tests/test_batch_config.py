@@ -140,9 +140,10 @@ def test_prepare_writes_the_configured_batch_config(
     assert document["post_dft"]["metrics"]["path"] == ["job"]
 
 
-def test_prepare_honours_the_no_submit_config_override(
+def test_prepare_honours_the_configured_submit_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Without --submit-config the configured submission.batch.generate applies."""
     source, library = _source_and_library(tmp_path)
     monkeypatch.setitem(
         CONFIG,
@@ -159,8 +160,9 @@ def test_prepare_honours_the_no_submit_config_override(
     assert main(
         [
             "job", "prepare", "-f", str(source), "--ftype", "stru", "--basis", "pw",
-            "-o", str(runs), "--folder-syntax", "job", "--no-submit-config",
+            "-o", str(runs), "--folder-syntax", "job",
         ]
     ) == 0
 
-    assert not (runs / "job.json").exists()
+    document = json.loads((runs / "job.json").read_text(encoding="utf-8"))
+    assert document["example"] == ["job"]

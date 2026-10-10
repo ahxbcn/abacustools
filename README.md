@@ -416,7 +416,9 @@ The placeholders are `{examples}` (the directory names as a JSON array),
 `{count}`, `{job_type}` and `{abacus_command}`. Braces that are not one of them,
 such as the ones of the JSON itself, are left alone, so a JSON template needs no
 escaping and an unknown placeholder is an error rather than a silently broken
-file. `--no-submit-config` overrides a configuration that enables the file. The
+file. `--submit-config` forces the file on for one run; when it is absent the
+configured `submission.batch.generate` decides, and there is no command-line
+switch to turn an enabled default off. The
 packaged template is an abacustest job for Bohrium; review its image, machine
 type, account and command before submitting.
 

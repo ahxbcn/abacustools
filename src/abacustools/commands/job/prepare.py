@@ -103,20 +103,13 @@ def register_parser(subparsers) -> None:
         ),
     )
     parser.add_argument("--override", "--overwrite", dest="override", action="store_true", help="Replace existing folders.")
-    submission = parser.add_mutually_exclusive_group()
-    submission.add_argument(
+    parser.add_argument(
         "--submit-config",
         dest="generate_config",
         action="store_true",
+        default=None,
         help="Write the configured batch submission file next to the prepared jobs.",
     )
-    submission.add_argument(
-        "--no-submit-config",
-        dest="generate_config",
-        action="store_false",
-        help="Do not write the batch submission file, overriding the config default.",
-    )
-    parser.set_defaults(generate_config=None)
     parser.add_argument(
         "--abacus-command",
         help="ABACUS command used in the batch submission file; otherwise use the config default.",
