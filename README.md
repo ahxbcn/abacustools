@@ -77,13 +77,13 @@ abacustools file stru structure.xyz STRU --cell 10 0 0 0 10 0 0 0 10
 Basic structure information can be inspected without converting the file:
 
 ```text
-abacustools file info STRU
-abacustools file info POSCAR --json
-abacustools file info structure.xyz --cell 10 0 0 0 10 0 0 0 10
-abacustools file info slab.STRU --coordination
-abacustools file info STRU --coordination voronoi --json
-abacustools file info *.vasp POSCAR --json
-abacustools file info STRU --summary
+abacustools file struinfo STRU
+abacustools file struinfo POSCAR --json
+abacustools file struinfo structure.xyz --cell 10 0 0 0 10 0 0 0 10
+abacustools file struinfo slab.STRU --coordination
+abacustools file struinfo STRU --coordination voronoi --json
+abacustools file struinfo *.vasp POSCAR --json
+abacustools file struinfo STRU --summary
 ```
 
 The report includes cell parameters, volume, density, element and label counts,

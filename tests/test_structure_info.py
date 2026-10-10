@@ -90,7 +90,7 @@ def _arguments(
     coordination=None,
     min_vacuum: float = 5.0,
 ) -> Namespace:
-    """Build the namespace the ``file info`` handler expects."""
+    """Build the namespace the ``file struinfo`` handler expects."""
     paths = [path] if isinstance(path, Path) else list(path)
     return Namespace(
         filename=paths,
