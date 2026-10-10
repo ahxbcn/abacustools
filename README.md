@@ -977,6 +977,25 @@ read from its per-step `STRU_MD_*` structures instead, which is what `out_stru 1
 produces in the job directory of the LTS branch and in a directory per step of
 develop; those frames carry positions and velocities but no forces or virial.
 
+Geometry optimizations are written from the per-step structures that
+`out_stru` produces. The 3.10 LTS branch writes `STRU_ION<step>_D` for every
+ionic step of a `relax` or `cell-relax` job, while the develop branch writes
+`STRU<step>` every `out_freq_ion` steps, so set `out_stru 1` and a positive
+`out_freq_ion` to keep them. `postprocess traj` collects those structures in
+step order and attaches the energy of every step from `running_relax.log` or
+`running_cell-relax.log`:
+
+```text
+abacustools postprocess traj -j JOB
+abacustools postprocess traj -j JOB -o relax.extxyz --stride 2
+abacustools postprocess traj -j JOB --first 1 --last 50 --json
+```
+
+The develop files also carry the forces when `cal_force` is enabled, so those
+frames hold forces as well; the LTS files hold positions and the cell only.
+`--no-energy` skips the running log, and `postprocess md` reads a
+molecular-dynamics job the same way.
+
 `file traj` converts a trajectory between formats with the same machinery:
 
 ```text

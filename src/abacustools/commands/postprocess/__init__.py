@@ -11,6 +11,7 @@ from . import mayer as mayer_command
 from . import md as md_command
 from . import molden as molden_command
 from . import result as result_command
+from . import traj as traj_command
 
 
 def register_parser(subparsers) -> None:
@@ -37,3 +38,4 @@ def register_parser(subparsers) -> None:
     md_command.register_parser(postprocess_subparsers)
     molden_command.register_parser(postprocess_subparsers)
     result_command.register_parser(postprocess_subparsers)
+    traj_command.register_parser(postprocess_subparsers)
