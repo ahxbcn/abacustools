@@ -51,19 +51,15 @@ def register_parser(subparsers) -> None:
     parser.add_argument(
         "--kpt",
         default=None,
-        action="append",
         nargs="+",
         type=parse_input_value,
-        metavar="VALUE",
-        help=(
-            "KPT values. Gamma/MP take three or six mesh values; the direct, "
-            "cartesian and line models take one group per k-point or node, so "
-            "repeat the option for each group."
-        ),
+        metavar="N",
+        help="K-point mesh for the gamma or MP model: three or six values.",
     )
     parser.add_argument(
-        "--kpt-model", default=None,
-        choices=("gamma", "mp", "direct", "cartesian", "line", "line_cartesian"),
+        "--kpt-model",
+        default=None,
+        choices=("gamma", "mp"),
         help="KPT model used with --kpt, default: gamma.",
     )
     # The effective default is lcao (``abacus.default_basis``); leaving the

@@ -329,17 +329,17 @@ resources:
       orb: /path/to/Dojo-NC-SR/Orbitals
 ```
 
-The KPT file shipped with each generated job is controlled by `--kpt` and
-`--kpt-model`. The gamma and MP models take three or six mesh values, while the
-direct, cartesian and line models take one group per k-point or node, so the
-option is repeated for every group:
+The K-point mesh written by `job prepare` is controlled by `--kpt` and
+`--kpt-model`, which support the two mesh models gamma and MP with three or six
+values:
 
 ```text
 abacustools job prepare -f STRUCTURE --kpt 9 9 9
-abacustools job prepare -f STRUCTURE --kpt 0 0 0 --kpt 0.5 0 0 --kpt-model direct
-abacustools job prepare -f STRUCTURE \
-  --kpt 0 0 0 10 G --kpt 0.5 0.5 0 1 X --kpt-model line
+abacustools job prepare -f STRUCTURE --kpt 9 9 9 0 0 0 --kpt-model mp
 ```
+
+Band paths and explicit k-point lists are prepared with `abacustools file kpt`
+or by placing a KPT file next to the structure.
 
 `--job-type` defaults to `scf`. The basis is selected with `--basis pw|lcao`
 and defaults to `lcao` (the configured `abacus.default_basis`); pass

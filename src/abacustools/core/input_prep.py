@@ -91,24 +91,23 @@ def _keyword_hint(name: str, known: Iterable[str]) -> str:
 
 
 def _normalize_kpt(kpt: Sequence[Any], model: str) -> list:
-    """Group a flat or nested KPT argument for the requested model.
+    """Return the mesh values of a gamma or MP k-point setting.
 
-    The gamma/mp models take a single mesh group, while the explicit and line
-    models take one group per k-point or node.  A flat list is treated as one
-    group so that ``kpt=[2, 2, 2]`` keeps working for gamma/mp.
+    ``job prepare`` writes only the two mesh models; a band path or an explicit
+    k-point list is prepared with ``file kpt`` or a KPT file instead.  The mesh
+    itself is validated by the shared KPT writer.
     """
     name = NormalizeKptModel(model)
+    if name not in ("gamma", "mp"):
+        raise ValueError(f"unsupported KPT model for job prepare: {model}")
     values = list(kpt)
     if not values:
         raise ValueError("kpt must not be empty")
-    nested = all(isinstance(value, (list, tuple)) for value in values)
-    if name in ("gamma", "mp"):
-        if nested:
-            if len(values) != 1:
-                raise ValueError("gamma/mp kpt accepts a single mesh group")
-            values = list(values[0])
-        return values
-    return [list(value) for value in values] if nested else [values]
+    if all(isinstance(value, (list, tuple)) for value in values):
+        if len(values) != 1:
+            raise ValueError("gamma/mp kpt accepts a single mesh group")
+        values = list(values[0])
+    return values
 
 
 def _element_from_filename(filename: str) -> Optional[str]:
