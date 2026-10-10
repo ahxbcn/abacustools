@@ -1149,7 +1149,7 @@ def test_prepare_writes_dftu_settings_per_species(tmp_path: Path) -> None:
         orb_path=library,
         kpt=[1, 1, 1],
         dftu=True,
-        dftu_param={"Si1": 5.0, "Si": 3.0},
+        dftu_param={"Si1": ["p", 5.0], "Si": ["p", 3.0]},
     ).run()[0].path
 
     # Two ATOMIC_SPECIES blocks need two entries, looked up by label first.
@@ -1513,12 +1513,16 @@ def test_prepare_dftu_param_enables_dftu(
             str(runs),
             "--dftu-param",
             "H",
+            "p",
             "4.0",
         ]
     ) == 0
 
     inputs = ReadInput(runs / "000000" / "INPUT")
     assert int(inputs["dft_plus_u"]) == 1
+    # H is not a magnetic d/f element, so the orbital must come from --dftu-param.
+    orbital = inputs["orbital_corr"]
+    assert (orbital if isinstance(orbital, list) else [orbital]) == [1]
     hubbard = inputs["hubbard_u"]
     assert (hubbard if isinstance(hubbard, list) else [hubbard]) == pytest.approx([4.0])
 
@@ -1541,3 +1545,35 @@ def test_prepare_defaults_to_the_lcao_basis(
     inputs = ReadInput(runs / "000000" / "INPUT")
     assert inputs["basis_type"] == "lcao"
     assert inputs["ks_solver"] == "genelpa"
+
+
+def test_prepare_rejects_a_dftu_param_without_an_orbital(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+
+    with pytest.raises(ValueError, match="give the orbital"):
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="lcao",
+            pp_path=library,
+            orb_path=library,
+            dftu=True,
+            dftu_param={"H": 4.0},
+        )
+
+
+def test_prepare_rejects_an_unknown_dftu_orbital(tmp_path: Path) -> None:
+    source, library = _source_and_library(tmp_path)
+
+    with pytest.raises(ValueError, match="invalid DFT\\+U orbital"):
+        InputPreparer(
+            source,
+            output_dir=tmp_path / "jobs",
+            filetype="stru",
+            basis="lcao",
+            pp_path=library,
+            orb_path=library,
+            dftu=True,
+            dftu_param={"H": ["s", 4.0]},
+        )

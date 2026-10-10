@@ -21,6 +21,14 @@ def _pairs(values, *, value_type=float) -> dict:
     return result
 
 
+def _dftu_pairs(values) -> dict:
+    """Return ``{element: [orbital, U]}`` from the ``--dftu-param`` triples."""
+    result = {}
+    for element, orbital, u_value in values or []:
+        result[element] = [orbital, u_value]
+    return result
+
+
 def register_parser(subparsers) -> None:
     """Register the ``job prepare`` parser."""
     parser = subparsers.add_parser(
@@ -74,8 +82,11 @@ def register_parser(subparsers) -> None:
     parser.add_argument("--nspin", default=None, type=int, choices=(1, 2, 4))
     parser.add_argument("--soc", action="store_true", help="Enable spin-orbit coupling.")
     parser.add_argument(
-        "--dftu-param", action="append", nargs=2, metavar=("ELEMENT", "U"),
-        help="Enable DFT+U and set U (eV) for an element; repeat for multiple elements.",
+        "--dftu-param", action="append", nargs=3, metavar=("ELEMENT", "ORBITAL", "U"),
+        help=(
+            "Enable DFT+U for an element and set its correlated orbital "
+            "(p, d or f) and U in eV; repeat for multiple elements."
+        ),
     )
     parser.add_argument(
         "--init-mag", action="append", nargs=2, metavar=("ELEMENT", "MAG"),
@@ -115,7 +126,7 @@ def register_parser(subparsers) -> None:
 
 def run(args: argparse.Namespace) -> int:
     """Prepare one or more complete ABACUS input directories."""
-    dftu_param = _pairs(args.dftu_param)
+    dftu_param = _dftu_pairs(args.dftu_param)
     init_mag = _pairs(args.init_mag)
     set_params = {name.lower(): parse_input_value(value) for name, value in args.set or []}
     jobs = InputPreparer(

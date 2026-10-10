@@ -42,7 +42,7 @@ _MAGNETIC_F_ELEMENTS = {
     "Tm", "Yb", "Lu", "Pa", "U", "Np", "Pu", "Am", "Cm", "Bk", "Cf",
     "Es", "Fm", "Md", "No", "Lr",
 }
-_ORBITAL_INDEX = {"p": 1, "d": 2, "f": 3}
+_ORBITAL_INDEX = {"p": 1, "d": 2, "f": 3, "1": 1, "2": 2, "3": 3}
 _ORBITAL_CUTOFF = re.compile(r"(?<![0-9.])(\d+(?:\.\d+)?)\s*Ry", re.IGNORECASE)
 _ORBITAL_RADIUS = re.compile(r"(?<![0-9.])(\d+(?:\.\d+)?)au(?![0-9])", re.IGNORECASE)
 
@@ -108,6 +108,32 @@ def _normalize_kpt(kpt: Sequence[Any], model: str) -> list:
             raise ValueError("gamma/mp kpt accepts a single mesh group")
         values = list(values[0])
     return values
+
+
+def _dftu_orbital_and_u(configured: Any, label: str) -> tuple[int, float]:
+    """Return the correlated orbital index and the U value of one species.
+
+    ``job prepare`` requires the orbital to be given explicitly (``p``, ``d``
+    or ``f``, or the ABACUS codes 1, 2, 3); the orbital is not inferred from
+    the element.
+    """
+    if not isinstance(configured, (list, tuple)) or len(configured) != 2:
+        raise ValueError(
+            f"invalid DFT+U setting for {label}: {configured!r}; give the orbital "
+            "and the U value, for example ['d', 4.0]"
+        )
+    orbital = _ORBITAL_INDEX.get(str(configured[0]).lower())
+    if orbital is None:
+        raise ValueError(
+            f"invalid DFT+U orbital for {label}: {configured[0]!r}; use p, d or f"
+        )
+    try:
+        u_value = float(configured[1])
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f"invalid DFT+U U value for {label}: {configured[1]!r}"
+        ) from error
+    return orbital, u_value
 
 
 def _element_from_filename(filename: str) -> Optional[str]:
@@ -904,6 +930,8 @@ class InputPreparer:
                     + "; a parameter of a newer ABACUS can be passed through an "
                     "INPUT template (--input) instead"
                 )
+        for key, value in (self.dftu_param or {}).items():
+            _dftu_orbital_and_u(value, str(key))
         if self.nspin not in (1, 2, 4):
             raise ValueError("nspin must be 1, 2, or 4")
         if self.soc:
@@ -1075,25 +1103,13 @@ class InputPreparer:
                 configured = self.dftu_param.get(label)
                 if configured is None:
                     configured = self.dftu_param.get(element)
-            if isinstance(configured, (list, tuple)):
-                orbital = _ORBITAL_INDEX.get(str(configured[0]).lower())
-                if orbital is None or len(configured) != 2:
-                    raise ValueError(f"invalid DFT+U setting for {label}: {configured}")
-                corrections.append(orbital)
-                values.append(float(configured[1]))
-            elif configured is not None:
-                orbital = 2 if element in _MAGNETIC_D_ELEMENTS else 3 if element in _MAGNETIC_F_ELEMENTS else 1
-                corrections.append(orbital)
-                values.append(float(configured))
-            elif self.dftu_param is None and element in _MAGNETIC_D_ELEMENTS:
-                corrections.append(2)
-                values.append(4.0)
-            elif self.dftu_param is None and element in _MAGNETIC_F_ELEMENTS:
-                corrections.append(3)
-                values.append(6.0)
-            else:
+            if configured is None:
                 corrections.append(-1)
                 values.append(0.0)
+                continue
+            orbital, u_value = _dftu_orbital_and_u(configured, label)
+            corrections.append(orbital)
+            values.append(u_value)
         inputs.update({"dft_plus_u": 1, "orbital_corr": corrections, "hubbard_u": values})
         if any(orbital >= 0 for orbital in corrections):
             if inputs.get("basis_type", "pw").startswith("pw"):
