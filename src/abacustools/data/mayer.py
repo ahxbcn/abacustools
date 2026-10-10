@@ -9,6 +9,7 @@ from typing import Any, Iterable, Optional, Sequence
 
 import numpy as np
 
+from abacustools.core.constant import RY_TO_EV
 from abacustools.data.symmetry import space_group_operations
 from abacustools.io.abacus import ReadInput
 from abacustools.io.stru import AbacusSTRU, periodic_lattice
@@ -64,7 +65,7 @@ def _number(value: str) -> float:
 
 
 def _scalar(value: Any) -> Any:
-    if isinstance(value, (list, tuple)) and len(value) == 1:
+    if isinstance(value, (list, tuple)) and value:
         return value[0]
     return value
 
@@ -318,6 +319,278 @@ def read_density_matrix(rho_mat_file: str | Path) -> np.ndarray:
     if not np.all(np.isfinite(matrix)):
         raise ValueError(f"{path}: density matrix contains non-finite values")
     return matrix
+
+
+
+def read_csr_matrix_blocks(
+    matrix_file: str | Path,
+) -> dict[tuple[int, int, int], np.ndarray]:
+    """Read all CSR blocks of the final ionic step.
+
+    ABACUS H(R), S(R) and DM(R) text files store one CSR block per Bravais
+    lattice vector.  The returned mapping is keyed by ``(Rx, Ry, Rz)``.
+
+    Args:
+        matrix_file: Path to the CSR matrix.
+
+    Returns:
+        The dense matrix of every stored R block.
+
+    Raises:
+        ValueError: If the CSR blocks are missing or inconsistent.
+    """
+
+    path = _required_file(Path(matrix_file), "CSR matrix")
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    steps = [
+        index for index, line in enumerate(lines)
+        if "Ionic Step" in line
+    ]
+    start = steps[-1] if steps else 0
+    value_markers = [
+        index for index in range(start, len(lines))
+        if lines[index].strip().startswith("# CSR values")
+    ]
+    if not value_markers:
+        raise ValueError(f"{path}: cannot find CSR values block")
+
+    dimension: int | None = None
+    for line in lines[start:]:
+        if "# number of localized basis" in line:
+            dimension = int(line.split()[0])
+    if dimension is None or dimension <= 0:
+        raise ValueError(f"{path}: cannot find the localized basis dimension")
+
+    def marker(start_index: int, stop: int, name: str) -> int:
+        for index in range(start_index, stop):
+            if lines[index].strip().startswith(name):
+                return index
+        raise ValueError(f"{path}: cannot find {name.removeprefix('# ')} block")
+
+    def header(start_index: int, stop: int) -> tuple[int, int, int, int]:
+        for line in reversed(lines[start_index:stop]):
+            tokens = line.split()
+            if len(tokens) != 4:
+                continue
+            try:
+                candidate = tuple(int(token) for token in tokens)
+            except ValueError:
+                continue
+            if candidate[3] >= 0:
+                return candidate
+        raise ValueError(f"{path}: cannot find CSR matrix header")
+
+    def tokens(start_index: int, stop: int, expected: int) -> list[str]:
+        if expected == 0:
+            return []
+        values: list[str] = []
+        for line in lines[start_index:stop]:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            for token in stripped.split():
+                values.append(token)
+                if len(values) == expected:
+                    return values
+        return values
+
+    blocks: dict[tuple[int, int, int], np.ndarray] = {}
+    for position, values_start in enumerate(value_markers):
+        block_start = value_markers[position - 1] + 1 if position else start
+        block_stop = value_markers[position + 1] if position + 1 < len(value_markers) else len(lines)
+        rx, ry, rz, nnz = header(block_start, values_start)
+        columns_start = marker(values_start + 1, block_stop, "# CSR column indices")
+        rows_start = marker(columns_start + 1, block_stop, "# CSR row pointers")
+
+        value_tokens = tokens(values_start + 1, columns_start, nnz)
+        column_tokens = tokens(columns_start + 1, rows_start, nnz)
+        row_tokens = tokens(rows_start + 1, block_stop, dimension + 1)
+        if len(value_tokens) != nnz:
+            raise ValueError(
+                f"{path}: found {len(value_tokens)} CSR values; expected {nnz}"
+            )
+        if len(column_tokens) != nnz:
+            raise ValueError(
+                f"{path}: found {len(column_tokens)} CSR column indices; expected {nnz}"
+            )
+        if len(row_tokens) != dimension + 1:
+            raise ValueError(
+                f"{path}: found {len(row_tokens)} CSR row pointers; expected {dimension + 1}"
+            )
+
+        try:
+            values = np.asarray(
+                [_parse_matrix_token(token) for token in value_tokens],
+                dtype=np.complex128,
+            )
+            columns = np.asarray([int(token) for token in column_tokens], dtype=np.int64)
+            row_pointers = np.asarray([int(token) for token in row_tokens], dtype=np.int64)
+        except ValueError as exc:
+            raise ValueError(f"{path}: invalid CSR numeric value") from exc
+
+        if row_pointers[0] != 0 or row_pointers[-1] != nnz:
+            raise ValueError(f"{path}: CSR row pointers must start at 0 and end at {nnz}")
+        if np.any(np.diff(row_pointers) < 0):
+            raise ValueError(f"{path}: CSR row pointers must be non-decreasing")
+        if np.any((columns < 0) | (columns >= dimension)):
+            raise ValueError(f"{path}: CSR column index is outside the matrix")
+
+        matrix = np.zeros((dimension, dimension), dtype=np.complex128)
+        for row in range(dimension):
+            first = int(row_pointers[row])
+            last = int(row_pointers[row + 1])
+            matrix[row, columns[first:last]] = values[first:last]
+        if not np.all(np.isfinite(matrix)):
+            raise ValueError(f"{path}: CSR matrix contains non-finite values")
+        blocks[(rx, ry, rz)] = matrix
+
+    return blocks
+
+
+def read_csr_matrix(matrix_file: str | Path) -> np.ndarray:
+    """Read an ABACUS gamma-only ``sr_nao.csr`` or ``hrs*_nao.csr`` matrix.
+
+    For a multi-R file the ``R = (0, 0, 0)`` block is returned, which is the
+    in-cell part of both the gamma-folded H/S matrices and the real-space
+    density matrix.
+
+    Args:
+        matrix_file: Path to the CSR matrix.
+
+    Returns:
+        The dense square matrix for ``R = (0, 0, 0)``.
+
+    Raises:
+        ValueError: If the CSR blocks are missing or inconsistent.
+    """
+
+    blocks = read_csr_matrix_blocks(matrix_file)
+    if (0, 0, 0) in blocks:
+        return blocks[(0, 0, 0)]
+    if len(blocks) == 1:
+        return next(iter(blocks.values()))
+    return next(reversed(blocks.values()))
+
+
+def read_eig_occ(
+    eig_occ_file: str | Path,
+) -> dict[tuple[int, int], tuple[np.ndarray, np.ndarray]]:
+    """Read ABACUS ``eig_occ.txt`` energies and occupations.
+
+    The file groups the bands by spin and k-point.  Only the final ionic step
+    is returned, because earlier steps belong to the SCF history rather than
+    the converged density matrix.
+
+    Args:
+        eig_occ_file: Path to ``eig_occ.txt``.
+
+    Returns:
+        Mapping ``(spin, kpoint)`` to ``(energies_eV, occupations)``.
+
+    Raises:
+        ValueError: If no complete spin/k-point blocks can be read.
+    """
+
+    path = _required_file(Path(eig_occ_file), "eigenvalue and occupation table")
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    starts = [
+        index for index, line in enumerate(lines)
+        if re.match(r"^\s*\d+\s*#\s*ionic step", line, re.IGNORECASE)
+    ]
+    start = starts[-1] if starts else 0
+    records: dict[tuple[int, int], list[tuple[float, float]]] = {}
+    current: tuple[int, int] | None = None
+    marker = re.compile(r"^\s*spin=(\d+)\s+k-point=(\d+)/(\d+)", re.IGNORECASE)
+    for line in lines[start:]:
+        match = marker.match(line)
+        if match:
+            current = (int(match.group(1)), int(match.group(2)))
+            records.setdefault(current, [])
+            continue
+        if current is None:
+            continue
+        fields = line.split()
+        if len(fields) != 3:
+            continue
+        try:
+            _band, energy, occupation = fields
+            int(_band)
+            records[current].append((_number(energy), _number(occupation)))
+        except ValueError:
+            continue
+
+    result: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]] = {}
+    for key, values in records.items():
+        if not values:
+            continue
+        energies, occupations = zip(*values)
+        energy_array = np.asarray(energies, dtype=float)
+        occupation_array = np.asarray(occupations, dtype=float)
+        if not np.all(np.isfinite(energy_array)):
+            raise ValueError(f"{path}: non-finite band energy for spin {key[0]}")
+        if not np.all(np.isfinite(occupation_array)) or np.any(occupation_array < 0):
+            raise ValueError(f"{path}: invalid occupations for spin {key[0]}")
+        result[key] = (energy_array, occupation_array)
+    if not result:
+        raise ValueError(f"{path}: cannot find any spin/k-point occupation blocks")
+    return result
+
+
+def calculate_density_matrix_from_matrices(
+    hamiltonian: np.ndarray,
+    overlap: np.ndarray,
+    occupations: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build a density matrix from Hamiltonian, overlap and occupations.
+
+    The Hamiltonian and overlap are the gamma-point matrices folded by ABACUS.
+    The generalized eigenproblem ``H C = S C E`` is solved through the
+    Cholesky factorization of ``S``.
+
+    Args:
+        hamiltonian: Hamiltonian matrix in Ry.
+        overlap: Overlap matrix.
+        occupations: Band occupations, one value per retained band.
+
+    Returns:
+        The band energies in Ry and the density matrix in the AO basis.
+
+    Raises:
+        ValueError: If the matrices have incompatible shapes or the overlap is
+            not positive definite.
+    """
+
+    hamiltonian = np.asarray(hamiltonian, dtype=np.complex128)
+    overlap = np.asarray(overlap, dtype=np.complex128)
+    occupations = np.asarray(occupations, dtype=float)
+    if hamiltonian.ndim != 2 or hamiltonian.shape[0] != hamiltonian.shape[1]:
+        raise ValueError("Hamiltonian matrix must be square")
+    if overlap.shape != hamiltonian.shape:
+        raise ValueError("Hamiltonian and overlap matrices must have the same shape")
+    if occupations.ndim != 1 or len(occupations) == 0:
+        raise ValueError("occupations must be a non-empty one-dimensional array")
+    if len(occupations) > hamiltonian.shape[0]:
+        raise ValueError("more occupations than basis functions")
+    if np.any(~np.isfinite(occupations)) or np.any(occupations < 0):
+        raise ValueError("occupations must be finite and non-negative")
+    if not np.allclose(hamiltonian, hamiltonian.conj().T, rtol=1e-8, atol=1e-10):
+        raise ValueError("Hamiltonian matrix is not Hermitian")
+    if not np.allclose(overlap, overlap.conj().T, rtol=1e-8, atol=1e-10):
+        raise ValueError("overlap matrix is not Hermitian")
+
+    try:
+        cholesky = np.linalg.cholesky(overlap)
+    except np.linalg.LinAlgError as exc:
+        raise ValueError("overlap matrix is not positive definite") from exc
+
+    transformed = np.linalg.solve(cholesky, hamiltonian)
+    transformed = np.linalg.solve(cholesky, transformed.conj().T).conj().T
+    eigenvalues, eigenvector_columns = np.linalg.eigh(transformed)
+    coefficients = np.linalg.solve(cholesky.conj().T, eigenvector_columns)
+    retained = coefficients[:, : len(occupations)]
+    weighted = retained * np.sqrt(occupations)[np.newaxis, :]
+    density = weighted @ weighted.conj().T
+    return eigenvalues, density
 
 
 def read_wfc_nao_k_data(file_path: str | Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -661,28 +934,154 @@ def _symmetry_expanded_orders(
     return expanded_orders(stars, weights, values_of, pairs)
 
 
-def detect_matrix_format(output_dir: Path, out_dmk: int) -> str:
-    """Return ``"develop"`` or ``"lts"`` for an LCAO output directory.
+def _highest_step_file(paths: list[Path], pattern: str) -> Path | None:
+    """Return the file with the highest one-based ionic step in its name."""
 
-    The develop layout is written by ``out_dmk=1`` and stores the k-resolved
-    density matrices as ``dm*_nao.txt``; the LTS layout stores ``data-*-S``
-    overlap matrices (or ``SPIN1_DM`` for gamma-only runs).  Some directories
-    contain files of both layouts, so the requested inputs decide, with the
-    available data as a fallback.
+    ranked: list[tuple[int, Path]] = []
+    for path in paths:
+        match = re.fullmatch(pattern, path.name)
+        if match:
+            ranked.append((int(match.group(1)), path))
+    if not ranked:
+        return None
+    return max(ranked, key=lambda item: item[0])[1]
+
+
+def _csr_overlap_file(output: Path) -> Path:
+    """Return the current-ABACUS gamma-point overlap matrix file."""
+
+    for name in ("sr_nao.csr", "data-SR-sparse_SPIN0.csr"):
+        candidate = output / name
+        if candidate.is_file():
+            return candidate
+    stepped = _highest_step_file(
+        list(output.glob("srg*_nao.csr")), r"srg(\d+)_nao\.csr"
+    )
+    if stepped is not None:
+        return stepped
+    return output / "sr_nao.csr"
+
+
+def _csr_hamiltonian_file(output: Path, spin: int) -> Path:
+    """Return the Hamiltonian matrix file for one collinear spin channel."""
+
+    candidates = [output / f"hrs{spin}_nao.csr"]
+    if spin == 1:
+        candidates.append(output / "hrs_nao.csr")
+    candidates.append(output / f"data-HR-sparse_SPIN{spin - 1}.csr")
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    for candidate in sorted(output.glob("hrs*_nao.csr")):
+        match = re.fullmatch(r"hrs(\d+)_nao\.csr", candidate.name)
+        if match and int(match.group(1)) == spin:
+            return candidate
+    stepped = _highest_step_file(
+        list(output.glob(f"hrs{spin}g*_nao.csr")),
+        rf"hrs{spin}g(\d+)_nao\.csr",
+    )
+    if stepped is not None:
+        return stepped
+    return candidates[0]
+
+
+def _dmr_file(output: Path, spin: int) -> Path:
+    """Return the develop-version density-matrix file for one spin channel."""
+
+    candidates = [
+        output / f"dmrs{spin}_nao.csr",
+        output / f"data-DMR-sparse_SPIN{spin - 1}.csr",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    stepped = _highest_step_file(
+        list(output.glob(f"dmrs{spin}g*_nao.csr")),
+        rf"dmrs{spin}g(\d+)_nao\.csr",
+    )
+    if stepped is not None:
+        return stepped
+    return candidates[0]
+
+
+def _has_dmr(output: Path) -> bool:
+    """Return whether a develop- or LTS-style DM(R) output is present."""
+
+    return bool(list(output.glob("dmrs*_nao.csr"))) or bool(
+        list(output.glob("data-DMR-sparse_SPIN*.csr"))
+    )
+
+
+def _gamma_overlap_matrix(output: Path) -> tuple[Path, np.ndarray]:
+    """Read the gamma-point overlap matrix from whichever output is present."""
+
+    for name in ("sr_nao.csr", "data-SR-sparse_SPIN0.csr"):
+        path = output / name
+        if path.is_file():
+            return path, read_csr_matrix(path)
+    for name in ("sk_nao.txt", "data-0-S"):
+        path = output / name
+        if path.is_file():
+            return path, (
+                read_overlap_matrix_develop(path)
+                if name.endswith(".txt")
+                else read_overlap_matrix(path)
+            )
+    raise FileNotFoundError(
+        f"Cannot find gamma overlap matrix in {output}; expected sr_nao.csr, "
+        "sk_nao.txt, data-SR-sparse_SPIN0.csr or data-0-S"
+    )
+
+
+def detect_matrix_format(
+    output_dir: Path,
+    out_dmk: int,
+    *,
+    out_dmr: int = 0,
+    out_mat_hs: int = 0,
+    out_mat_hs2: int = 0,
+) -> str:
+    """Return the density-matrix or matrix layout to read.
+
+    Density-matrix outputs are preferred for the develop version: ``out_dmk``
+    gives k-resolved DM(k), and ``out_dmr`` gives DM(R).  H(R)/S(R) and the
+    LTS layout are fallbacks for jobs that did not request a density matrix.
 
     Args:
         output_dir: ABACUS ``OUT.*`` directory.
         out_dmk: Value of the ``out_dmk`` input parameter.
+        out_dmr: Value of the ``out_dmr`` input parameter.
+        out_mat_hs: Value of the legacy ``out_mat_hs`` input parameter.
+        out_mat_hs2: Value of the legacy ``out_mat_hs2`` input parameter.
 
     Returns:
-        str: ``"develop"`` when the k-resolved density matrices are used.
+        str: ``"develop"`` for DM(k), ``"dmr"`` for DM(R), ``"csr"`` for
+        current-ABACUS H(R)/S(R), or ``"lts"`` for the legacy layout.
     """
-    has_develop = bool(list(output_dir.glob("dm*_nao.txt")))
+
+    has_dmk = bool(list(output_dir.glob("dm*_nao.txt")))
+    has_dmr = _has_dmr(output_dir)
     has_lts = bool(list(output_dir.glob("data-*-S"))) or (output_dir / "SPIN1_DM").is_file()
-    if out_dmk == 1 and has_develop:
+    has_csr = _csr_overlap_file(output_dir).is_file() and (
+        bool(list(output_dir.glob("hrs*_nao.csr")))
+        or (output_dir / "data-HR-sparse_SPIN0.csr").is_file()
+    )
+    if out_dmk == 1 and has_dmk:
         return "develop"
-    if not has_lts and has_develop:
+    if out_dmr == 1 and has_dmr:
+        return "dmr"
+    if out_mat_hs2 == 1 and has_csr:
+        return "csr"
+    if out_mat_hs == 1 and has_lts:
+        return "lts"
+    if has_dmk:
         return "develop"
+    if has_dmr:
+        return "dmr"
+    if has_lts:
+        return "lts"
+    if has_csr:
+        return "csr"
     return "lts"
 
 
@@ -812,11 +1211,30 @@ def select_atom_pairs(structure: AbacusSTRU, cutoff: Optional[float] = None, pai
     return [(i, j) for i in range(structure.natoms) for j in range(i + 1, structure.natoms)]
 
 
-def _mayer_order(dm: np.ndarray, overlap: np.ndarray, first: tuple[int, int], second: tuple[int, int]) -> float:
+def _mayer_order(
+    dm: np.ndarray,
+    overlap: np.ndarray,
+    first: tuple[int, int],
+    second: tuple[int, int],
+    *,
+    product: Optional[np.ndarray] = None,
+) -> float:
+    """Return the Mayer order of one atom pair.
+
+    ``product`` may be supplied when the caller evaluates several pairs with
+    the same density and overlap matrices, avoiding a repeated matrix
+    multiplication for every pair.
+    """
+
     left_start, left_end = first
     right_start, right_end = second
-    ps = dm @ overlap
-    return float(np.sum(ps[left_start:left_end, right_start:right_end] * ps[right_start:right_end, left_start:left_end].T).real)
+    ps = dm @ overlap if product is None else product
+    return float(
+        np.sum(
+            ps[left_start:left_end, right_start:right_end]
+            * ps[right_start:right_end, left_start:left_end].T
+        ).real
+    )
 
 
 def cal_mayer_bond_order_between_atom_pair(
@@ -829,9 +1247,24 @@ def cal_mayer_bond_order_between_atom_pair(
 ) -> float:
     """Calculate one gamma-point Mayer order using zero-based atom indices."""
 
-    value = _mayer_order(dm, ovlp_mat, atom_orb_ranges[i], atom_orb_ranges[j])
+    value = _mayer_order(
+        dm,
+        ovlp_mat,
+        atom_orb_ranges[i],
+        atom_orb_ranges[j],
+        product=dm @ ovlp_mat,
+    )
     if dm_dn is not None:
-        value = 2.0 * (value + _mayer_order(dm_dn, ovlp_mat, atom_orb_ranges[i], atom_orb_ranges[j]))
+        value = 2.0 * (
+            value
+            + _mayer_order(
+                dm_dn,
+                ovlp_mat,
+                atom_orb_ranges[i],
+                atom_orb_ranges[j],
+                product=dm_dn @ ovlp_mat,
+            )
+        )
     return value
 
 
@@ -895,20 +1328,62 @@ def _develop_density_files(output: Path) -> list[tuple[int, int, Path]]:
 def _develop_overlap_file(output: Path, ik: int) -> Path:
     """Return the overlap matrix that belongs to one k-point.
 
-    A gamma-only run writes a single ``sk_nao.txt``; a multi-k run writes one
-    ``sk{ik}_nao.txt`` per k-point.
+    Prefer the k-resolved ``sk*_nao.txt`` output.  If the job only wrote the
+    CSR overlap, use ``sr_nao.csr`` and reconstruct ``S(k)`` from its R blocks.
     """
+
     gamma = output / "sk_nao.txt"
     if gamma.is_file():
         return gamma
-    return output / f"sk{ik}_nao.txt"
+    kpoint = output / f"sk{ik}_nao.txt"
+    if kpoint.is_file():
+        return kpoint
+    for name in ("sr_nao.csr", "data-SR-sparse_SPIN0.csr"):
+        candidate = output / name
+        if candidate.is_file():
+            return candidate
+    return kpoint
+
+
+def _read_develop_overlap(
+    path: Path,
+    *,
+    kpoint: tuple[float, float, float] | None = None,
+) -> np.ndarray:
+    """Read a develop overlap matrix from text or CSR output.
+
+    A multi-R CSR overlap is Fourier transformed to ``S(k)``.  A single
+    ``R = (0, 0, 0)`` block is the gamma-folded representation and is only
+    valid at Gamma.
+    """
+
+    if path.suffix != ".csr":
+        return read_overlap_matrix_develop(path)
+    blocks = read_csr_matrix_blocks(path)
+    if len(blocks) == 1:
+        if kpoint is not None and any(abs(value) > 1e-10 for value in kpoint):
+            raise ValueError(
+                f"{path}: a single R block is gamma-folded and cannot be used "
+                f"at non-Gamma k-point {kpoint}"
+            )
+        return next(iter(blocks.values()))
+    if kpoint is None:
+        raise ValueError(
+            f"{path}: a k-point is required to Fourier transform a multi-R overlap"
+        )
+    matrix = np.zeros_like(next(iter(blocks.values())))
+    for (rx, ry, rz), block in blocks.items():
+        phase = np.exp(-2j * np.pi * (kpoint[0] * rx + kpoint[1] * ry + kpoint[2] * rz))
+        matrix += phase * block
+    return matrix
 
 
 def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None, pairs: Optional[str] = None, pairs_file: Optional[str | Path] = None) -> MayerAnalysis:
     """Analyze Mayer bond orders from an ABACUS LCAO job directory.
-    
-    Supports both LTS 3.10.1 format (data-*-S, WFC_NAO_K*.txt) and 
-    develop version format (sk*_nao.txt, wfk*_nao.txt).
+
+    Density-matrix outputs are preferred: ``out_dmk`` (DM(k)) and ``out_dmr``
+    (DM(R)) for the develop layout, then the LTS density matrices or
+    wavefunctions, with H/S matrix output used only when necessary.
     """
 
     job_path = Path(job).resolve()
@@ -919,8 +1394,6 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
         raise ValueError(f"Mayer analysis supports nspin=1 or 2, got {nspin}")
     if str(_scalar(inputs.get("basis_type", "pw"))).lower() != "lcao":
         raise ValueError("Mayer analysis requires basis_type=lcao")
-    if int(_scalar(inputs.get("out_mat_hs", 1))) != 1:
-        raise ValueError("Mayer analysis requires out_mat_hs=1")
     gamma_only = bool(int(_scalar(inputs.get("gamma_only", 0)) or 0))
     suffix = str(_scalar(inputs.get("suffix", "ABACUS")))
     output = _required_directory(job_path / f"OUT.{suffix}", "ABACUS output directory")
@@ -930,8 +1403,20 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
         raise ValueError(f"cannot read structure: {structure_path}")
 
     # Choose the layout that matches the requested outputs and the files present
+    out_mat_hs2 = max(
+        int(_scalar(inputs.get("out_mat_hs2", 0)) or 0),
+        int(_scalar(inputs.get("out_hsr", 0)) or 0),
+    )
+    out_dmr = max(
+        int(_scalar(inputs.get("out_dmr", 0)) or 0),
+        int(_scalar(inputs.get("out_dm1", 0)) or 0),
+    )
     version = detect_matrix_format(
-        output, int(_scalar(inputs.get("out_dmk", 0)) or 0)
+        output,
+        int(_scalar(inputs.get("out_dmk", 0)) or 0),
+        out_dmr=out_dmr,
+        out_mat_hs=int(_scalar(inputs.get("out_mat_hs", 0)) or 0),
+        out_mat_hs2=out_mat_hs2,
     )
     
     nao_by_file: dict[str, NAOData] = {}
@@ -945,7 +1430,109 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
     orders = {pair: 0.0 for pair in selected_pairs}
     data_files: list[str] = []
 
-    if version == "develop":
+    if version == "csr":
+        if not gamma_only:
+            raise ValueError(
+                "Mayer analysis of the sr_nao.csr/hrs*_nao.csr output is "
+                "currently supported for gamma_only=1 runs"
+            )
+        overlap_path = _required_file(
+            _csr_overlap_file(output),
+            "current-ABACUS gamma overlap matrix",
+        )
+        overlap = read_csr_matrix(overlap_path)
+        if overlap.shape != (basis_functions, basis_functions):
+            raise ValueError(
+                "overlap dimension does not match NAO basis size "
+                f"{basis_functions}"
+            )
+        eig_occ_path = _required_file(
+            output / "eig_occ.txt",
+            "eigenvalue and occupation table",
+        )
+        eigenstates = read_eig_occ(eig_occ_path)
+        data_files.extend([str(overlap_path), str(eig_occ_path)])
+        tolerance = 1e-3
+        spin_factor = 2.0 if nspin == 2 else 1.0
+        for spin in range(1, nspin + 1):
+            hamiltonian_path = _required_file(
+                _csr_hamiltonian_file(output, spin),
+                f"Hamiltonian matrix for spin {spin}",
+            )
+            hamiltonian = read_csr_matrix(hamiltonian_path)
+            if hamiltonian.shape != overlap.shape:
+                raise ValueError(
+                    f"spin {spin}: Hamiltonian and overlap dimensions do not match"
+                )
+            try:
+                printed_energies, occupations = eigenstates[(spin, 1)]
+            except KeyError as exc:
+                raise ValueError(
+                    f"eig_occ.txt has no spin={spin} k-point=1 block"
+                ) from exc
+            eigenvalues, density = calculate_density_matrix_from_matrices(
+                hamiltonian, overlap, occupations
+            )
+            computed_energies = eigenvalues[: len(printed_energies)] * RY_TO_EV
+            if not np.allclose(
+                computed_energies,
+                printed_energies,
+                rtol=1e-8,
+                atol=tolerance,
+            ):
+                raise ValueError(
+                    f"spin {spin}: Hamiltonian eigenvalues do not match eig_occ.txt"
+                )
+            data_files.append(str(hamiltonian_path))
+            population = density @ overlap
+            for pair in selected_pairs:
+                orders[pair] += spin_factor * _mayer_order(
+                    density,
+                    overlap,
+                    atom_ranges[pair[0]],
+                    atom_ranges[pair[1]],
+                    product=population,
+                )
+    elif version == "dmr":
+        overlap_path, overlap = _gamma_overlap_matrix(output)
+        data_files.append(str(overlap_path))
+        if overlap.shape != (basis_functions, basis_functions):
+            raise ValueError(
+                "overlap dimension does not match NAO basis size "
+                f"{basis_functions}"
+            )
+        spin_factor = 2.0 if nspin == 2 else 1.0
+        for spin in range(1, nspin + 1):
+            dmr_path = _required_file(
+                _dmr_file(output, spin),
+                f"density matrix DM(R) for spin {spin}",
+            )
+            blocks = read_csr_matrix_blocks(dmr_path)
+            if (0, 0, 0) in blocks and len(blocks) == 1:
+                density = blocks[(0, 0, 0)]
+            elif len(blocks) == 1:
+                density = next(iter(blocks.values()))
+            else:
+                raise ValueError(
+                    f"{dmr_path}: multi-R DM(R) alone is not sufficient for "
+                    "k-resolved Mayer analysis; use out_dmk=1 or keep "
+                    "out_hsr/out_hsk output"
+                )
+            if density.shape != overlap.shape:
+                raise ValueError(
+                    f"spin {spin}: density matrix and overlap dimensions do not match"
+                )
+            data_files.append(str(dmr_path))
+            population = density @ overlap
+            for pair in selected_pairs:
+                orders[pair] += spin_factor * _mayer_order(
+                    density,
+                    overlap,
+                    atom_ranges[pair[0]],
+                    atom_ranges[pair[1]],
+                    product=population,
+                )
+    elif version == "develop":
         # Develop version: the k-resolved density matrices carry the k index,
         # the spin index and the k-point weight in their file name and header,
         # so they are read directly instead of being rebuilt from wavefunctions.
@@ -954,16 +1541,21 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
             raise FileNotFoundError(f"No dm*_nao.txt files found in {output}")
 
         kpoints = sorted({ik for ik, _ispin, _path in density_files})
-        weights = exact_kpoint_weights(
-            read_develop_kpoints(density_files), printed_scale=2.0 / nspin
-        )
+        kpoint_table = read_develop_kpoints(density_files)
+        weights = exact_kpoint_weights(kpoint_table, printed_scale=2.0 / nspin)
         overlaps: dict[int, np.ndarray] = {}
         for position, ik in enumerate(kpoints):
             overlap_path = _required_file(
                 _develop_overlap_file(output, ik),
                 f"overlap matrix for k-point {ik} (develop)",
             )
-            matrix = overlaps.setdefault(ik, read_overlap_matrix_develop(overlap_path))
+            matrix = overlaps.setdefault(
+                ik,
+                _read_develop_overlap(
+                    overlap_path,
+                    kpoint=kpoint_table.ibz[position].direct,
+                ),
+            )
             data_files.append(str(overlap_path))
             if matrix.shape != (basis_functions, basis_functions):
                 raise ValueError(
@@ -971,7 +1563,17 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
                     f"{basis_functions}"
                 )
             spin_orders = {pair: 0.0 for pair in selected_pairs}
-            channels = 0
+            channels = {
+                ispin
+                for entry_ik, ispin, _path in density_files
+                if entry_ik == ik
+            }
+            expected_channels = {1} if nspin == 1 else {1, 2}
+            if channels != expected_channels:
+                raise ValueError(
+                    f"k-point {ik}: found spin channels {sorted(channels)}; "
+                    f"expected {sorted(expected_channels)} for nspin={nspin}"
+                )
             for entry_ik, _ispin, path in density_files:
                 if entry_ik != ik:
                     continue
@@ -981,17 +1583,21 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
                         f"k-point {ik}: density matrix dimension does not match overlap matrix"
                     )
                 data_files.append(str(path))
-                channels += 1
+                population = density @ matrix
                 for pair in selected_pairs:
                     spin_orders[pair] += _mayer_order(
-                        density, matrix, atom_ranges[pair[0]], atom_ranges[pair[1]]
+                        density,
+                        matrix,
+                        atom_ranges[pair[0]],
+                        atom_ranges[pair[1]],
+                        product=population,
                     )
-            # The two spin channels share one occupation weight, as in the
-            # LTS density matrices, so they are summed and weighted like a
-            # single doubly-occupied manifold.
-            factor = 2.0 if (nspin == 2 and channels == 2) else 1.0
+            # DM(k) files store spin-resolved density matrices.  The
+            # standard spin-unrestricted Mayer formula includes a factor two
+            # for each spin channel.
+            spin_factor = 2.0 if nspin == 2 else 1.0
             for pair in selected_pairs:
-                orders[pair] += factor * spin_orders[pair] / weights[position]
+                orders[pair] += spin_factor * spin_orders[pair] / weights[position]
     else:
         # LTS version format (original code)
         if gamma_only:
@@ -1011,10 +1617,27 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
                 data_files.append(str(dm_down_path))
                 if dm_down.shape != overlap.shape:
                     raise ValueError("spin-down density matrix dimension does not match overlap matrix")
+            population_up = dm_up @ overlap
+            population_down = dm_down @ overlap if dm_down is not None else None
             for pair in selected_pairs:
-                value = _mayer_order(dm_up, overlap, atom_ranges[pair[0]], atom_ranges[pair[1]])
-                if dm_down is not None:
-                    value = 2.0 * (value + _mayer_order(dm_down, overlap, atom_ranges[pair[0]], atom_ranges[pair[1]]))
+                value = _mayer_order(
+                    dm_up,
+                    overlap,
+                    atom_ranges[pair[0]],
+                    atom_ranges[pair[1]],
+                    product=population_up,
+                )
+                if population_down is not None:
+                    value = 2.0 * (
+                        value
+                        + _mayer_order(
+                            dm_down,
+                            overlap,
+                            atom_ranges[pair[0]],
+                            atom_ranges[pair[1]],
+                            product=population_down,
+                        )
+                    )
                 orders[pair] = value
         else:
             wfc_paths = sorted(output.glob("WFC_NAO_K*.txt"), key=lambda path: int(re.search(r"K(\d+)", path.name).group(1)))
@@ -1046,11 +1669,28 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
                     matrices[ik] = (overlap, up_dm, down_dm)
                     data_files.extend([str(overlap_path), str(wfc_paths[ik])])
                 overlap, up_dm, down_dm = matrices[ik]
+                population_up = up_dm @ overlap
+                population_down = down_dm @ overlap if down_dm is not None else None
                 values = {}
                 for pair in pairs:
-                    value = _mayer_order(up_dm, overlap, atom_ranges[pair[0]], atom_ranges[pair[1]])
-                    if down_dm is not None:
-                        value = 2.0 * (value + _mayer_order(down_dm, overlap, atom_ranges[pair[0]], atom_ranges[pair[1]]))
+                    value = _mayer_order(
+                        up_dm,
+                        overlap,
+                        atom_ranges[pair[0]],
+                        atom_ranges[pair[1]],
+                        product=population_up,
+                    )
+                    if population_down is not None:
+                        value = 2.0 * (
+                            value
+                            + _mayer_order(
+                                down_dm,
+                                overlap,
+                                atom_ranges[pair[0]],
+                                atom_ranges[pair[1]],
+                                product=population_down,
+                            )
+                        )
                     values[pair] = value
                 return values
 

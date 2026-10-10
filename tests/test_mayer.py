@@ -8,18 +8,23 @@ import pytest
 from dataclasses import replace
 from pathlib import Path
 
+from abacustools.core.constant import RY_TO_EV
 from abacustools.data.mayer import (
     _develop_density_files,
     _develop_overlap_file,
     analyze_mayer_bond_order,
-    exact_kpoint_weights,
-    expanded_orders,
-    read_kpoint_table,
+    calculate_density_matrix_from_matrices,
     calculate_density_matrix_k,
     detect_matrix_format,
+    exact_kpoint_weights,
+    expanded_orders,
     get_nao_basis_num,
+    read_csr_matrix,
+    read_csr_matrix_blocks,
     read_density_matrix,
     read_density_matrix_develop,
+    read_eig_occ,
+    read_kpoint_table,
     read_kpoint_weights,
     read_nao_file,
     read_overlap_matrix,
@@ -71,6 +76,70 @@ def test_read_density_matrix_ignores_abacus_header(tmp_path):
     density = tmp_path / "SPIN1_DM"
     density.write_text("none\n1\n10 0 0\n\n1\n-0.2 (fermi energy)\n\n2 2\n1 2\n3 4\n", encoding="utf-8")
     np.testing.assert_allclose(read_density_matrix(density), [[1, 2], [3, 4]])
+
+
+
+def test_read_csr_matrix_parses_abacus_text_format(tmp_path):
+    matrix = np.asarray(
+        [
+            [1.0, 2.0, 0.0],
+            [3.0, 0.0, 4.0],
+            [0.0, 5.0, 0.0],
+        ]
+    )
+    path = tmp_path / "sr_nao.csr"
+    _write_csr_matrix(path, matrix)
+
+    np.testing.assert_allclose(read_csr_matrix(path), matrix)
+
+
+
+def test_read_csr_matrix_blocks_reads_every_R_block(tmp_path):
+    path = tmp_path / "dmrs1_nao.csr"
+    _write_csr_matrix_blocks(
+        path,
+        {
+            (0, 0, 0): np.eye(2),
+            (0, 0, 1): np.asarray([[0.0, 0.5], [0.5, 0.0]]),
+        },
+    )
+
+    blocks = read_csr_matrix_blocks(path)
+    assert sorted(blocks) == [(0, 0, 0), (0, 0, 1)]
+    np.testing.assert_allclose(blocks[(0, 0, 0)], np.eye(2))
+    np.testing.assert_allclose(blocks[(0, 0, 1)], [[0.0, 0.5], [0.5, 0.0]])
+
+
+def test_read_eig_occ_reads_spin_blocks(tmp_path):
+    path = tmp_path / "eig_occ.txt"
+    path.write_text(
+        """1     # ionic step
+ Electronic state energy (eV) and occupations
+ Spin number 2
+ spin=1 k-point=1/1 Cartesian=0 0 0 (1 plane wave)
+ 1 -1.0 1.0
+ 2 1.0 0.0
+ spin=2 k-point=1/1 Cartesian=0 0 0 (1 plane wave)
+ 1 -0.5 0.5
+ 2 0.5 0.5
+""",
+        encoding="utf-8",
+    )
+
+    eigenstates = read_eig_occ(path)
+    np.testing.assert_allclose(eigenstates[(1, 1)][0], [-1.0, 1.0])
+    np.testing.assert_allclose(eigenstates[(2, 1)][1], [0.5, 0.5])
+
+
+def test_calculate_density_matrix_from_matrices():
+    hamiltonian = np.asarray([[0.0, -0.5], [-0.5, 0.0]])
+    overlap = np.eye(2)
+    eigenvalues, density = calculate_density_matrix_from_matrices(
+        hamiltonian, overlap, np.asarray([2.0, 0.0])
+    )
+
+    np.testing.assert_allclose(eigenvalues, [-0.5, 0.5])
+    np.testing.assert_allclose(density, [[1.0, 1.0], [1.0, 1.0]])
 
 
 def test_read_wfc_and_kpoint_weights(tmp_path):
@@ -217,7 +286,7 @@ def test_detect_matrix_format_prefers_requested_layout(tmp_path):
     (tmp_path / "data-0-S").write_text("", encoding="utf-8")
 
     assert detect_matrix_format(tmp_path, out_dmk=1) == "develop"
-    assert detect_matrix_format(tmp_path, out_dmk=0) == "lts"
+    assert detect_matrix_format(tmp_path, out_dmk=0) == "develop"
 
 
 def test_detect_matrix_format_falls_back_to_available_data(tmp_path):
@@ -228,6 +297,60 @@ def test_detect_matrix_format_falls_back_to_available_data(tmp_path):
     lts_only.mkdir()
     (lts_only / "data-0-S").write_text("", encoding="utf-8")
     assert detect_matrix_format(lts_only, out_dmk=1) == "lts"
+
+    dmr_only = tmp_path / "dmr"
+    dmr_only.mkdir()
+    (dmr_only / "dmrs1_nao.csr").write_text("", encoding="utf-8")
+    assert detect_matrix_format(dmr_only, out_dmk=0, out_dmr=1) == "dmr"
+    assert detect_matrix_format(dmr_only, out_dmk=0) == "dmr"
+
+    (dmr_only / "sr_nao.csr").write_text("", encoding="utf-8")
+    (dmr_only / "hrs1_nao.csr").write_text("", encoding="utf-8")
+    assert detect_matrix_format(
+        dmr_only, out_dmk=0, out_dmr=1, out_mat_hs2=1
+    ) == "dmr"
+
+    csr_only = tmp_path / "csr"
+    csr_only.mkdir()
+    (csr_only / "srg1_nao.csr").write_text("", encoding="utf-8")
+    (csr_only / "hrs1g1_nao.csr").write_text("", encoding="utf-8")
+    assert detect_matrix_format(csr_only, out_dmk=0) == "csr"
+
+
+
+def _write_develop_density(
+    path: Path,
+    matrix: np.ndarray,
+    *,
+    spin: int,
+    nspin: int = 2,
+    weight: float = 1.0,
+) -> None:
+    """Write a minimal develop-layout ``dm*_nao.txt`` file."""
+
+    matrix = np.asarray(matrix)
+    if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
+        raise ValueError("test density matrix must be square")
+    lines = [
+        " --- Ionic Step 1 ---",
+        f" {nspin} # number of spin directions",
+        f" {spin} # spin index",
+        " 1 # total k points",
+        " 1 # total k points after symmetrized (if open)",
+        " 1 # k-point index",
+        " 0 0 0 # k point coordinate (Cartesian)",
+        " 0 0 0 # k point coordinate (direct)",
+        f" {weight:.16e} # weight of this k point",
+        " -0.2 # Fermi energy in Ry",
+        f" {matrix.shape[0]} # number of localized basis",
+        f" {matrix.shape[0]} {matrix.shape[1]} # size of this matrix",
+        "",
+    ]
+    lines.extend(
+        " ".join(f"{value.real:.16e}" for value in row)
+        for row in matrix
+    )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def _write_develop_h2_job(root):
@@ -353,6 +476,131 @@ def test_analyze_mayer_bond_order_reads_develop_job(tmp_path):
     # (D S)[0, 1] = (D S)[1, 0] = 0.75 for the synthetic matrices above.
     np.testing.assert_allclose(pair.bond_order, 0.5625)
     np.testing.assert_allclose(pair.distance, 0.7)
+
+
+
+
+def test_develop_dmk_reads_csr_overlap_when_text_overlap_is_absent(tmp_path):
+    """A DM(k) job can pair with `sr_nao.csr` from out_mat_hs2/out_hsr."""
+
+    _write_develop_h2_job(tmp_path)
+    output = tmp_path / "OUT.ABACUS"
+    (output / "sk_nao.txt").unlink()
+    _write_csr_matrix(output / "sr_nao.csr", np.eye(2))
+
+    analysis = analyze_mayer_bond_order(tmp_path, pairs="1-2")
+
+    assert analysis.pairs[0].bond_order == pytest.approx(0.0625)
+
+
+
+def test_develop_dmk_nspin2_sums_both_spin_channels(tmp_path):
+    """Two DM(k) spin channels are added, not doubled or averaged."""
+
+    _write_develop_h2_job(tmp_path)
+    output = tmp_path / "OUT.ABACUS"
+    (tmp_path / "INPUT").write_text(
+        """INPUT_PARAMETERS
+calculation scf
+basis_type lcao
+nspin 2
+out_dmk 1
+""",
+        encoding="utf-8",
+    )
+    (output / "dmg1_nao.txt").unlink()
+    density = np.asarray([[0.5, 0.125], [0.125, 0.5]])
+    _write_develop_density(output / "dms1g1_nao.txt", density, spin=1)
+    _write_develop_density(output / "dms2g1_nao.txt", density, spin=2)
+
+    analysis = analyze_mayer_bond_order(tmp_path, pairs="1-2")
+
+    overlap = np.asarray([[1.0, 0.5], [0.5, 1.0]])
+    population = density @ overlap
+    spin_order = population[0, 1] * population[1, 0]
+    assert analysis.pairs[0].bond_order == pytest.approx(4.0 * spin_order)
+
+
+def _write_csr_h2_job(root):
+    """Write a two-orbital CSR job with the ABACUS v3.11 output names."""
+
+    _write_develop_h2_job(root)
+    (root / "INPUT").write_text(
+        """INPUT_PARAMETERS
+calculation scf
+basis_type lcao
+nspin 2
+gamma_only 1
+out_mat_hs2 1
+""",
+        encoding="utf-8",
+    )
+    output = root / "OUT.ABACUS"
+    hamiltonian = np.asarray([[0.0, -0.5], [-0.5, 0.0]])
+    _write_csr_matrix(output / "sr_nao.csr", np.eye(2))
+    _write_csr_matrix(output / "hrs1_nao.csr", hamiltonian)
+    _write_csr_matrix(output / "hrs2_nao.csr", hamiltonian)
+    energies = np.asarray([-0.5, 0.5]) * RY_TO_EV
+    lines = [
+        "1     # ionic step",
+        " Electronic state energy (eV) and occupations",
+        " Spin number 2",
+    ]
+    for spin in (1, 2):
+        lines.append(
+            f" spin={spin} k-point=1/1 Cartesian=0 0 0 (1 plane wave)"
+        )
+        for band, (energy, occupation) in enumerate(zip(energies, (1.0, 0.0)), 1):
+            lines.append(f" {band} {energy:.16e} {occupation:.16e}")
+    (output / "eig_occ.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_analyze_mayer_bond_order_reads_csr_job(tmp_path):
+    """The ABACUS v3.11 CSR layout is reconstructed without data-0-S."""
+
+    _write_csr_h2_job(tmp_path)
+    analysis = analyze_mayer_bond_order(tmp_path, pairs="1-2")
+
+    assert analysis.gamma_only is True
+    assert analysis.nspin == 2
+    assert analysis.basis_functions == 2
+    assert analysis.pairs[0].bond_order == pytest.approx(1.0)
+    assert analysis.pairs[0].distance == pytest.approx(0.7)
+
+
+
+def _write_dmr_h2_job(root):
+    """Write a gamma-only job whose density matrices come from out_dmr."""
+
+    _write_develop_h2_job(root)
+    (root / "INPUT").write_text(
+        """INPUT_PARAMETERS
+calculation scf
+basis_type lcao
+nspin 2
+gamma_only 1
+out_dmr 1
+""",
+        encoding="utf-8",
+    )
+    output = root / "OUT.ABACUS"
+    (output / "dmg1_nao.txt").unlink()
+    _write_csr_matrix(output / "sr_nao.csr", np.eye(2))
+    density = np.asarray([[0.5, 0.5], [0.5, 0.5]])
+    _write_csr_matrix(output / "dmrs1_nao.csr", density)
+    _write_csr_matrix(output / "dmrs2_nao.csr", density)
+
+
+def test_analyze_mayer_bond_order_uses_dmr_by_default(tmp_path):
+    """DM(R) is selected without H/S diagonalization when out_dmr is present."""
+
+    _write_dmr_h2_job(tmp_path)
+    analysis = analyze_mayer_bond_order(tmp_path, pairs="1-2")
+
+    assert analysis.gamma_only is True
+    assert analysis.nspin == 2
+    assert analysis.pairs[0].bond_order == pytest.approx(1.0)
+    assert all(path.endswith(".csr") for path in analysis.data_files)
 
 
 def _stru(cell, fractional):
@@ -515,6 +763,65 @@ def _kpoint_table_text(ibz, mesh=()):
                 f"  {star:6d}  {reference[0]:.8f}  {reference[1]:.8f}  {reference[2]:.8f}"
             )
     return "\n".join(lines) + "\n"
+
+
+def _write_csr_matrix_blocks(
+    path: Path,
+    blocks: dict[tuple[int, int, int], np.ndarray],
+) -> None:
+    """Write a minimal ABACUS multi-R CSR matrix file."""
+
+    if not blocks:
+        raise ValueError("test CSR file needs at least one block")
+    dimension = None
+    lines = [
+        " --- Ionic Step 1 ---",
+        " # print matrix in real space M(R)",
+        " 1 # number of spin directions",
+        " 1 # spin index",
+    ]
+    for matrix in blocks.values():
+        matrix = np.asarray(matrix)
+        if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
+            raise ValueError("test CSR matrix must be square")
+        if dimension is None:
+            dimension = matrix.shape[0]
+        elif matrix.shape[0] != dimension:
+            raise ValueError("test CSR blocks must share one dimension")
+    assert dimension is not None
+    lines.extend(
+        [
+            f" {dimension} # number of localized basis",
+            f" {len(blocks)} # number of Bravais lattice vector R",
+            "",
+        ]
+    )
+    for (rx, ry, rz), matrix in blocks.items():
+        matrix = np.asarray(matrix)
+        rows, columns = np.nonzero(matrix)
+        values = matrix[rows, columns]
+        row_pointers = np.zeros(matrix.shape[0] + 1, dtype=int)
+        for row in rows:
+            row_pointers[row + 1] += 1
+        row_pointers = np.cumsum(row_pointers)
+        lines.extend(
+            [
+                f" {rx} {ry} {rz} {len(values)}",
+                " # CSR values",
+                " " + " ".join(f"{value.real:.16e}" for value in values),
+                " # CSR column indices",
+                " " + " ".join(str(int(column)) for column in columns),
+                " # CSR row pointers",
+                " " + " ".join(str(int(pointer)) for pointer in row_pointers),
+            ]
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_csr_matrix(path: Path, matrix: np.ndarray) -> None:
+    """Write a minimal ABACUS gamma-only CSR matrix file."""
+
+    _write_csr_matrix_blocks(path, {(0, 0, 0): matrix})
 
 
 def _write_overlap(path: Path, off_diagonal: float) -> None:

@@ -1008,8 +1008,11 @@ abacustools file traj trajectory.extxyz trajectory.xyz
 abacustools file traj dump.traj dump.extxyz --stride 10
 ```
 
-Mayer bond orders can be analyzed from an ABACUS LCAO calculation with
-`out_mat_hs=1` (and `out_dm=1` for gamma-only jobs):
+Mayer bond orders can be analyzed from an ABACUS LCAO calculation. For the
+develop layout the density-matrix outputs are preferred: `out_dmk=1` writes
+DM(k), and `out_dmr=1` writes DM(R). The older LTS layout uses
+`out_mat_hs=1` (and `out_dm=1` for gamma-only jobs). H(R)/S(R) remains a
+fallback through `out_mat_hs2=1` or `out_hsr=1`:
 
 ```text
 abacustools postprocess mayer -j JOB --cutoff 3.0
@@ -1019,11 +1022,13 @@ abacustools postprocess mayer -j JOB --pairs 1-2,1-3 --json -o mayer.json
 The analyzer reads numerical orbitals, overlap matrices, density matrices or
 NAO wavefunctions, validates their dimensions, and reports atom indices,
 elements, periodic distances, and Mayer bond orders. It supports gamma-only
-and multi-k calculations with `nspin=1` or `nspin=2`, for both the LTS output
-layout (`data-*-S` with `SPIN1_DM`/`SPIN2_DM` or `WFC_NAO_K*.txt`) and the
-develop layout (`sk*_nao.txt` with `dm*_nao.txt`), including the gamma-only
-names that omit the k-point index. The develop density matrices are used
-directly, so no wavefunction reconstruction is needed there.
+and multi-k calculations with `nspin=1` or `nspin=2`, for the LTS output
+layout (`data-*-S` with `SPIN1_DM`/`SPIN2_DM` or `WFC_NAO_K*.txt`), the
+develop density-matrix layout (`dm*_nao.txt` with `out_dmk`, or
+`dmrs*_nao.csr` with `out_dmr`), and gamma-only ABACUS v3.11 H(R)/S(R) CSR
+output (`sr_nao.csr` with `hrs*_nao.csr` and `eig_occ.txt`). For the H(R)/S(R)
+fallback the density matrices are rebuilt from the Hamiltonian, overlap and
+occupations; DM(R) is used directly when it contains a single R block.
 
 A run that reduced the k-point mesh (`symmetry 1`) is analyzed on the full
 mesh. The analyzer reads the mesh and the irreducible k-points from
