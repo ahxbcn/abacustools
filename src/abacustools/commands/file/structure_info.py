@@ -34,8 +34,7 @@ def _structure_file(value: str) -> Path:
 def register_parser(subparsers) -> None:
     """Register the structure information command."""
     parser = subparsers.add_parser(
-        "info",
-        aliases=["stru-info", "structure-info"],
+        "struinfo",
         help="Show structure information; several files are listed as a table.",
     )
     parser.add_argument(
@@ -620,7 +619,7 @@ def run(args: argparse.Namespace) -> int:
         if args.coordination is not None or args.layer_direction is not None:
             raise ValueError(
                 "the coordination and layer analyses belong to the full report; "
-                "run file info on a single structure without --summary"
+                "run file struinfo on a single structure without --summary"
             )
         summaries = [
             structure_summary(

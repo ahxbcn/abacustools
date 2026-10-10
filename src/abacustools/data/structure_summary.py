@@ -1,6 +1,6 @@
 """The main fields of a structure, for listing many of them at once.
 
-``abacustools file info`` reports one structure in full. Listing a batch of
+``abacustools file struinfo`` reports one structure in full. Listing a batch of
 structures is a different job: it only needs the fields that make structures
 comparable, so this module reads the cell, the elements and the space group and
 leaves the Wyckoff positions, the coordination, the dimensionality and the
