@@ -1244,6 +1244,24 @@ Use `--no-symmetrize` to keep the raw fit; `--symprec` sets the tolerance of
 the symmetry analysis, which defaults to 0.01 Angstrom so that a relaxed cell
 is still recognised as symmetric.
 
+Add `--pymatgen` to evaluate the same final tensor through pymatgen's
+`ElasticTensor` API without replacing the custom fit. The JSON report then
+gains a `pymatgen` block with the Voigt, Reuss and Voigt-Reuss-Hill moduli, the
+universal anisotropy, the homogeneous Poisson ratio, longitudinal and
+transverse sound velocities, Debye temperature, and the Snyder, Clarke, Cahill
+and Agne thermal-conductivity estimates. The custom tensor, symmetrisation,
+independent constants and moduli remain in place; the pymatgen block is a
+second, independently implemented view of the same elastic tensor:
+
+```text
+abacustools workflow elastic postprocess -j JOB --pymatgen
+```
+
+The structure-dependent pymatgen properties are offered for three-dimensional
+cells. A slab keeps the custom in-plane block in N/m instead, because pymatgen
+computes its velocities and Debye temperature per cell volume, and that volume
+contains the vacuum.
+
 A two dimensional material is recognised automatically: when the reference
 cell has vacuum along one direction, only the strain components of the two
 periodic axes are prepared and fitted, because the components that involve the
