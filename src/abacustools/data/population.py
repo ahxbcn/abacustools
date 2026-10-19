@@ -20,7 +20,7 @@ from typing import Any, Optional, Sequence
 
 import numpy as np
 
-from abacustools.data.charge import valence_electrons
+from abacustools.data.charge import ChargeDensityError, valence_electrons
 from abacustools.data.mayer import (
     KPointTable,
     atom_ranges,
@@ -97,6 +97,7 @@ class PopulationAnalysis:
     basis_functions: int
     kpoint_count: int
     occupancy_convention: str
+    spin_factor: float
     total_electrons: float
     expected_electrons: Optional[float]
     total_magnetization: Optional[float]
@@ -138,6 +139,7 @@ def _expected_electrons(
     inputs: dict[str, Any],
     structure: AbacusSTRU,
     job: Path,
+    output: Path,
 ) -> Optional[float]:
     """Return the electron count implied by INPUT or the pseudopotentials."""
 
@@ -146,9 +148,34 @@ def _expected_electrons(
         return nelec + _as_float(_scalar(inputs.get("nelec_delta", 0.0)))
     try:
         values = valence_electrons(structure, inputs.get("pseudo_dir"), job)
-    except (OSError, ValueError, KeyError):
-        return None
+    except (ChargeDensityError, OSError, ValueError, KeyError):
+        return _electrons_from_log(output)
     return float(sum(values))
+
+
+def _electrons_from_log(output: Path) -> Optional[float]:
+    """Read the autoset electron count from an ABACUS running log."""
+
+    patterns = (
+        re.compile(
+            r"AUTOSET\s+number\s+of\s+electrons[^0-9+-]*([-+0-9.eEdD]+)",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"Autoset\s+the\s+number\s+of\s+electrons[^0-9+-]*([-+0-9.eEdD]+)",
+            re.IGNORECASE,
+        ),
+    )
+    for path in sorted(output.glob("running_*.log"), reverse=True):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for pattern in patterns:
+            matches = pattern.findall(text)
+            if matches:
+                try:
+                    return float(matches[-1].replace("D", "E").replace("d", "e"))
+                except ValueError:
+                    continue
+    return None
 
 
 def _orbital_ranges(
@@ -592,6 +619,7 @@ def analyze_population(
     cutoff: Optional[float] = None,
     pairs: Optional[str] = None,
     pairs_file: Optional[str | Path] = None,
+    spin_factor: float = 1.0,
 ) -> PopulationAnalysis:
     """Analyze Mulliken, Loewdin or Wiberg populations and bond orders.
 
@@ -606,6 +634,9 @@ def analyze_population(
         cutoff: Only analyze atom pairs within this distance in Angstrom.
         pairs: Comma-separated one-based atom pairs such as ``1-2,1-3``.
         pairs_file: File holding one one-based atom pair per line.
+        spin_factor: Multiplier applied to nspin=2 bond orders.  The default
+            of one is the direct spin-channel sum; the legacy ``postprocess
+            mayer`` command uses two.
 
     Returns:
         The population and bond-order report.
@@ -621,6 +652,8 @@ def analyze_population(
         raise PopulationAnalysisError(f"unsupported population method: {method}")
     if spin not in {"total", "up", "down", "difference"}:
         raise PopulationAnalysisError(f"unsupported spin selection: {spin}")
+    if not np.isfinite(spin_factor) or spin_factor <= 0:
+        raise PopulationAnalysisError("spin_factor must be a positive finite number")
 
     job_path = _job_directory(job)
     inputs = ReadInput(str(job_path / "INPUT"))
@@ -659,7 +692,7 @@ def analyze_population(
                 f"the NAO basis size {basis_functions}"
             )
 
-    expected = _expected_electrons(inputs, structure, job_path)
+    expected = _expected_electrons(inputs, structure, job_path, output)
     kpoints, convention, electrons = _normalise_density_data(kpoints, expected)
 
     table = None
@@ -766,11 +799,16 @@ def analyze_population(
         )
         for pair in selected_pairs
     }
+    if nspin == 2:
+        pair_population = {
+            pair: float(value * spin_factor)
+            for pair, value in pair_population.items()
+        }
 
     valences = None
     try:
         valences = valence_electrons(structure, inputs.get("pseudo_dir"), job_path)
-    except (OSError, ValueError, KeyError):
+    except (ChargeDensityError, OSError, ValueError, KeyError):
         valences = None
 
     lattice = periodic_lattice(structure)
@@ -830,6 +868,7 @@ def analyze_population(
         basis_functions=basis_functions,
         kpoint_count=len(kpoints),
         occupancy_convention=convention,
+        spin_factor=float(spin_factor),
         total_electrons=float(electrons),
         expected_electrons=None if expected is None else float(expected),
         total_magnetization=total_magnetization,

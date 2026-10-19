@@ -1071,6 +1071,9 @@ LTS wavefunctions are available it reads `WFC_NAO_K*.txt` and `data-*-S`.
 Write `out_dmk=1` (develop) or `out_wfc_lcao=1` (LTS) before running it. For
 nspin=2, `--spin total` sums the two spin channels, `--spin difference`
 reports up minus down, and `--spin up|down` selects one channel.
+`--spin-factor` multiplies nspin=2 bond orders: the default `1` is the direct
+spin-channel sum, while `--spin-factor 2` reproduces the legacy `postprocess
+mayer` convention.
 
 The exact k-point weights are rebuilt from the symmetry reduction. Mulliken
 and Löwdin populations are linear in the density matrix and therefore use the

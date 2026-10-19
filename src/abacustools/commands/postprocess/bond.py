@@ -50,6 +50,16 @@ def _register_arguments(parser: argparse.ArgumentParser) -> None:
             "difference is spin-up minus spin-down."
         ),
     )
+    parser.add_argument(
+        "--spin-factor",
+        type=float,
+        default=1.0,
+        metavar="FACTOR",
+        help=(
+            "Multiply nspin=2 bond orders. The default 1 is the direct "
+            "spin-channel sum; use 2 to reproduce the legacy Mayer convention."
+        ),
+    )
     selector = parser.add_mutually_exclusive_group()
     selector.add_argument(
         "-c",
@@ -104,6 +114,7 @@ def run(args: argparse.Namespace) -> int:
         cutoff=args.cutoff,
         pairs=args.pairs,
         pairs_file=args.pairs_file,
+        spin_factor=args.spin_factor,
     )
     explicit_pairs = args.pairs is not None or args.pairs_file is not None
     report = _report(

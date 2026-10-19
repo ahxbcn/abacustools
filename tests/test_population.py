@@ -378,11 +378,16 @@ def test_multik_weight_convention_is_detected(tmp_path, weighted):
 def test_nspin2_total_and_difference(tmp_path):
     total = analyze_population(_nspin2_gamma_job(tmp_path), method="mulliken", spin="total")
     difference = analyze_population(tmp_path, method="mulliken", spin="difference")
+    legacy_scale = analyze_population(
+        tmp_path, method="mulliken", spin="total", spin_factor=2.0
+    )
 
     np.testing.assert_allclose([atom.population for atom in total.atoms], [1.0, 1.0])
     assert total.total_magnetization == pytest.approx(0.25)
     np.testing.assert_allclose([atom.population for atom in difference.atoms], [0.125, 0.125])
     assert difference.total_magnetization == pytest.approx(0.25)
+    assert legacy_scale.bonds[0].value == pytest.approx(2.0 * total.bonds[0].value)
+    assert legacy_scale.spin_factor == 2.0
 
 
 def test_lts_wfc_multik_population(tmp_path):
@@ -401,6 +406,28 @@ def test_develop_dm_uses_the_recorded_symmetry_weights(tmp_path):
     kpoints = _load_density_data(root / "OUT.ABACUS", 1, False)
 
     np.testing.assert_allclose([kpoint.weight for kpoint in kpoints], [0.25, 0.5, 0.25])
+
+
+def test_electron_count_falls_back_to_the_scf_log(tmp_path):
+    root = _gamma_job(tmp_path)
+    (root / "INPUT").write_text(
+        "INPUT_PARAMETERS\n"
+        "calculation scf\n"
+        "basis_type lcao\n"
+        "nspin 1\n"
+        "gamma_only 1\n"
+        "out_dmk 1\n",
+        encoding="utf-8",
+    )
+    (root / "OUT.ABACUS" / "running_scf.log").write_text(
+        "AUTOSET number of electrons: = 2\n",
+        encoding="utf-8",
+    )
+
+    analysis = analyze_population(root, method="mulliken")
+
+    assert analysis.expected_electrons == pytest.approx(2.0)
+    assert analysis.total_electrons == pytest.approx(2.0)
 
 
 def test_lts_wfc_nspin2_total_and_difference(tmp_path):
