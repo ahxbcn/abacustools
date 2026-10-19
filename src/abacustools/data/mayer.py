@@ -1711,3 +1711,53 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
 
 
 cal_mayer_bond_order = analyze_mayer_bond_order
+
+
+def develop_density_files(output: Path) -> list[tuple[int, int, Path]]:
+    """Return ``(ik, ispin, path)`` for every develop density-matrix file."""
+
+    return _develop_density_files(Path(output))
+
+
+def develop_overlap_file(output: Path, ik: int) -> Path:
+    """Return the develop overlap file that belongs to one k-point."""
+
+    return _develop_overlap_file(Path(output), int(ik))
+
+
+def read_develop_overlap(
+    path: str | Path,
+    *,
+    kpoint: tuple[float, float, float] | None = None,
+) -> np.ndarray:
+    """Read a develop ``S(k)`` from text output or Fourier transform CSR blocks."""
+
+    return _read_develop_overlap(Path(path), kpoint=kpoint)
+
+
+def mesh_permutations(
+    table: KPointTable,
+    structure: AbacusSTRU,
+) -> list[tuple[int, ...]]:
+    """Return the atom permutation that reaches every full-mesh k-point."""
+
+    return _mesh_permutations(table, structure)
+
+
+def atom_ranges(
+    structure: AbacusSTRU,
+    nao_by_file: dict[str, NAOData],
+) -> tuple[list[tuple[int, int]], int]:
+    """Return the orbital index range of every atom and the basis size."""
+
+    return _atom_ranges(structure, nao_by_file)
+
+
+def minimum_distance(
+    lattice: np.ndarray,
+    first: Sequence[float],
+    second: Sequence[float],
+) -> float:
+    """Return the periodic minimum-image distance between two fractional sites."""
+
+    return _minimum_distance(lattice, first, second)

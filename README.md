@@ -1046,6 +1046,41 @@ magnetic `symmetry 2`/`symmetry 3` run whose reduction is not the
 crystallographic one - cannot be expanded; the analyzer says so and asks for a
 `symmetry 0` or `symmetry -1` calculation instead.
 
+Mulliken populations, Mulliken overlap populations and Löwdin/Wiberg bond
+orders are available from the same LCAO density matrices:
+
+```text
+abacustools postprocess bond -j JOB --method mulliken
+abacustools postprocess bond -j JOB --method mulliken-overlap
+abacustools postprocess bond -j JOB --method lowdin
+abacustools postprocess bond -j JOB --method wiberg --spin difference
+abacustools postprocess bond -j JOB --pairs 1-2,1-3 --json
+```
+
+`--method mulliken` reports the Mulliken atomic populations and the quadratic
+Mulliken/Mayer bond order of every selected atom pair; `--method
+mulliken-overlap` reports the linear Mulliken overlap population instead.
+`--method lowdin` and `--method wiberg` report Löwdin populations and the
+quadratic Wiberg bond order, which uses the symmetric orthogonalisation
+`S(k)**0.5` at every k-point. The existing `postprocess mayer` command remains
+the separate Mayer implementation, which uses `D(k) S(k)` directly.
+
+The command reads `DM(k)` from the develop `dmk*_nao.txt` output and `S(k)`
+from `sk*_nao.txt`, or reconstructs `S(k)` from the CSR overlap. When only the
+LTS wavefunctions are available it reads `WFC_NAO_K*.txt` and `data-*-S`.
+Write `out_dmk=1` (develop) or `out_wfc_lcao=1` (LTS) before running it. For
+nspin=2, `--spin total` sums the two spin channels, `--spin difference`
+reports up minus down, and `--spin up|down` selects one channel.
+
+The exact k-point weights are rebuilt from the symmetry reduction. Mulliken
+and Löwdin populations are linear in the density matrix and therefore use the
+BZ weights directly; Wiberg bond orders are quadratic and are expanded over the
+star members before the sum. The occupation convention is checked against
+`nelec`/`nelec_delta` (or the pseudopotential valence count), so outputs whose
+occupations already include the k weight are normalised without double
+counting. `symmetry 0`, `symmetry -1` and crystallographic `symmetry 1` meshes
+are supported.
+
 Bader charges are integrated over the Bader volumes of a job with the external
 [Henkelman](https://theory.cm.utexas.edu/henkelman/code/bader/) program or with
 the Python [baderkit](https://github.com/SWeavz/baderkit) library:
