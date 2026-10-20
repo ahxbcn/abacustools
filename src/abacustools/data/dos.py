@@ -144,7 +144,8 @@ class PDOSData:
             
         self.projected_dos = pdosdata
 
-    def read_projected_dos(abacusjob_dir):
+    @staticmethod
+    def read_projected_dos(abacusjob_dir: str) -> tuple[np.ndarray, List[dict]]:
         """Read projected DOS from ABACUS output files (XML format)."""
         pdos = read_pdos_from_job(abacusjob_dir)
         return np.asarray(pdos["energy"]), pdos["orbitals"]

@@ -239,6 +239,19 @@ def test_pdos_data_reads_develop_nao_files(tmp_path: Path) -> None:
     )
 
 
+def test_pdos_read_projected_dos_is_static(tmp_path: Path) -> None:
+    """The read helper must also work when exposed through the class only."""
+    job = tmp_path / "job"
+    job.mkdir()
+    _write_develop_job(job, with_pdos=True)
+
+    energy, orbitals = PDOSData.read_projected_dos(job)
+    assert energy.size == 4
+    assert orbitals
+    for orbital in orbitals:
+        assert energy.shape[0] == orbital["data"].shape[0]
+
+
 def test_dos_command_writes_plot_and_data_develop(tmp_path: Path) -> None:
     job = tmp_path / "job"
     job.mkdir()
