@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -20,22 +21,22 @@ class TestMain(unittest.TestCase):
         stdout.write.assert_any_call(f"abacustools {__version__}\n")
 
     def test_banner_prints_for_subcommands(self) -> None:
-        with patch("sys.stdout") as stdout, patch(
+        with patch("sys.stdout", new=io.StringIO()) as stdout, patch(
             "abacustools.main.run_menu", return_value=0
         ):
             main(["menu"])
 
-        output = "".join(call.args[0] for call in stdout.write.call_args_list)
+        output = stdout.getvalue()
         self.assertIn("Tools for accompanying using ABACUS", output)
         self.assertIn(__version__, output)
 
     def test_banner_shows_name_and_version(self) -> None:
-        with patch("sys.stdout") as stdout, patch(
+        with patch("sys.stdout", new=io.StringIO()) as stdout, patch(
             "abacustools.main._is_interactive", return_value=False
         ):
             main([])
 
-        output = "".join(call.args[0] for call in stdout.write.call_args_list)
+        output = stdout.getvalue()
         self.assertIn("Tools for accompanying using ABACUS", output)
         self.assertIn(__version__, output)
 

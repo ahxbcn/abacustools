@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 
 from abacustools.data.cohp import analyze_cohp
+from abacustools.core.render import cli_output
 
 
 def _job_directory(value: str) -> Path:
@@ -69,10 +70,10 @@ def run(args: argparse.Namespace) -> int:
     result.plot(output, emin=args.emin, emax=args.emax, width=args.width, invert=args.invert)
     result.write_data(data_output)
     fermi_text = "not found" if result.efermi is None else f"{result.efermi:.8f} eV"
-    print(f"Processed {job}: {method}, spin={args.spin}, {len(result.energy)} energy points, efermi={fermi_text}")
-    print(f"{result.label} = {result.ico_value:.8f}")
-    print(f"Wrote {method} plot: {output}")
-    print(f"Wrote {method} data: {data_output}")
+    cli_output(f"Processed {job}: {method}, spin={args.spin}, {len(result.energy)} energy points, efermi={fermi_text}")
+    cli_output(f"{result.label} = {result.ico_value:.8f}")
+    cli_output(f"Wrote {method} plot: {output}")
+    cli_output(f"Wrote {method} data: {data_output}")
     return 0
 
 

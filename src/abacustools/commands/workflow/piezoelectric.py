@@ -40,6 +40,7 @@ from .common import (
     write_abacus_job,
     write_manifest,
 )
+from abacustools.core.render import cli_output
 
 
 _VOIGT_MODES = (
@@ -574,16 +575,16 @@ def prepare(args: argparse.Namespace) -> int:
         modes=modes,
         symmetry=symmetry,
     )
-    print(f"  job: {job}")
-    print(f"  strain: {float(args.strain):g} ({disp_type})")
-    print(
+    cli_output(f"  job: {job}")
+    cli_output(f"  strain: {float(args.strain):g} ({disp_type})")
+    cli_output(
         f"  point group: {symmetry['point_group']} "
         f"({symmetry['space_group_symbol']}, "
         f"space group {symmetry['space_group_number']})"
     )
-    print(f"  independent piezoelectric components: {symmetry['independent_components']}")
-    print(f"  modes: {len(_selectable_modes(modes))} of {len(_VOIGT_MODES)}")
-    print(f"  generated calculations: {len(_task_names(disp_type, modes))}")
+    cli_output(f"  independent piezoelectric components: {symmetry['independent_components']}")
+    cli_output(f"  modes: {len(_selectable_modes(modes))} of {len(_VOIGT_MODES)}")
+    cli_output(f"  generated calculations: {len(_task_names(disp_type, modes))}")
     return 0
 
 
@@ -603,7 +604,7 @@ def _read_task_data(
         return data
     structure = AbacusSTRU.read(task / stru_filename)
     if structure is None:
-        print(f"  warning: skipping polarization from {task}: invalid structure")
+        cli_output(f"  warning: skipping polarization from {task}: invalid structure")
         return data
     polarization = dict(polarization)
     polarization["cell"] = np.asarray(structure.cell, dtype=float).tolist()
@@ -614,14 +615,14 @@ def _read_task_data(
     if volume is None:
         volume = abs(float(np.linalg.det(np.asarray(structure.cell, dtype=float))))
     if not np.isfinite(volume) or volume <= 0:
-        print(f"  warning: skipping polarization from {task}: invalid cell volume")
+        cli_output(f"  warning: skipping polarization from {task}: invalid cell volume")
         return data
     polarization["volume"] = float(volume)
     factor = _ELECTRON_ANGSTROM_SQUARED_TO_CM2 / float(volume)
     components = np.asarray(polarization["p_vec"], dtype=float) * factor
     modulus = np.asarray(polarization["mod"], dtype=float) * factor
     if components.shape != (3,) or modulus.shape != (3,):
-        print(f"  warning: skipping polarization from {task}: invalid Berry data")
+        cli_output(f"  warning: skipping polarization from {task}: invalid Berry data")
         return data
     polarization["components_cm2"] = components.tolist()
     polarization["modulus_cm2"] = modulus.tolist()
@@ -714,7 +715,7 @@ def _mode_difference(
         or not reference.get("polarization")
         or not displaced.get("polarization")
     ):
-        print(f"  warning: insufficient Berry phase data for mode {label}")
+        cli_output(f"  warning: insufficient Berry phase data for mode {label}")
         return None
 
     reference_p = reference["polarization"]
@@ -781,7 +782,7 @@ def _postprocess_one(
     for name in tasks:
         task = job / name
         if not task.is_dir():
-            print(f"  warning: missing piezoelectric task {task}")
+            cli_output(f"  warning: missing piezoelectric task {task}")
             continue
         data = _read_task_data(task, version, suffix, stru_filename)
         task_data[name] = data
@@ -881,7 +882,7 @@ def postprocess_piezoelectric(
     for value in jobs:
         job = Path(value).absolute()
         if not job.is_dir():
-            print(f"warning: job path {job} is not a directory, skipping")
+            cli_output(f"warning: job path {job} is not a directory, skipping")
             continue
         try:
             manifest = read_manifest(job, "piezoelectric", [])
@@ -982,7 +983,7 @@ def postprocess(args: argparse.Namespace) -> int:
 
     method = str(getattr(args, "fit", "full"))
     if len(measured_modes) < len(_VOIGT_MODES) and method == "full":
-        print(
+        cli_output(
             "  the strain set covers the independent modes only; "
             "fitting the independent components"
         )
@@ -993,7 +994,7 @@ def postprocess(args: argparse.Namespace) -> int:
         ).tolist()
         raw = tensor
         residual = 0.0
-        print("  fit: independent components")
+        cli_output("  fit: independent components")
     else:
         raw = tensor
         if symmetrize:
@@ -1040,31 +1041,31 @@ def postprocess(args: argparse.Namespace) -> int:
     summary = _summary(tensor)
     (job / "piezoelectric_summary.txt").write_text(summary + "\n", encoding="utf-8")
 
-    print(f"  job: {job}")
-    print(summary)
-    print(
+    cli_output(f"  job: {job}")
+    cli_output(summary)
+    cli_output(
         f"  point group: {symmetry['point_group']} "
         f"({symmetry['space_group_symbol']}, "
         f"space group {symmetry['space_group_number']})"
     )
-    print(
+    cli_output(
         f"  independent components: {symmetry['independent_components']} "
         f"from {len(measured_modes)} of {len(_VOIGT_MODES)} strain modes"
     )
     if method == "independent":
-        print("  piezoelectric tensor (C/m^2, independent fit):")
+        cli_output("  piezoelectric tensor (C/m^2, independent fit):")
     else:
-        print("  piezoelectric tensor (C/m^2, symmetrized):")
+        cli_output("  piezoelectric tensor (C/m^2, symmetrized):")
     for row in tensor:
-        print("    " + " ".join(f"{value: .8f}" for value in row))
+        cli_output("    " + " ".join(f"{value: .8f}" for value in row))
     if method == "full" and symmetrize:
-        print(f"  symmetrization residual: {residual:.8f} C/m^2")
+        cli_output(f"  symmetrization residual: {residual:.8f} C/m^2")
     components = result["independent_components"]
-    print(
+    cli_output(
         "  independent components (C/m^2): "
         + ", ".join(f"{name} = {value:.6f}" for name, value in components.items())
     )
-    print(f"  results: {output}")
+    cli_output(f"  results: {output}")
     return 0
 
 

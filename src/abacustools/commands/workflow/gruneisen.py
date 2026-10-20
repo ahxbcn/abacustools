@@ -54,6 +54,7 @@ from .common import (
     write_manifest,
 )
 from .phonon import prepare_phonon_jobs
+from abacustools.core.render import cli_output
 
 
 #: Directory names of the three volumes, in the order equilibrium, expanded,
@@ -214,8 +215,8 @@ def prepare(args: argparse.Namespace) -> int:
     kpoint = kpoint_filename(job, inputs)
     clear_generated_jobs(job, list(_TASKS), override=args.override)
 
-    print(f"  job: {job}")
-    print(f"  volume strain: ±{strain:g}")
+    cli_output(f"  job: {job}")
+    cli_output(f"  volume strain: ±{strain:g}")
     volumes: Dict[str, float] = {}
     for name, sign in zip(_TASKS, _STRAIN_SIGNS):
         volume_job = job / name
@@ -236,7 +237,7 @@ def prepare(args: argparse.Namespace) -> int:
             override=True,
         )
         volumes[name] = cell_volume(cell.cell)
-        print(f"  volume {name}: {volumes[name]:.4f} Angstrom^3")
+        cli_output(f"  volume {name}: {volumes[name]:.4f} Angstrom^3")
 
     write_manifest(
         job,
@@ -249,7 +250,7 @@ def prepare(args: argparse.Namespace) -> int:
         min_supercell_length=float(args.min_supercell_length),
         stru_filename=stru_filename,
     )
-    print("  submit the displaced calculations of the three volumes, then run "
+    cli_output("  submit the displaced calculations of the three volumes, then run "
           f"'abacustools workflow gruneisen postprocess -j {job}'")
     return 0
 
@@ -388,37 +389,37 @@ def postprocess(args: argparse.Namespace) -> int:
     }
     output.write_text(json.dumps(jsonable(result), indent=2) + "\n", encoding="utf-8")
 
-    print(f"  job: {job}")
-    print(
+    cli_output(f"  job: {job}")
+    cli_output(
         "  volumes: "
         + ", ".join(
             f"{name} {value:.4f}" for name, value in (manifest.get("volumes") or {}).items()
         )
         + " Angstrom^3"
     )
-    print(f"  q mesh: {' '.join(str(value) for value in mesh)}")
+    cli_output(f"  q mesh: {' '.join(str(value) for value in mesh)}")
     if "mean" in statistics:
-        print(
+        cli_output(
             f"  mode Grueneisen parameters: {statistics['modes']} modes, "
             f"mean {statistics['mean']:.4f}, range "
             f"{statistics['minimum']:.4f} to {statistics['maximum']:.4f} "
             "(dimensionless)"
         )
-        print(
+        cli_output(
             f"  modes left out: {statistics['modes_left_out']} "
             "(zero frequency or non-finite)"
         )
     else:
-        print("  warning: no mode parameter could be averaged")
+        cli_output("  warning: no mode parameter could be averaged")
     if result["gruneisen_at_temperature"] is not None:
-        print(
+        cli_output(
             f"  thermodynamic Grueneisen parameter at {args.temperature:g} K: "
             f"{result['gruneisen_at_temperature']:.4f} (dimensionless)"
         )
-    print(f"  mesh results: {mesh_yaml}")
-    print(f"  band results: {band_yaml}")
-    print(f"  plots: {mesh_plot}, {band_plot}")
-    print(f"  results: {output}")
+    cli_output(f"  mesh results: {mesh_yaml}")
+    cli_output(f"  band results: {band_yaml}")
+    cli_output(f"  plots: {mesh_plot}, {band_plot}")
+    cli_output(f"  results: {output}")
     return 0
 
 

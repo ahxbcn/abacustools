@@ -14,6 +14,7 @@ from abacustools.data.abacus_result import (
     grouped_params,
 )
 from abacustools.data.versions import default_version
+from abacustools.core.render import cli_output
 
 
 RESULT_PARAMETERS = tuple(
@@ -181,7 +182,7 @@ def run(args: argparse.Namespace) -> int:
         results[str(job)] = get_result_from_job(job, args.param, args.version)
 
     if args.json:
-        print(json.dumps(results, indent=2, sort_keys=True))
+        cli_output(json.dumps(results, indent=2, sort_keys=True))
         return 0
 
     console = Console()

@@ -13,6 +13,7 @@ from abacustools.core.constant import ELECTRON_MASS, ELEMENTARY_CHARGE, HBAR
 from abacustools.data.unitcell import Unitcell
 from abacustools.io.abacus import ReadInput, ReadKpt
 from abacustools.io.stru import AbacusSTRU
+from abacustools.core.render import cli_output
 
 
 def _report_scalar(value: Any) -> Optional[float]:
@@ -95,7 +96,7 @@ class BandData:
             if efermi is not None:
                 self.band_data = band_data - efermi
             else:
-                print("efermi is None, band data will not be shifted")
+                cli_output("efermi is None, band data will not be shifted")
                 self.band_data = band_data
         else:
             raise ValueError(
@@ -1096,10 +1097,10 @@ class BandData:
         """
         Print high symmetry labels and coordinates to console.
         """
-        print("-" * 60 + f"\n{'label':<10} {'Fractional coordinates in reciprocal space':<20}\n" + "-" * 60)
+        cli_output("-" * 60 + f"\n{'label':<10} {'Fractional coordinates in reciprocal space':<20}\n" + "-" * 60)
         for label, pos in self.high_symm_labels.items():
-            print(f"{label:<10} ({pos[0]:12.9f}, {pos[1]:12.9f}, {pos[2]:12.9f})")
-        print("-" * 60)
+            cli_output(f"{label:<10} ({pos[0]:12.9f}, {pos[1]:12.9f}, {pos[2]:12.9f})")
+        cli_output("-" * 60)
 
     def print_kpath_info(self):
         """
@@ -1107,15 +1108,15 @@ class BandData:
         """
         high_symm_info = self.get_high_symmetry_points_info()
         
-        print("\nBand path information:")
-        print("-" * 60)
-        print(f"{'K-point No.':<12} {'Label':<15} {'Cumulative distance':<20}")
-        print("-" * 60)
+        cli_output("\nBand path information:")
+        cli_output("-" * 60)
+        cli_output(f"{'K-point No.':<12} {'Label':<15} {'Cumulative distance':<20}")
+        cli_output("-" * 60)
         
         for info in high_symm_info:
-            print(f"{info['kpoint_num']:<12} {info['label']:<15} {info['cumulative_distance']:<20.8f}")
+            cli_output(f"{info['kpoint_num']:<12} {info['label']:<15} {info['cumulative_distance']:<20.8f}")
         
-        print("-" * 60)
+        cli_output("-" * 60)
 
     def write_kpath_info(self, filename="KPATH.txt"):
         """

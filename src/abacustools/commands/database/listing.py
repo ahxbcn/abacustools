@@ -9,6 +9,7 @@ from rich.console import Console
 from rich.table import Table
 
 from abacustools.integrations.databases import describe_databases
+from abacustools.core.render import cli_output
 
 _STATUS_STYLES = {"ready": "green", "needs-api-key": "yellow", "unavailable": "red"}
 
@@ -54,9 +55,9 @@ def run(args: argparse.Namespace) -> int:
     if args.available:
         records = [record for record in records if record["status"] == "ready"]
     if args.json:
-        print(json.dumps(records, indent=2, sort_keys=True))
+        cli_output(json.dumps(records, indent=2, sort_keys=True))
     elif records:
         Console().print(_table(records))
     else:
-        print("no database is ready to query")
+        cli_output("no database is ready to query")
     return 0

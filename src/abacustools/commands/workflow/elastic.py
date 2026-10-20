@@ -39,6 +39,7 @@ from .common import (
     write_abacus_job,
     write_manifest,
 )
+from abacustools.core.render import cli_output
 
 
 _ELASTIC_TASKS = ("org",) + tuple(f"deformed_{index:02d}" for index in range(24))
@@ -313,11 +314,11 @@ def prepare(args: argparse.Namespace) -> int:
         f"deformed_{index:02d}" for index in range(len(generated))
     ]
     clear_generated_jobs(job, task_names, override=args.override)
-    print(f"  job: {job}")
-    print(f"  normal strain: {args.norm}")
-    print(f"  shear strain: {args.shear}")
-    print(f"  calculation: {elastic_inputs['calculation']}")
-    print(
+    cli_output(f"  job: {job}")
+    cli_output(f"  normal strain: {args.norm}")
+    cli_output(f"  shear strain: {args.shear}")
+    cli_output(f"  calculation: {elastic_inputs['calculation']}")
+    cli_output(
         f"  dimensionality: {dimension['dimensionality']}"
         + (
             f" (vacuum along {dimension['vacuum_direction']}, "
@@ -326,17 +327,17 @@ def prepare(args: argparse.Namespace) -> int:
             else ""
         )
     )
-    print(
+    cli_output(
         f"  strain modes: {len(strain_modes)} of 6 "
         f"({', '.join(_voigt_labels(strain_modes))})"
     )
-    print(f"  strained jobs: {len(generated)}")
-    print(
+    cli_output(f"  strained jobs: {len(generated)}")
+    cli_output(
         f"  point group: {symmetry['point_group']} "
         f"({symmetry['space_group_symbol']}, "
         f"space group {symmetry['space_group_number']})"
     )
-    print(f"  independent elastic constants: {symmetry['independent_constants']}")
+    cli_output(f"  independent elastic constants: {symmetry['independent_constants']}")
 
     write_abacus_job(
         elastic_inputs,
@@ -346,7 +347,7 @@ def prepare(args: argparse.Namespace) -> int:
         stru_filename=stru_filename,
         kpoint=kpoint_file,
     )
-    print("  prepared org")
+    cli_output("  prepared org")
 
     strain_metadata = []
     deformed_paths = []
@@ -362,7 +363,7 @@ def prepare(args: argparse.Namespace) -> int:
         )
         strain_metadata.append(strain.as_dict())
         deformed_paths.append(name)
-        print(f"  prepared {name}")
+        cli_output(f"  prepared {name}")
 
     write_manifest(
         job,
@@ -483,14 +484,14 @@ def postprocess(args: argparse.Namespace) -> int:
     dimension = manifest.get("dimension") or {}
     in_plane = dimension.get("in_plane_modes") or None
     symmetry = _symmetry_block(job, manifest, args.symprec)
-    print(f"  job: {job}")
-    print(
+    cli_output(f"  job: {job}")
+    cli_output(
         f"  point group: {symmetry['point_group']} "
         f"({symmetry.get('space_group_symbol')}, "
         f"space group {symmetry.get('space_group_number')})"
     )
-    print(f"  independent elastic constants: {symmetry['independent_constants']}")
-    print(
+    cli_output(f"  independent elastic constants: {symmetry['independent_constants']}")
+    cli_output(
         f"  strain modes: {len(strain_modes)} of 6 "
         f"({', '.join(_voigt_labels(strain_modes))}), "
         f"{len(strains)} strained jobs"
@@ -505,7 +506,7 @@ def postprocess(args: argparse.Namespace) -> int:
 
     method = args.fit
     if len(strain_modes) < 6 and method == "full":
-        print(
+        cli_output(
             "  the strain set covers the independent directions only; "
             "fitting the independent constants"
         )
@@ -519,7 +520,7 @@ def postprocess(args: argparse.Namespace) -> int:
         )
         raw = tensor
         residual = 0.0
-        print("  fit: independent constants")
+        cli_output("  fit: independent constants")
     else:
         raw = _fit_tensor(
             strains, deformed_stresses, equilibrium_stress, indices=in_plane
@@ -578,30 +579,30 @@ def postprocess(args: argparse.Namespace) -> int:
 
     components = result["independent_constants"]
     heading = "fitted tensor (raw, GPa)" if method == "full" else "fitted tensor (GPa)"
-    print(f"  {heading}:")
+    cli_output(f"  {heading}:")
     for row in raw:
-        print("    " + " ".join(f"{value: .8f}" for value in row))
+        cli_output("    " + " ".join(f"{value: .8f}" for value in row))
     if method == "full" and args.symmetrize:
-        print("  symmetrized tensor (GPa):")
+        cli_output("  symmetrized tensor (GPa):")
         for row in tensor:
-            print("    " + " ".join(f"{value: .8f}" for value in row))
-        print(f"  symmetrization residual: {residual:.8f} GPa")
+            cli_output("    " + " ".join(f"{value: .8f}" for value in row))
+        cli_output(f"  symmetrization residual: {residual:.8f} GPa")
     if method == "full" and not args.symmetrize:
-        print("  the tensor is kept as fitted; no symmetrization was applied")
-    print(
+        cli_output("  the tensor is kept as fitted; no symmetrization was applied")
+    cli_output(
         "  independent constants (GPa): "
         + ", ".join(f"{name} = {value:.6f}" for name, value in components.items())
     )
     if "two_dimensional" in result:
         block = np.asarray(result["elastic_tensor_2d"], dtype=float)
         layer = result["two_dimensional"]
-        print(
+        cli_output(
             f"  in-plane block (N/m), vacuum along "
             f"{layer['vacuum_direction']}, cell height {layer['cell_height']:.3f} Angstrom:"
         )
         for row in block:
-            print("    " + " ".join(f"{value: .6f}" for value in row))
-        print(
+            cli_output("    " + " ".join(f"{value: .6f}" for value in row))
+        cli_output(
             "  independent constants (N/m): "
             + ", ".join(
                 f"{name} = {value:.6f}"
@@ -609,7 +610,7 @@ def postprocess(args: argparse.Namespace) -> int:
             )
         )
         moduli = layer["moduli"]
-        print(
+        cli_output(
             f"  in-plane Young's modulus: {moduli['young_modulus_min']:.4f} to "
             f"{moduli['young_modulus_max']:.4f} N/m "
             f"(anisotropy {moduli['anisotropy']:.4f}), "
@@ -617,10 +618,10 @@ def postprocess(args: argparse.Namespace) -> int:
             f"{moduli['poisson_ratio_max']:.4f}"
         )
     for name in ("bulk_modulus", "shear_modulus", "young_modulus"):
-        print(f"  {name}: {result[name]:.8f} GPa")
+        cli_output(f"  {name}: {result[name]:.8f} GPa")
     # The Poisson ratio is dimensionless, so it carries no unit.
-    print(f"  poisson_ratio: {result['poisson_ratio']:.8f}")
-    print(f"  results: {output}")
+    cli_output(f"  poisson_ratio: {result['poisson_ratio']:.8f}")
+    cli_output(f"  results: {output}")
     return 0
 
 

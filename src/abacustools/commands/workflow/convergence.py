@@ -21,6 +21,7 @@ from .common import (
     write_abacus_job,
     write_manifest,
 )
+from abacustools.core.render import cli_output
 
 
 @dataclass(frozen=True)
@@ -103,7 +104,7 @@ def prepare(args: argparse.Namespace, spec: ConvergenceSpec) -> int:
     inputs, stru_filename, structure = read_job_structure(job)
     scan_inputs = deepcopy(inputs)
     if str(inputs.get("calculation", "scf")).lower() != "scf":
-        print(
+        cli_output(
             "  warning: convergence tests use SCF jobs; "
             f"replacing calculation={inputs.get('calculation')}"
         )
@@ -114,10 +115,10 @@ def prepare(args: argparse.Namespace, spec: ConvergenceSpec) -> int:
 
     tasks = _task_names(spec, values)
     clear_generated_jobs(job, tasks, override=args.override)
-    print(f"  job: {job}")
-    print(f"  parameter: {spec.name} ({spec.unit})")
-    print(f"  atoms: {structure.natoms}")
-    print(f"  values: {', '.join(f'{value:g}' for value in values)}")
+    cli_output(f"  job: {job}")
+    cli_output(f"  parameter: {spec.name} ({spec.unit})")
+    cli_output(f"  atoms: {structure.natoms}")
+    cli_output(f"  values: {', '.join(f'{value:g}' for value in values)}")
 
     for task, value in zip(tasks, values):
         task_inputs = deepcopy(scan_inputs)
@@ -130,7 +131,7 @@ def prepare(args: argparse.Namespace, spec: ConvergenceSpec) -> int:
             stru_filename=stru_filename,
             kpoint=kpoint,
         )
-        print(f"  prepared {task}: {spec.name}={value:g}")
+        cli_output(f"  prepared {task}: {spec.name}={value:g}")
 
     write_manifest(
         job,
@@ -276,9 +277,9 @@ def postprocess(args: argparse.Namespace, spec: ConvergenceSpec) -> int:
         _, _, structure = read_job_structure(job)
         natoms = structure.natoms
 
-    print(f"  job: {job}")
-    print(f"  parameter: {spec.name} ({spec.unit})")
-    print(f"  energy tolerance: {args.energy_tol:g} eV/atom")
+    cli_output(f"  job: {job}")
+    cli_output(f"  parameter: {spec.name} ({spec.unit})")
+    cli_output(f"  energy tolerance: {args.energy_tol:g} eV/atom")
     points = [
         _read_point(job / task, value, args.version, natoms)
         for task, value in zip(tasks, values)
@@ -294,7 +295,7 @@ def postprocess(args: argparse.Namespace, spec: ConvergenceSpec) -> int:
         delta_text = "-" if delta is None else f"{delta:.6g}"
         energy = point.get("energy_per_atom")
         energy_text = "-" if energy is None else f"{energy:.10f}"
-        print(
+        cli_output(
             f"  {spec.name}={point['parameter']:g}: "
             f"status={point['status']}, energy/atom={energy_text}, "
             f"delta={delta_text} {message}"
@@ -321,17 +322,17 @@ def postprocess(args: argparse.Namespace, spec: ConvergenceSpec) -> int:
     output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     if completed:
         _plot(ordered, spec, args.energy_tol, plot)
-    print(f"  results: {output}")
+    cli_output(f"  results: {output}")
     if completed:
-        print(f"  plot: {plot}")
+        cli_output(f"  plot: {plot}")
     else:
-        print("  warning: no usable total energies were found; plot was skipped")
+        cli_output("  warning: no usable total energies were found; plot was skipped")
     if selected is None:
-        print("  warning: no successive points meet the energy tolerance")
+        cli_output("  warning: no successive points meet the energy tolerance")
     else:
-        print(f"  selected {spec.name}: {selected['parameter']:g} {spec.unit}")
+        cli_output(f"  selected {spec.name}: {selected['parameter']:g} {spec.unit}")
     if not result["all_tasks_complete"]:
-        print("  warning: one or more convergence-test tasks are incomplete")
+        cli_output("  warning: one or more convergence-test tasks are incomplete")
     return 0
 
 

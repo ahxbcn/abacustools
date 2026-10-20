@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from abacustools.core.job import as_json, status_job, validate_job
+from abacustools.core.render import cli_output
 
 
 def _job_directory(value: str) -> Path:
@@ -30,13 +31,13 @@ def run(args: argparse.Namespace) -> int:
     status = status_job(args.job, validation)
     result = {"state": status.state, "progress": status.progress, "log": status.log}
     if args.json:
-        print(json.dumps(as_json(result), indent=2, sort_keys=True))
+        cli_output(json.dumps(as_json(result), indent=2, sort_keys=True))
     else:
-        print(f"job: {Path(args.job).absolute()}")
-        print(f"state: {status.state}")
+        cli_output(f"job: {Path(args.job).absolute()}")
+        cli_output(f"state: {status.state}")
         if status.log:
-            print(f"log: {status.log}")
+            cli_output(f"log: {status.log}")
         for name, value in status.progress.items():
             if value is not None:
-                print(f"{name}: {value}")
+                cli_output(f"{name}: {value}")
     return 0 if status.state not in {"invalid", "failed"} else 1
