@@ -64,8 +64,8 @@ lattice constant of the run.
 | --- | --- | --- |
 | `BANDS_<n>.dat` | NSCF with `out_band 1` | band energies along the line-mode path, in eV; `n` is the spin channel |
 | `PBANDS_<n>` | `out_proj_band 1` | projected (fat) band weights, XML |
-| `DOS<n>_smearing.dat` | `out_dos 1` | total DOS per spin channel |
-| `PDOS` | `out_dos 1` (LCAO) | projected DOS, XML with an energy grid |
+| `DOS<n>_smearing.dat` | `out_dos 1` | total DOS per spin channel; develop renames the files to `doss<n>[g<step>]_nao.txt` (LCAO), `doss<n>.txt` (PW, `nspin 2`) or `dos.txt` (PW, `nspin 1`), with columns energy, dos, dos_int, dos_smear, dos_smear_int |
+| `PDOS` | `out_dos 1` (LCAO) | projected DOS, XML with an energy grid; develop writes `pdoss<n>[g<step>]_nao.txt` instead, one text file per spin channel holding `(energy, atom, species, one column per (l, m), summed over zeta)` |
 
 ## LCAO matrices and wavefunctions
 

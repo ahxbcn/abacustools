@@ -851,11 +851,13 @@ abacustools postprocess dos -j JOB --emin -20 --emax 10
 abacustools postprocess dos -j JOB --pdos species
 ```
 
-The command reads `DOS*_smearing.dat`, shifts the energy axis by the Fermi
-energy, and writes `DOS.png` and `DOS.dat`. Use `--pdos species-shell`,
-`--pdos species-orbital`, or `--pdos atoms --atom-index 1 2` for projected DOS
-plots. Output paths can be changed with `-o` and `--data-output`; use
-`--efermi` when the Fermi energy cannot be read from the ABACUS output.
+The command reads `DOS*_smearing.dat` (ABACUS LTS) or the `doss<spin>...txt`
+and `pdoss<spin>...txt` text files of ABACUS develop, shifts the energy axis
+by the Fermi energy, and writes `DOS.png` and `DOS.dat`. Use `--pdos
+species-shell`, `--pdos species-orbital`, or `--pdos atoms --atom-index 1 2`
+for projected DOS plots. Output paths can be changed with `-o` and
+`--data-output`; use `--efermi` when the Fermi energy cannot be read from the
+ABACUS output.
 
 Use `--combined` to overlay the total DOS with the species-projected DOS
 (`DOS_PDOS.png`/`DOS_PDOS.dat`), `--pdos atom-shell` or `--pdos atom-orbital`
