@@ -17,6 +17,14 @@ from abacustools.io.stru import AbacusSTRU, periodic_lattice
 _FLOAT = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[EeDd][+-]?\d+)?"
 _COMPLEX_TOKEN = re.compile(rf"^\(({_FLOAT}),({_FLOAT})\)$")
 _ORBITAL_HEADER = re.compile(r"^\s*Type\s+L\s+N\s*$", re.IGNORECASE)
+_SHELL_LABELS = "spdfghijklmn"
+_SHELL_ORDER = {label: index for index, label in enumerate(_SHELL_LABELS)}
+
+
+def _shell_label(l: int) -> str:
+    """Return the spectroscopic shell label of an angular momentum."""
+
+    return _SHELL_LABELS[l] if 0 <= l < len(_SHELL_LABELS) else f"l{l}"
 
 
 @dataclass(frozen=True)
@@ -46,6 +54,9 @@ class MayerPair:
     element2: str
     distance: float
     bond_order: float
+    # (shell on atom1, shell on atom2, contribution), summed over radial
+    # functions with the same angular momentum; empty for older callers.
+    shell_bond_orders: tuple[tuple[str, str, float], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -919,6 +930,75 @@ def expanded_orders(
     return orders
 
 
+def _expanded_orders_with_shells(
+    stars: dict[int, Sequence[tuple[int, ...]]],
+    weights: Sequence[float],
+    values_of: Any,
+    pairs: Sequence[tuple[int, int]],
+) -> tuple[
+    dict[tuple[int, int], float],
+    dict[tuple[int, int], dict[tuple[str, str], float]],
+]:
+    """Shell-resolved counterpart of :func:`expanded_orders`.
+
+    ``values_of`` must return ``{pair: (value, shell_values)}``.  The shell
+    labels are swapped whenever a symmetry operation exchanges the two atoms
+    of the pair, so that every contribution stays attached to the atom that
+    carries it.
+    """
+
+    orders = {pair: 0.0 for pair in pairs}
+    shells: dict[tuple[int, int], dict[tuple[str, str], float]] = {
+        pair: {} for pair in pairs
+    }
+    for index, members in stars.items():
+        weight = weights[index - 1]
+        needed = {
+            tuple(sorted((permutation[pair[0]], permutation[pair[1]])))
+            for permutation in members
+            for pair in pairs
+        }
+        values, shell_values_by_pair = values_of(index - 1, sorted(needed))
+        for pair in pairs:
+            total = 0.0
+            accumulated: dict[tuple[str, str], float] = {}
+            for permutation in members:
+                mapped = (permutation[pair[0]], permutation[pair[1]])
+                key = tuple(sorted(mapped))
+                total += values[key]
+                for (first, second), contribution in shell_values_by_pair[key].items():
+                    shell_key = (first, second) if mapped == key else (second, first)
+                    accumulated[shell_key] = (
+                        accumulated.get(shell_key, 0.0) + contribution
+                    )
+            orders[pair] += total / len(members) / weight
+            for shell_key, contribution in accumulated.items():
+                shells[pair][shell_key] = (
+                    shells[pair].get(shell_key, 0.0)
+                    + contribution / len(members) / weight
+                )
+    return orders, shells
+
+
+def _symmetry_expanded_orders_with_shells(
+    table: KPointTable,
+    weights: Sequence[float],
+    values_of: Any,
+    pairs: Sequence[tuple[int, int]],
+    structure: AbacusSTRU,
+) -> tuple[
+    dict[tuple[int, int], float],
+    dict[tuple[int, int], dict[tuple[str, str], float]],
+]:
+    """Rebuild the reduced k-points with the shell decomposition attached."""
+
+    permutations = _mesh_permutations(table, structure)
+    stars: dict[int, list[tuple[int, ...]]] = {}
+    for (_point, index), permutation in zip(table.mesh, permutations):
+        stars.setdefault(index, []).append(permutation)
+    return _expanded_orders_with_shells(stars, weights, values_of, pairs)
+
+
 def _symmetry_expanded_orders(
     table: KPointTable,
     weights: Sequence[float],
@@ -1280,16 +1360,101 @@ def cal_mayer_bond_order_between_atom_pair_k(
     return _mayer_order(dm, ovlp_mat, atom_orb_ranges[i], atom_orb_ranges[j])
 
 
-def _atom_ranges(structure: AbacusSTRU, nao_by_file: dict[str, NAOData]) -> tuple[list[tuple[int, int]], int]:
-    ranges: list[tuple[int, int]] = []
+def _atom_shell_ranges(
+    structure: AbacusSTRU, nao_by_file: dict[str, NAOData]
+) -> tuple[list[list[tuple[str, int, int]]], int]:
+    """Return per-atom ``(label, start, end)`` AO slices and the AO count.
+
+    A numerical orbital file lists its radial functions in the order they
+    enter the basis, and every function of angular momentum ``l`` contributes
+    ``2 l + 1`` AOs, so the per-shell slices follow directly from that order.
+    """
+
+    shells: list[list[tuple[str, int, int]]] = []
     start = 0
     for index, atom in enumerate(structure.atoms, 1):
         if not atom.orb or atom.orb not in nao_by_file:
             raise ValueError(f"atom {index} has no parsed numerical orbital file")
-        start_next = start + get_nao_basis_num(nao_by_file[atom.orb])
-        ranges.append((start, start_next))
-        start = start_next
-    return ranges, start
+        nao = nao_by_file[atom.orb]
+        atom_shells: list[tuple[str, int, int]] = []
+        for orbital in nao.orbitals:
+            width = 2 * orbital.l + 1
+            atom_shells.append((_shell_label(orbital.l), start, start + width))
+            start += width
+        shells.append(atom_shells)
+    return shells, start
+
+
+def _mayer_order_shells(
+    dm: np.ndarray,
+    overlap: np.ndarray,
+    first_shells: Sequence[tuple[str, int, int]],
+    second_shells: Sequence[tuple[str, int, int]],
+    *,
+    product: Optional[np.ndarray] = None,
+) -> dict[tuple[str, str], float]:
+    """Return the shell-resolved Mayer contributions of one atom pair.
+
+    The keys are ``(shell on the first atom, shell on the second atom)``.
+    Several radial functions with the same angular momentum are summed, so
+    the result holds at most one entry per ``(l1, l2)`` pair.  Adding all
+    values reproduces :func:`_mayer_order`.
+    """
+
+    ps = dm @ overlap if product is None else product
+    values: dict[tuple[str, str], float] = {}
+    for first_label, first_start, first_end in first_shells:
+        for second_label, second_start, second_end in second_shells:
+            key = (first_label, second_label)
+            values[key] = values.get(key, 0.0) + float(
+                np.sum(
+                    ps[first_start:first_end, second_start:second_end]
+                    * ps[second_start:second_end, first_start:first_end].T
+                ).real
+            )
+    return values
+
+
+def _combine_shell_orders(
+    up: dict[tuple[str, str], float],
+    down: Optional[dict[tuple[str, str], float]] = None,
+    factor: float = 2.0,
+) -> dict[tuple[str, str], float]:
+    """Combine spin channels with the unrestricted Mayer factor."""
+
+    if down is None:
+        return dict(up)
+    keys = set(up) | set(down)
+    return {
+        key: factor * (up.get(key, 0.0) + down.get(key, 0.0)) for key in keys
+    }
+
+
+def _sorted_shell_orders(
+    values: dict[tuple[str, str], float]
+) -> tuple[tuple[str, str, float], ...]:
+    """Return a deterministic ``(label1, label2, value)`` tuple."""
+
+    return tuple(
+        (first, second, float(value))
+        for (first, second), value in sorted(
+            values.items(),
+            key=lambda item: (
+                _SHELL_ORDER.get(item[0][0], len(_SHELL_ORDER)),
+                _SHELL_ORDER.get(item[0][1], len(_SHELL_ORDER)),
+            ),
+        )
+    )
+
+
+def _atom_ranges(structure: AbacusSTRU, nao_by_file: dict[str, NAOData]) -> tuple[list[tuple[int, int]], int]:
+    shells, total = _atom_shell_ranges(structure, nao_by_file)
+    ranges: list[tuple[int, int]] = []
+    for atom_shells in shells:
+        if not atom_shells:
+            raise ValueError("an atom has an empty numerical orbital basis")
+        ranges.append((atom_shells[0][1], atom_shells[-1][2]))
+    return ranges, total
 
 
 def _resolve_orbital(job: Path, orbital_dir: Any, filename: str) -> Path:
@@ -1426,9 +1591,22 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
         if atom.orb not in nao_by_file:
             nao_by_file[atom.orb] = read_nao_file(_resolve_orbital(job_path, inputs.get("orbital_dir"), atom.orb))
     atom_ranges, basis_functions = _atom_ranges(structure, nao_by_file)
+    atom_shells, _ = _atom_shell_ranges(structure, nao_by_file)
     selected_pairs = select_atom_pairs(structure, cutoff, pairs, pairs_file)
     orders = {pair: 0.0 for pair in selected_pairs}
+    shell_orders: dict[tuple[int, int], dict[tuple[str, str], float]] = {
+        pair: {} for pair in selected_pairs
+    }
     data_files: list[str] = []
+
+    def add_shells(
+        pair: tuple[int, int],
+        values: dict[tuple[str, str], float],
+        factor: float = 1.0,
+    ) -> None:
+        target = shell_orders[pair]
+        for key, value in values.items():
+            target[key] = target.get(key, 0.0) + factor * value
 
     if version == "csr":
         if not gamma_only:
@@ -1493,6 +1671,17 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
                     atom_ranges[pair[1]],
                     product=population,
                 )
+                add_shells(
+                    pair,
+                    _mayer_order_shells(
+                        density,
+                        overlap,
+                        atom_shells[pair[0]],
+                        atom_shells[pair[1]],
+                        product=population,
+                    ),
+                    spin_factor,
+                )
     elif version == "dmr":
         overlap_path, overlap = _gamma_overlap_matrix(output)
         data_files.append(str(overlap_path))
@@ -1532,6 +1721,17 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
                     atom_ranges[pair[1]],
                     product=population,
                 )
+                add_shells(
+                    pair,
+                    _mayer_order_shells(
+                        density,
+                        overlap,
+                        atom_shells[pair[0]],
+                        atom_shells[pair[1]],
+                        product=population,
+                    ),
+                    spin_factor,
+                )
     elif version == "develop":
         # Develop version: the k-resolved density matrices carry the k index,
         # the spin index and the k-point weight in their file name and header,
@@ -1563,6 +1763,9 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
                     f"{basis_functions}"
                 )
             spin_orders = {pair: 0.0 for pair in selected_pairs}
+            spin_shells: dict[tuple[int, int], dict[tuple[str, str], float]] = {
+                pair: {} for pair in selected_pairs
+            }
             channels = {
                 ispin
                 for entry_ik, ispin, _path in density_files
@@ -1592,12 +1795,24 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
                         atom_ranges[pair[1]],
                         product=population,
                     )
+                    target = spin_shells[pair]
+                    for key, value in _mayer_order_shells(
+                        density,
+                        matrix,
+                        atom_shells[pair[0]],
+                        atom_shells[pair[1]],
+                        product=population,
+                    ).items():
+                        target[key] = target.get(key, 0.0) + value
             # DM(k) files store spin-resolved density matrices.  The
             # standard spin-unrestricted Mayer formula includes a factor two
             # for each spin channel.
             spin_factor = 2.0 if nspin == 2 else 1.0
             for pair in selected_pairs:
                 orders[pair] += spin_factor * spin_orders[pair] / weights[position]
+                add_shells(
+                    pair, spin_shells[pair], spin_factor / weights[position]
+                )
     else:
         # LTS version format (original code)
         if gamma_only:
@@ -1627,6 +1842,13 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
                     atom_ranges[pair[1]],
                     product=population_up,
                 )
+                shells_up = _mayer_order_shells(
+                    dm_up,
+                    overlap,
+                    atom_shells[pair[0]],
+                    atom_shells[pair[1]],
+                    product=population_up,
+                )
                 if population_down is not None:
                     value = 2.0 * (
                         value
@@ -1638,7 +1860,20 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
                             product=population_down,
                         )
                     )
+                    shells = _combine_shell_orders(
+                        shells_up,
+                        _mayer_order_shells(
+                            dm_down,
+                            overlap,
+                            atom_shells[pair[0]],
+                            atom_shells[pair[1]],
+                            product=population_down,
+                        ),
+                    )
+                else:
+                    shells = shells_up
                 orders[pair] = value
+                shell_orders[pair] = dict(shells)
         else:
             wfc_paths = sorted(output.glob("WFC_NAO_K*.txt"), key=lambda path: int(re.search(r"K(\d+)", path.name).group(1)))
             if not wfc_paths:
@@ -1650,8 +1885,13 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
             spin_paired = nspin == 2 and len(wfc_paths) == 2 * len(weights)
             matrices: dict[int, tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]] = {}
 
-            def kpoint_values(ik: int, pairs: Sequence[tuple[int, int]]) -> dict[tuple[int, int], float]:
-                """Return the spin-summed value of the pairs at one computed k-point."""
+            def kpoint_values(
+                ik: int, pairs: Sequence[tuple[int, int]]
+            ) -> tuple[
+                dict[tuple[int, int], float],
+                dict[tuple[int, int], dict[tuple[str, str], float]],
+            ]:
+                """Return the spin-summed value and shell split at one k-point."""
                 if ik not in matrices:
                     overlap_path = _required_file(output / f"data-{ik}-S", f"overlap matrix for k-point {ik + 1}")
                     overlap = read_overlap_matrix(overlap_path)
@@ -1672,12 +1912,20 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
                 population_up = up_dm @ overlap
                 population_down = down_dm @ overlap if down_dm is not None else None
                 values = {}
+                shells = {}
                 for pair in pairs:
                     value = _mayer_order(
                         up_dm,
                         overlap,
                         atom_ranges[pair[0]],
                         atom_ranges[pair[1]],
+                        product=population_up,
+                    )
+                    shells_up = _mayer_order_shells(
+                        up_dm,
+                        overlap,
+                        atom_shells[pair[0]],
+                        atom_shells[pair[1]],
                         product=population_up,
                     )
                     if population_down is not None:
@@ -1691,22 +1939,53 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
                                 product=population_down,
                             )
                         )
+                        pair_shells = _combine_shell_orders(
+                            shells_up,
+                            _mayer_order_shells(
+                                down_dm,
+                                overlap,
+                                atom_shells[pair[0]],
+                                atom_shells[pair[1]],
+                                product=population_down,
+                            ),
+                        )
+                    else:
+                        pair_shells = shells_up
                     values[pair] = value
-                return values
+                    shells[pair] = pair_shells
+                return values, shells
 
             if table.mesh:
                 # symmetry=1: rebuild the stars that ABACUS reduced away.
-                orders.update(
-                    _symmetry_expanded_orders(table, weights, kpoint_values, selected_pairs, structure)
+                expanded_values, expanded_shells = (
+                    _symmetry_expanded_orders_with_shells(
+                        table, weights, kpoint_values, selected_pairs, structure
+                    )
                 )
+                orders.update(expanded_values)
+                for pair, values in expanded_shells.items():
+                    shell_orders[pair] = dict(values)
             else:
                 for ik, weight in enumerate(weights):
-                    for pair, value in kpoint_values(ik, selected_pairs).items():
+                    values, shells = kpoint_values(ik, selected_pairs)
+                    for pair, value in values.items():
                         orders[pair] += value / weight
+                        add_shells(pair, shells[pair], 1.0 / weight)
 
     fractions = structure.coords_direct
     lattice = periodic_lattice(structure)
-    result_pairs = tuple(MayerPair(first + 1, second + 1, str(structure.atoms[first].element or structure.atoms[first].label), str(structure.atoms[second].element or structure.atoms[second].label), float(_minimum_distance(lattice, fractions[first], fractions[second])), float(orders[(first, second)])) for first, second in selected_pairs)
+    result_pairs = tuple(
+        MayerPair(
+            first + 1,
+            second + 1,
+            str(structure.atoms[first].element or structure.atoms[first].label),
+            str(structure.atoms[second].element or structure.atoms[second].label),
+            float(_minimum_distance(lattice, fractions[first], fractions[second])),
+            float(orders[(first, second)]),
+            _sorted_shell_orders(shell_orders[(first, second)]),
+        )
+        for first, second in selected_pairs
+    )
     return MayerAnalysis(str(job_path), calculation, nspin, gamma_only, basis_functions, str(output), tuple(dict.fromkeys(data_files)), result_pairs)
 
 
