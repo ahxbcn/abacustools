@@ -1,4 +1,5 @@
 """Module for managing DOS and PDOS data from ABACUS calculations."""
+from __future__ import annotations
 
 import numpy as np
 from typing import Dict, List, Optional, Tuple, Union
@@ -71,7 +72,8 @@ class DOSData:
         else:
             self.energy = energy
         
-        assert energy.shape[0] == dosdata.shape[0]
+        if energy.shape[0] != dosdata.shape[0]:
+            raise ValueError("energy and dosdata must have the same number of energy points")
 
         self.dosdata = dosdata
     
@@ -137,7 +139,8 @@ class PDOSData:
             self.energy = np.array(energy)
 
         for orbital_pdos in pdosdata:
-            assert energy.shape[0] == orbital_pdos['data'].shape[0] # Length of energy and PDOS data of one orbital must match
+            if energy.shape[0] != orbital_pdos['data'].shape[0]:  # one orbital must cover the energy grid
+                raise ValueError("energy and PDOS data of one orbital must have the same number of energy points")
             
         self.projected_dos = pdosdata
 
@@ -393,7 +396,8 @@ class PDOSData:
     def get_atom_species(self, atom_index: int) -> str:
         # Get the species for a specific atom in the PDOS data
         species = list(set([orb['species'] for orb in self.projected_dos if orb['atom_index'] == atom_index]))
-        assert len(species) == 1
+        if len(species) != 1:
+            raise ValueError(f"atom {atom_index} is not associated with a single species: {species}")
         return species[0]
 
     def get_atom_shell(self, atom_index: int) -> List[int]:
@@ -615,7 +619,8 @@ def plot_dos_pdos(pdosdatas: List[List[np.ndarray]],
         axes[idx].set_visible(False)
     
     for idx, pdosdata in enumerate(pdosdatas):
-        assert len(pdosdata) == len(labels[idx]) # Check if number of PDOS data matches number of labels
+        if len(pdosdata) != len(labels[idx]):
+            raise ValueError("the number of PDOS data blocks must match the number of labels")
         ax = axes[idx]
 
         if_spin_polarized = False
@@ -674,7 +679,8 @@ def write_dos_pdos(pdosdatas: List[np.ndarray], energy: np.ndarray, labels: List
         - labels (List[str]): Labels for each PDOS data. If nspin=2. up and down PDOS will be written in different columns.
         - filename (str): Name of the file to write the data to.
     """
-    assert len(pdosdatas) == len(labels)
+    if len(pdosdatas) != len(labels):
+        raise ValueError("the number of PDOS data blocks must match the number of labels")
     
     min_width = 12
 

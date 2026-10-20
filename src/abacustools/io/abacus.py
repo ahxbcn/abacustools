@@ -1,3 +1,4 @@
+from __future__ import annotations
 from functools import lru_cache
 from typing import Dict, Any, List
 import os
@@ -164,7 +165,8 @@ def kspacing2kpt(kspacing, cell):
     elif not isinstance(kspacing, list):
         raise TypeError("kspacing must be float or list")
     
-    assert len(kspacing) == 3, "kspacing must be 3-dim"
+    if len(kspacing) != 3:
+        raise ValueError("kspacing must be 3-dim")
     kpt = []
     V = abs(np.linalg.det(np.array(cell)))
     for i in range(3):

@@ -1,4 +1,5 @@
 """Tests for ABACUS LCAO COHP/COOP postprocessing."""
+from __future__ import annotations
 
 from argparse import Namespace
 from pathlib import Path

@@ -261,7 +261,8 @@ def _volume_tasks(manifest: Dict[str, Any]) -> Tuple[str, str, str]:
         raise RuntimeError(
             "the Grueneisen workflow manifest does not name three volumes"
         )
-    return tuple(str(name) for name in tasks)  # type: ignore[return-value]
+    names = [str(name) for name in tasks]
+    return names[0], names[1], names[2]
 
 
 def _load_volumes(

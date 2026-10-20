@@ -1,4 +1,5 @@
 """The ``abacustools postprocess`` command family."""
+from __future__ import annotations
 
 from . import bader as bader_command
 from . import band as band_command

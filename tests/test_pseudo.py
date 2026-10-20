@@ -1,4 +1,5 @@
 """Tests for UPF 1.x and UPF 2 parsing."""
+from __future__ import annotations
 
 from pathlib import Path
 from tempfile import TemporaryDirectory

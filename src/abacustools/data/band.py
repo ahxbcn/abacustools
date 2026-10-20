@@ -1,3 +1,4 @@
+from __future__ import annotations
 import os
 import re
 import warnings
@@ -440,9 +441,10 @@ class BandData:
             shifted_kpath_coord (np.ndarray): A 1D np.ndarray containing distance of each kpoint to starting point of the branch.
         """
         if isinstance(branch, List):
-            assert len(branch) == 2
-            for i in branch:
-                assert isinstance(i, str)
+            if len(branch) != 2:
+                raise ValueError(f"branch must be exactly two labels, got {branch}")
+            if not all(isinstance(i, str) for i in branch):
+                raise TypeError(f"branch labels must be strings, got {branch}")
 
         start, end = branch
         for ikpath, kpath in enumerate(self.kpaths):
@@ -927,7 +929,8 @@ class BandData:
         band_seg_data = band_data[0, :, band_index]  # For nspin=1 currently
         if band_seg_data is None:
             raise ValueError(f"Branch {direction_labels} not found in band structure")
-        assert band_seg_coord is not None
+        if band_seg_coord is None:
+            raise ValueError(f"branch {direction_labels} has no k-path coordinates")
 
         if len(band_seg_data) < num_fit_points:
             raise ValueError(f"Not enough valid points for band {band_index}")
@@ -1189,9 +1192,11 @@ class ProjBandData(BandData):
 
         for pbd in proj_band_data:
             nspin, nkpts, nbands = pbd["data"].shape
-            assert nspin == self.nspin
-            assert nkpts == self.nkpts
-            assert nbands == self.nbands
+            if (nspin, nkpts, nbands) != (self.nspin, self.nkpts, self.nbands):
+                raise ValueError(
+                    "projected band data shape must match the band data: "
+                    f"{pbd['data'].shape} != {self.band_data.shape}"
+                )
 
         self.proj_band_data = proj_band_data
         self._build_label_mapping()
@@ -1684,7 +1689,8 @@ class ProjBandData(BandData):
                 ]
             )
         )
-        assert len(species) == 1
+        if len(species) != 1:
+            raise ValueError(f"atom {atom_index} is not associated with a single species: {species}")
         return species[0]
 
     def get_atom_shell(self, atom_index: int) -> List[int]:
@@ -2030,14 +2036,13 @@ def plot_multiple_bands(
                 plot_band_datas[i]["branches"],
                 plot_band_datas[j]["branches"],
             )
-            assert len(branches_i) == len(branches_j)
-            for ib in range(len(branches_i)):
-                assert branches_i[ib][0] == branches_j[ib][0]
-                assert branches_i[ib][1] == branches_j[ib][1]
+            if branches_i != branches_j:
+                raise ValueError("the band structures being compared must have the same branches")
 
     show_labels = mat_names is not None
     if show_labels:
-        assert len(plot_band_datas) == len(mat_names)
+        if len(plot_band_datas) != len(mat_names):
+            raise ValueError("the number of band structures must match the number of material names")
 
     # Determine if single material with spin polarization.
     # Use to provide different color of spin up and spin down bands in ABACUS-agent-tools
