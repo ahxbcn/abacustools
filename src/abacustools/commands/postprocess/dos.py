@@ -43,7 +43,7 @@ def _register_arguments(parser: argparse.ArgumentParser) -> None:
         "--job",
         required=True,
         type=_job_directory,
-        help="ABACUS job directory containing DOS*_smearing.dat.",
+        help="ABACUS job directory containing DOS*_smearing.dat or doss*_nao.txt.",
     )
     parser.add_argument(
         "-o",

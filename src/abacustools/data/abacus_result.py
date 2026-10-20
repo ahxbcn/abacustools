@@ -7,7 +7,7 @@ import xml.etree.ElementTree as ET
 from functools import lru_cache
 from io import StringIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -73,6 +73,15 @@ _STRESS_COMPONENTS = (
     ("xy", "yy", "yz"),
     ("xz", "yz", "zz"),
 )
+# Develop-branch output files: the LTS ``DOS<n>_smearing.dat`` files are
+# renamed to ``doss<spin>[g<step>]_nao.txt`` (LCAO) or ``doss<spin>.txt`` /
+# ``dos.txt`` (PW), and the XML ``PDOS`` file is replaced by text files
+# ``pdoss<spin>[g<step>]_<basis>.txt``. ``g<step>`` appears when the writer
+# names one file per ionic step; without it all ionic steps are appended to
+# one file as repeated blocks.
+_DOS_NAO_FILE_RE = re.compile(r"^dos(?:s(\d+))?(?:g(\d+))?(?:_nao)?\.txt$", re.IGNORECASE)
+_PDOS_NAO_FILE_RE = re.compile(r"^pdoss(\d+)(?:g(\d+))?_\w+\.txt$", re.IGNORECASE)
+_IONIC_STEP_HEADER_RE = re.compile(r"^\s*(\d+)\s*#\s*ionic step", re.IGNORECASE)
 
 
 def _as_float(value: str) -> float:
@@ -833,18 +842,37 @@ def _output_directory(job_path: Path, inputs: Dict[str, Any]) -> Path:
 
 
 def read_dos_from_job(job_dir: Union[str, Path]) -> Dict[str, Any]:
-    """Read total DOS data from an ABACUS job output."""
+    """Read total DOS data from an ABACUS job output.
+
+    Reads the ``DOS<n>_smearing.dat`` files of the LTS branches and, when
+    they are absent, the ``doss<spin>[g<step>][_nao].txt`` files of the
+    develop branch. For a geometry run that writes one file per ionic
+    step, the data of the last ionic step is returned.
+
+    Args:
+        job_dir: ABACUS job directory containing ``INPUT`` and ``OUT.*``.
+
+    Returns:
+        The shared energy grid in eV and the DOS of every spin channel as
+        columns of one array, shape ``(nenergy, nspin)``.
+    """
     job_path = Path(job_dir)
     inputs = _job_input(job_path)
     output_path = _output_directory(job_path, inputs)
     dos_files = sorted(output_path.glob("DOS*_smearing.dat"))
     if not dos_files:
-        raise FileNotFoundError(f"Could not find DOS files in {output_path}")
+        return _read_dos_nao_files(output_path)
+    return _read_dos_smearing_files(dos_files)
 
+
+def _read_dos_grid(
+    files: List[Path], read_one: Callable[[Path], np.ndarray]
+) -> Dict[str, Any]:
+    """Stack the ``dos`` column of every spin-channel file on one grid."""
     energy = None
     dos_channels = []
-    for dos_file in dos_files:
-        data = np.loadtxt(dos_file, ndmin=2)
+    for dos_file in files:
+        data = read_one(dos_file)
         if data.shape[1] < 2:
             raise ValueError(f"DOS file has fewer than two columns: {dos_file}")
         file_energy = data[:, 0]
@@ -858,6 +886,66 @@ def read_dos_from_job(job_dir: Union[str, Path]) -> Dict[str, Any]:
         "energy": energy,
         "data": np.column_stack(dos_channels),
     }
+
+
+def _read_dos_smearing_files(dos_files: List[Path]) -> Dict[str, Any]:
+    """Read the LTS-branch ``DOS<n>_smearing.dat`` files."""
+    return _read_dos_grid(dos_files, lambda dos_file: np.loadtxt(dos_file, ndmin=2))
+
+
+def _select_latest_spin_files(output_path: Path, pattern: re.Pattern) -> Dict[int, Path]:
+    """Pick the newest ionic-step file of every spin channel."""
+    spin_files: Dict[int, tuple[int, Path]] = {}
+    for path in sorted(output_path.iterdir()):
+        match = pattern.match(path.name)
+        if match is None or not path.is_file():
+            continue
+        spin = int(match.group(1) or 1)
+        step = int(match.group(2) or 0)
+        if spin not in spin_files or step >= spin_files[spin][0]:
+            spin_files[spin] = (step, path)
+    return spin_files
+
+
+def _read_dos_nao_file(dos_file: Path) -> np.ndarray:
+    """Read the last ionic-step block of one develop-branch DOS file.
+
+    A file starts with ``<istep> # ionic step``, a point count and a
+    column header, and holds the rows ``(energy, dos, dos_int,
+    dos_smear, dos_smear_int)``; a run with ``out_app_flag 1`` appends
+    one such block per ionic step, so the last block is the latest one.
+    """
+    blocks: Dict[int, List[List[float]]] = {}
+    step: Optional[int] = None
+    for line in dos_file.read_text(encoding="utf-8", errors="replace").splitlines():
+        step_match = _IONIC_STEP_HEADER_RE.match(line)
+        if step_match is not None:
+            step = int(step_match.group(1))
+            continue
+        if step is None or line.lstrip().startswith("#"):
+            continue
+        try:
+            values = [_as_float(field) for field in line.split()]
+        except ValueError:
+            continue
+        blocks.setdefault(step, []).append(values)
+    if not blocks:
+        raise ValueError(f"DOS file has no data rows: {dos_file}")
+    data = np.asarray(blocks[max(blocks)], dtype=float)
+    if data.ndim != 2 or data.shape[1] < 2:
+        raise ValueError(f"DOS file has fewer than two columns: {dos_file}")
+    return data
+
+
+def _read_dos_nao_files(output_path: Path) -> Dict[str, Any]:
+    """Read the develop-branch ``doss<spin>...txt`` total-DOS files."""
+    spin_files = _select_latest_spin_files(output_path, _DOS_NAO_FILE_RE)
+    if not spin_files:
+        raise FileNotFoundError(f"Could not find DOS files in {output_path}")
+    return _read_dos_grid(
+        [spin_files[spin][1] for spin in sorted(spin_files)],
+        _read_dos_nao_file,
+    )
 
 
 def read_orbital_xml(xml_file: Union[str, Path]) -> Dict[str, Any]:
@@ -895,24 +983,154 @@ def read_orbital_xml(xml_file: Union[str, Path]) -> Dict[str, Any]:
     return {"energy": energy, "orbitals": orbitals}
 
 
+def _pdos_nao_channels(ncolumns: int) -> List[Tuple[int, int]]:
+    """Return the ``(l, m)`` of every PDOS text column of one atom.
+
+    ABACUS writes one column per ``(l, m)`` of the basis, shells in the
+    order s, p, d, f and ``m`` as 0, +1, -1, +2, -2 within a shell, each
+    column summed over the zeta radii; ``m`` therefore follows the same
+    convention as the ``m`` attribute of the XML PDOS file.
+    """
+    channels: List[Tuple[int, int]] = []
+    remaining = ncolumns
+    shell = 0
+    while remaining > 0:
+        width = 2 * shell + 1
+        if remaining < width:
+            raise ValueError(
+                f"PDOS column count {ncolumns} does not fill complete shells"
+            )
+        channels.extend((shell, m) for m in range(width))
+        remaining -= width
+        shell += 1
+    return channels
+
+
+def _read_pdos_nao_file(pdos_file: Path) -> Dict[str, Any]:
+    """Read one develop-branch ``pdoss<spin>...txt`` projected-DOS file.
+
+    After three comment lines, the file holds one row
+    ``(energy, atom, species, pdos columns...)`` per atom and energy
+    point; every atom occupies ``npoints`` consecutive rows and carries
+    its own number of PDOS columns.
+    """
+    energy: List[float] = []
+    atom_order: List[int] = []
+    species_by_atom: Dict[int, str] = {}
+    values_by_atom: Dict[int, List[List[float]]] = {}
+    for line in pdos_file.read_text(encoding="utf-8", errors="replace").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        fields = stripped.split()
+        if len(fields) < 4:
+            continue
+        try:
+            row_energy = _as_float(fields[0])
+            atom_index = int(fields[1])
+            values = [_as_float(field) for field in fields[3:]]
+        except ValueError:
+            continue
+        if atom_index not in values_by_atom:
+            values_by_atom[atom_index] = []
+            species_by_atom[atom_index] = fields[2]
+            atom_order.append(atom_index)
+        if atom_index == atom_order[0]:
+            energy.append(row_energy)
+        values_by_atom[atom_index].append(values)
+    if not atom_order:
+        raise ValueError(f"PDOS file has no data rows: {pdos_file}")
+    return {
+        "energy": np.asarray(energy, dtype=float),
+        "atom_order": atom_order,
+        "species": species_by_atom,
+        "values": {
+            atom_index: np.asarray(rows, dtype=float)
+            for atom_index, rows in values_by_atom.items()
+        },
+    }
+
+
+def _read_pdos_nao_files(output_path: Path) -> Dict[str, Any]:
+    """Read the develop-branch ``pdoss<spin>...txt`` projected-DOS files.
+
+    The ``nspin 2`` spin channels are written as two files; their columns
+    are combined into one up/down column pair per ``(l, m)`` orbital, as
+    the XML PDOS file of the LTS branches reports it.
+    """
+    spin_files = _select_latest_spin_files(output_path, _PDOS_NAO_FILE_RE)
+    if not spin_files:
+        raise FileNotFoundError(f"Could not find PDOS files in {output_path}")
+
+    parsed = {spin: _read_pdos_nao_file(spin_files[spin][1]) for spin in spin_files}
+    first = parsed[min(parsed)]
+    for spin in sorted(parsed)[1:]:
+        other = parsed[spin]
+        other_file = spin_files[spin][1]
+        if other["atom_order"] != first["atom_order"]:
+            raise ValueError(f"PDOS spin files list different atoms: {other_file}")
+        if other["energy"].shape != first["energy"].shape or not np.allclose(
+            other["energy"], first["energy"]
+        ):
+            raise ValueError(f"PDOS energy grids do not match: {other_file}")
+
+    orbitals: List[Dict[str, Any]] = []
+    for atom_index in first["atom_order"]:
+        atom_columns = [parsed[spin]["values"][atom_index] for spin in sorted(parsed)]
+        species = first["species"][atom_index]
+        for column, (l, m) in enumerate(_pdos_nao_channels(atom_columns[0].shape[1])):
+            orbitals.append(
+                {
+                    "index": len(orbitals) + 1,
+                    "atom_index": atom_index,
+                    "species": species,
+                    "l": l,
+                    "m": m,
+                    "z": 1,  # the text columns are summed over the zeta radii
+                    "data": np.stack(
+                        [column_data[:, column] for column_data in atom_columns],
+                        axis=1,
+                    ),
+                }
+            )
+    return {"energy": first["energy"], "orbitals": orbitals}
+
+
 def read_pdos_from_job(job_dir: Union[str, Path]) -> Dict[str, Any]:
-    """Read projected DOS data from an ABACUS PDOS XML file."""
+    """Read projected DOS data from an ABACUS job output.
+
+    Reads the XML ``PDOS`` file of the LTS branches and, when it is
+    absent, the ``pdoss<spin>[g<step>]_<basis>.txt`` text files of the
+    develop branch; for a geometry run that writes one file per ionic
+    step, the data of the last ionic step is returned.
+
+    Args:
+        job_dir: ABACUS job directory containing ``INPUT`` and ``OUT.*``.
+
+    Returns:
+        The shared energy grid in eV and one record per ``(l, m)`` orbital
+        holding its atom, species and the PDOS of every spin channel.
+    """
     job_path = Path(job_dir)
     inputs = _job_input(job_path)
     output_path = _output_directory(job_path, inputs)
     pdos_file = output_path / "PDOS"
-    if not pdos_file.is_file():
-        raise FileNotFoundError(f"Could not find PDOS file: {pdos_file}")
+    if pdos_file.is_file():
+        result = read_orbital_xml(pdos_file)
+    else:
+        result = _read_pdos_nao_files(output_path)
 
-    result = read_orbital_xml(pdos_file)
     energy = result["energy"]
     if energy is None:
-        raise ValueError(f"PDOS file has no energy grid: {pdos_file}")
+        raise ValueError("PDOS data has no energy grid")
 
     for orbital in result["orbitals"]:
         data = orbital["data"]
         if data.shape[0] != energy.shape[0]:
-            raise ValueError(f"PDOS energy and data lengths do not match: {pdos_file}")
+            raise ValueError(
+                f"PDOS energy and data lengths do not match for orbital "
+                f"{orbital.get('index')} of job {job_path}"
+            )
 
     return result
 
