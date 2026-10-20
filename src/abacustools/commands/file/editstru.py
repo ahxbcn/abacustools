@@ -30,6 +30,7 @@ from abacustools.data.structure import (
 )
 from abacustools.data.symmetry import crystallographic_symmetry
 from abacustools.io.stru import AbacusSTRU
+from abacustools.core.render import cli_output
 
 
 def _structure_file(value: str) -> Path:
@@ -754,13 +755,13 @@ def _run_action(args: argparse.Namespace) -> int:
                 "num_slabs": len(slabs),
                 "output_files": written_files,
             }
-            print(json.dumps(payload, indent=2, sort_keys=True))
+            cli_output(json.dumps(payload, indent=2, sort_keys=True))
         else:
-            print(f"  all-slabs: {args.filename}")
-            print(f"  Miller indices: {tuple(args.miller)}")
-            print(f"  Generated {len(slabs)} slab(s):")
+            cli_output(f"  all-slabs: {args.filename}")
+            cli_output(f"  Miller indices: {tuple(args.miller)}")
+            cli_output(f"  Generated {len(slabs)} slab(s):")
             for i, f in enumerate(written_files):
-                print(f"    [{i}] {f}")
+                cli_output(f"    [{i}] {f}")
         return 0
     
     substitution = None
@@ -809,37 +810,37 @@ def _run_action(args: argparse.Namespace) -> int:
         payload["max_displacement_angstrom"] = _max_displacement(structure, edited)
         payload["cell_idealized"] = not args.keep_cell
     if args.json:
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        cli_output(json.dumps(payload, indent=2, sort_keys=True))
         return 0
-    print(f"  {args.action}: {args.filename} -> {output}")
-    print(f"  atoms: {payload['atoms_before']} -> {payload['atoms_after']}")
-    print(f"  formula: {payload['formula']}")
+    cli_output(f"  {args.action}: {args.filename} -> {output}")
+    cli_output(f"  atoms: {payload['atoms_before']} -> {payload['atoms_after']}")
+    cli_output(f"  formula: {payload['formula']}")
     if args.action in {"direct", "cartesian"}:
-        print(f"  coordinates: {args.action}")
+        cli_output(f"  coordinates: {args.action}")
     if substitution is not None:
         resources, substituted = substitution
         atoms = ", ".join(str(index + 1) for index in substituted)
-        print(f"  dopant: {resources.element} for {len(substituted)} atom(s): {atoms}")
-        print(f"  pseudopotential: {resources.pp or '-'}")
-        print(f"    why: {resources.pp_reason}")
-        print(f"  orbital: {resources.orb or '-'}")
-        print(f"    why: {resources.orb_reason}")
+        cli_output(f"  dopant: {resources.element} for {len(substituted)} atom(s): {atoms}")
+        cli_output(f"  pseudopotential: {resources.pp or '-'}")
+        cli_output(f"    why: {resources.pp_reason}")
+        cli_output(f"  orbital: {resources.orb or '-'}")
+        cli_output(f"    why: {resources.orb_reason}")
     if args.action == "symmetrize":
         number = payload["space_group_number"]
         symbol = payload["space_group"] or "unavailable"
         label = symbol if number is None else f"{symbol} (No. {number})"
-        print(f"  symmetry: {label}")
-        print(f"  max displacement: {payload['max_displacement_angstrom']:.6g} Angstrom")
+        cli_output(f"  symmetry: {label}")
+        cli_output(f"  max displacement: {payload['max_displacement_angstrom']:.6g} Angstrom")
         if not payload["cell_idealized"]:
-            print("  lattice: kept")
+            cli_output("  lattice: kept")
         if number == 1:
-            print(
+            cli_output(
                 "  note: no symmetry beyond P1 was found; "
                 "raise --symprec if the file should be more symmetric"
             )
     if payload["fixed_atoms"]:
-        print(f"  fixed atoms: {payload['fixed_atoms']} of {payload['atoms_after']}")
-    print(
+        cli_output(f"  fixed atoms: {payload['fixed_atoms']} of {payload['atoms_after']}")
+    cli_output(
         "  cell: "
         + " ".join(f"{value:.6f}" for value in payload["cell_lengths"])
         + " Angstrom"

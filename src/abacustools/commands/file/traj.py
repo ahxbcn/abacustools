@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from abacustools.core.render import cli_output
 
 
 def _register_arguments(parser: argparse.ArgumentParser) -> None:
@@ -35,15 +36,15 @@ def run(args: argparse.Namespace) -> int:
     from ase.io import read, write
 
     if not Path(args.input).is_file():
-        print(f"Trajectory conversion failed: {args.input} does not exist.")
+        cli_output(f"Trajectory conversion failed: {args.input} does not exist.")
         return 1
     if isinstance(args.stride, bool) or args.stride < 1:
-        print("Trajectory conversion failed: --stride must be a positive integer.")
+        cli_output("Trajectory conversion failed: --stride must be a positive integer.")
         return 1
 
     frames = read(str(args.input), index=":", format=args.input_format)
     if not frames:
-        print(f"Trajectory conversion failed: no frame in {args.input}.")
+        cli_output(f"Trajectory conversion failed: no frame in {args.input}.")
         return 1
     selected = frames[:: args.stride]
     output = Path(args.output)
@@ -59,11 +60,11 @@ def run(args: argparse.Namespace) -> int:
         "output_format": args.output_format or output.suffix.lstrip("."),
     }
     if args.json:
-        print(json.dumps(report, indent=2))
+        cli_output(json.dumps(report, indent=2))
         return 0
-    print(f"  frames: {report['frames']} of {report['read_frames']}")
-    print(f"  formats: {report['input_format']} -> {report['output_format']}")
-    print(f"  trajectory: {output}")
+    cli_output(f"  frames: {report['frames']} of {report['read_frames']}")
+    cli_output(f"  formats: {report['input_format']} -> {report['output_format']}")
+    cli_output(f"  trajectory: {output}")
     return 0
 
 

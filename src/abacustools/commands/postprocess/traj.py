@@ -14,6 +14,7 @@ from abacustools.data.md import (
     write_trajectory,
 )
 from abacustools.data.versions import default_version
+from abacustools.core.render import cli_output
 
 
 def _job_directory(value: str) -> Path:
@@ -96,13 +97,13 @@ def run(args: argparse.Namespace) -> int:
             job, version=args.version, with_log=not args.no_energy
         )
     except (ValueError, FileNotFoundError) as error:
-        print(f"Relaxation trajectory failed: {error}")
+        cli_output(f"Relaxation trajectory failed: {error}")
         return 1
     selected = select_frames(
         frames, first=args.first, last=args.last, stride=args.stride
     )
     if not selected:
-        print("No frame matches the requested step range.")
+        cli_output("No frame matches the requested step range.")
         return 1
 
     output = Path(args.output)
@@ -112,11 +113,11 @@ def run(args: argparse.Namespace) -> int:
     report = _report(selected, output, args.format)
 
     if args.json:
-        print(json.dumps(report, indent=2))
+        cli_output(json.dumps(report, indent=2))
         return 0
-    print(f"  job: {job}")
-    print(f"  frames: {report['frames']} of {len(frames)} relaxation steps")
-    print(f"  atoms: {report['atoms']}, steps {report['steps'][0]} to {report['steps'][1]}")
+    cli_output(f"  job: {job}")
+    cli_output(f"  frames: {report['frames']} of {len(frames)} relaxation steps")
+    cli_output(f"  atoms: {report['atoms']}, steps {report['steps'][0]} to {report['steps'][1]}")
     content = [
         name
         for name, present in (
@@ -127,8 +128,8 @@ def run(args: argparse.Namespace) -> int:
         )
         if present
     ]
-    print(f"  contents: {'positions, cell' + (', ' + ', '.join(content) if content else '')}")
-    print(f"  trajectory: {report['output']}")
+    cli_output(f"  contents: {'positions, cell' + (', ' + ', '.join(content) if content else '')}")
+    cli_output(f"  trajectory: {report['output']}")
     return 0
 
 

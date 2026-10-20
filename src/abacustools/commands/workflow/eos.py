@@ -21,6 +21,7 @@ from .common import (
     write_abacus_job,
     write_manifest,
 )
+from abacustools.core.render import cli_output
 
 
 def _volume_scales(start: float, end: float, step: float) -> list[float]:
@@ -117,10 +118,10 @@ def prepare(args: argparse.Namespace) -> int:
     names = [_task_name(scale) for scale in scales]
     clear_generated_jobs(job, names, override=args.override)
 
-    print(f"  job: {job}")
-    print(f"  equilibrium volume: {equilibrium_volume:.6f} Ang^3")
-    print(f"  calculation: {eos_inputs['calculation']}")
-    print(f"  volume scales: {', '.join(f'{scale:.3f}' for scale in scales)}")
+    cli_output(f"  job: {job}")
+    cli_output(f"  equilibrium volume: {equilibrium_volume:.6f} Ang^3")
+    cli_output(f"  calculation: {eos_inputs['calculation']}")
+    cli_output(f"  volume scales: {', '.join(f'{scale:.3f}' for scale in scales)}")
 
     points = []
     for scale, name in zip(scales, names):
@@ -135,7 +136,7 @@ def prepare(args: argparse.Namespace) -> int:
             kpoint=kpoint_file,
         )
         points.append({"name": name, "scale": scale, "volume": equilibrium_volume * scale})
-        print(f"  prepared {name} (V = {equilibrium_volume * scale:.6f} Ang^3)")
+        cli_output(f"  prepared {name} (V = {equilibrium_volume * scale:.6f} Ang^3)")
 
     write_manifest(
         job,
@@ -211,7 +212,7 @@ def postprocess(args: argparse.Namespace) -> int:
         collected.append(
             {"name": name, "scale": point.get("scale"), "volume": volume, "energy": energy}
         )
-        print(f"  {name}: V = {volume:.6f} Ang^3, E = {energy:.8f} eV")
+        cli_output(f"  {name}: V = {volume:.6f} Ang^3, E = {energy:.8f} eV")
 
     fit = fit_birch_murnaghan(volumes, energies)
 
@@ -228,13 +229,13 @@ def postprocess(args: argparse.Namespace) -> int:
     plot.parent.mkdir(parents=True, exist_ok=True)
     _plot(fit, plot)
 
-    print(f"  equilibrium volume: {fit.volume:.6f} Ang^3")
-    print(f"  equilibrium energy: {fit.energy:.8f} eV")
-    print(f"  bulk modulus: {fit.bulk_modulus:.4f} GPa")
-    print(f"  bulk modulus derivative: {fit.bulk_modulus_derivative:.4f}")
-    print(f"  residual: {fit.residual:.3e} eV")
-    print(f"  results: {output}")
-    print(f"  plot: {plot}")
+    cli_output(f"  equilibrium volume: {fit.volume:.6f} Ang^3")
+    cli_output(f"  equilibrium energy: {fit.energy:.8f} eV")
+    cli_output(f"  bulk modulus: {fit.bulk_modulus:.4f} GPa")
+    cli_output(f"  bulk modulus derivative: {fit.bulk_modulus_derivative:.4f}")
+    cli_output(f"  residual: {fit.residual:.3e} eV")
+    cli_output(f"  results: {output}")
+    cli_output(f"  plot: {plot}")
     return 0
 
 

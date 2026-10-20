@@ -18,6 +18,7 @@ from abacustools.data.abacus_result import (
     read_scf_history,
 )
 from abacustools.io.stru import AbacusSTRU, periodic_lattice
+from abacustools.core.render import cli_output
 
 
 ENERGY_UNIT = "eV"
@@ -220,7 +221,7 @@ def _print_table(header: list[str], rows: list[list[str]]) -> None:
         for index, cell in enumerate(row):
             widths[index] = max(widths[index], len(cell))
     for line in [header, *rows]:
-        print("  ".join(cell.rjust(width) for cell, width in zip(line, widths)))
+        cli_output("  ".join(cell.rjust(width) for cell, width in zip(line, widths)))
 
 
 def _convergence_criteria(inputs: dict[str, Any], log: Optional[Path], task: str) -> dict[str, Any]:
@@ -351,33 +352,33 @@ def _payload(
 
 
 def _print_header(payload: dict[str, Any]) -> None:
-    print(f"job: {payload['job']}")
-    print(f"state: {payload['state']}")
+    cli_output(f"job: {payload['job']}")
+    cli_output(f"state: {payload['state']}")
     if payload["log"]:
-        print(f"log: {payload['log']}")
-    print(f"calculation: {payload['task']}")
+        cli_output(f"log: {payload['log']}")
+    cli_output(f"calculation: {payload['task']}")
 
 
 def _print_criteria(criteria: dict[str, Any]) -> None:
-    print("convergence criteria:")
+    cli_output("convergence criteria:")
     if not criteria:
-        print("  -")
+        cli_output("  -")
         return
     if "force_thr_ev" in criteria:
-        print(f"  force_thr_ev: {_format_metric(criteria['force_thr_ev'])} {FORCE_UNIT}")
+        cli_output(f"  force_thr_ev: {_format_metric(criteria['force_thr_ev'])} {FORCE_UNIT}")
     if "stress_thr" in criteria:
-        print(f"  stress_thr: {_format_metric(criteria['stress_thr'])} {STRESS_UNIT}")
+        cli_output(f"  stress_thr: {_format_metric(criteria['stress_thr'])} {STRESS_UNIT}")
     for key in ("relax_method", "relax_nmax", "relax_cg_thr"):
         if key in criteria:
-            print(f"  {key}: {criteria[key]}")
+            cli_output(f"  {key}: {criteria[key]}")
 
 
 def _print_md_settings(settings: dict[str, Any]) -> None:
     if "md_type" in settings:
-        print(f"md_type: {settings['md_type']}")
+        cli_output(f"md_type: {settings['md_type']}")
     for key in ("md_nstep", "md_dt", "md_tfirst", "md_tlast", "md_pfirst", "md_plast"):
         if key in settings:
-            print(f"{key}: {settings[key]}")
+            cli_output(f"{key}: {settings[key]}")
 
 
 def _print_scf_steps(history: list[dict[str, Any]]) -> None:
@@ -461,7 +462,7 @@ def _print_report(
     """Print one monitoring update."""
     task = payload["task"]
     if task == "scf" and not scf_steps:
-        print(plain_status)
+        cli_output(plain_status)
         return
     _print_header(payload)
     if task in {"relax", "cell-relax"}:
@@ -470,11 +471,11 @@ def _print_report(
         _print_md_settings(payload["md"])
     history = payload["steps"]
     if not history:
-        print("no steps found yet")
+        cli_output("no steps found yet")
         return
     steps, hidden = _tail_steps(history, tail)
     if hidden:
-        print(f"showing the last {len(steps)} of {len(history)} steps")
+        cli_output(f"showing the last {len(steps)} of {len(history)} steps")
     if task == "scf":
         _print_scf_steps(steps)
     elif task == "md":
@@ -850,7 +851,7 @@ def run(args: argparse.Namespace) -> int:
     if plot is not None:
         _write_plot(plot, task, history, payload.get("criteria", {}), moves)
     if args.json:
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        cli_output(json.dumps(payload, indent=2, sort_keys=True))
         return 1 if state in {"invalid", "failed"} else 0
 
     progress = " ".join(
@@ -865,8 +866,8 @@ def run(args: argparse.Namespace) -> int:
         plain_status=f"{status.state}: {progress}".rstrip(),
     )
     if args.csv:
-        print(f"step history: {args.csv}")
+        cli_output(f"step history: {args.csv}")
     if plot is not None:
-        print(f"step history plot: {plot}")
+        cli_output(f"step history plot: {plot}")
 
     return 1 if state in {"invalid", "failed"} else 0

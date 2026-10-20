@@ -9,9 +9,7 @@ toolkit for DFT calculations with [ABACUS](https://abacus.deepmodeling.com/).
   script (`abacustools.main:main`). No compiled extensions.
 - Requires Python >= 3.9 (developed on 3.11).
 - Runtime dependencies: `numpy`, `rich`, `pymatgen`, `phonopy`, `seekpath`,
-  `matplotlib`, `ase`, `pydantic`, `spglib`. The config loader additionally
-  imports `PyYAML`; it is not declared in `pyproject.toml` yet and only comes
-  in transitively today — declare it when `pyproject.toml` is next touched.
+  `matplotlib`, `ase`, `pydantic`, `spglib`, `pyyaml` (the config loader).
 - Command families:
   - `abacustools file ...` — convert/inspect `INPUT`, `STRU`, `KPT`, structures.
   - `abacustools job ...` — prepare, check, validate, and monitor jobs.

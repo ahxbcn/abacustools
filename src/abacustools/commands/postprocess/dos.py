@@ -10,6 +10,7 @@ from typing import Any, Callable, List, Optional, Tuple, cast
 import numpy as np
 
 from abacustools.data.dos import DOSData, PDOSData, l_map, plot_dos_pdos, write_dos_pdos
+from abacustools.core.render import cli_output
 
 
 _PDOS_MODES = (
@@ -218,14 +219,14 @@ def _list_metadata(job: Path, args: argparse.Namespace) -> int:
         ),
     }
     if args.json:
-        print(json.dumps(metadata, indent=2, sort_keys=True))
+        cli_output(json.dumps(metadata, indent=2, sort_keys=True))
         return 0
 
-    print(f"Species: {', '.join(species)}")
+    cli_output(f"Species: {', '.join(species)}")
     for s in species:
         shells = ", ".join(l_map[shell] for shell in sorted(pdos.get_species_shell(s)))
-        print(f"  {s}: shells {shells}")
-    print(f"Atoms: {', '.join(str(index) for index in metadata['atoms'])}")
+        cli_output(f"  {s}: shells {shells}")
+    cli_output(f"Atoms: {', '.join(str(index) for index in metadata['atoms'])}")
     return 0
 
 
@@ -258,9 +259,9 @@ def _plot_combined(job: Path, args: argparse.Namespace) -> int:
     )
     write_dos_pdos(arrays, dos.energy, labels, dos.efermi is not None, str(data_output))
 
-    print(f"Processed {job}: total DOS and {len(species)} species PDOS")
-    print(f"Wrote combined DOS/PDOS plot: {output}")
-    print(f"Wrote combined DOS/PDOS data: {data_output}")
+    cli_output(f"Processed {job}: total DOS and {len(species)} species PDOS")
+    cli_output(f"Wrote combined DOS/PDOS plot: {output}")
+    cli_output(f"Wrote combined DOS/PDOS data: {data_output}")
     return 0
 
 
@@ -299,12 +300,12 @@ def run(args: argparse.Namespace) -> int:
         channels = len(pdos.projected_dos or [])
         energy = pdos.energy
 
-    print(
+    cli_output(
         f"Processed {job}: {len(energy)} energy points, "
         f"{channels} {'PDOS orbitals' if mode else 'DOS channels'}"
     )
-    print(f"Wrote DOS plot: {output}")
-    print(f"Wrote DOS data: {data_output}")
+    cli_output(f"Wrote DOS plot: {output}")
+    cli_output(f"Wrote DOS data: {data_output}")
     return 0
 
 

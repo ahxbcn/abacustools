@@ -17,6 +17,7 @@ import numpy as np
 
 from abacustools.core.constant import BOHR_TO_ANG
 from abacustools.data.kpt import mesh_from_job
+from abacustools.core.render import cli_output
 
 
 #: Berry phase logs of the three Cartesian directions, in the order ABACUS
@@ -175,7 +176,7 @@ def read_task_polarization(
     try:
         values = [read_berry_polarization(output / name) for name in logs]
     except (FileNotFoundError, OSError, ValueError) as error:
-        print(f"  warning: skipping incomplete BEC task {task}: {error}")
+        cli_output(f"  warning: skipping incomplete BEC task {task}: {error}")
         return None
     return {
         "p_vec": [item["p_vec"] for item in values],

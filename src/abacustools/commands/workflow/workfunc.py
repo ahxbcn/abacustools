@@ -23,6 +23,7 @@ from .common import (
     write_abacus_job,
     write_manifest,
 )
+from abacustools.core.render import cli_output
 
 
 _WORKFUNC_DIRECTORY = "workfunc_job"
@@ -126,7 +127,7 @@ def _largest_vacuum_direction(structure) -> tuple[str, float, float, float]:
     """Find the largest periodic gap and its two boundaries."""
     gap = largest_vacuum(structure)
     if gap["thickness"] < 4.0:
-        print(f"  warning: largest vacuum is only {gap['thickness']:.6f} Angstrom")
+        cli_output(f"  warning: largest vacuum is only {gap['thickness']:.6f} Angstrom")
     return gap["direction"], gap["thickness"], gap["top"], gap["bottom"]
 
 
@@ -136,11 +137,11 @@ def _choose_vacuum_direction(requested: str, detected: str, input_direction: str
         raise ValueError(f"invalid vacuum direction: {requested}")
     if requested != "auto":
         if requested != detected:
-            print(f"  warning: requested vacuum direction {requested} differs from detected {detected}")
+            cli_output(f"  warning: requested vacuum direction {requested} differs from detected {detected}")
         return requested
     if input_direction is not None:
         if input_direction != detected:
-            print(f"  warning: INPUT vacuum direction {input_direction} differs from detected {detected}")
+            cli_output(f"  warning: INPUT vacuum direction {input_direction} differs from detected {detected}")
         return input_direction
     return detected
 
@@ -247,11 +248,11 @@ def prepare(args: argparse.Namespace) -> int:
         dipole_corr=bool(args.dipole_corr),
         use_empty_atom=bool(args.use_empty_atom),
     )
-    print(f"  job: {job}")
-    print(f"  prepared: {job / _WORKFUNC_DIRECTORY}")
-    print(f"  vacuum direction: {direction} (detected: {detected})")
-    print(f"  vacuum size: {vacuum_size:.6f} Angstrom")
-    print(f"  dipole correction: {'on' if args.dipole_corr else 'off'}")
+    cli_output(f"  job: {job}")
+    cli_output(f"  prepared: {job / _WORKFUNC_DIRECTORY}")
+    cli_output(f"  vacuum direction: {direction} (detected: {detected})")
+    cli_output(f"  vacuum size: {vacuum_size:.6f} Angstrom")
+    cli_output(f"  dipole correction: {'on' if args.dipole_corr else 'off'}")
     return 0
 
 
@@ -480,14 +481,14 @@ def postprocess(args: argparse.Namespace) -> int:
         "plot": str(plot_path),
     }
     output.write_text(json.dumps(output_data, indent=2) + "\n", encoding="utf-8")
-    print(f"  job: {job}")
-    print(f"  vacuum direction: {direction}")
-    print(f"  fermi energy: {result['efermi']:.8f} eV")
+    cli_output(f"  job: {job}")
+    cli_output(f"  vacuum direction: {direction}")
+    cli_output(f"  fermi energy: {result['efermi']:.8f} eV")
     for index, item in enumerate(work_functions, start=1):
-        print(f"  work function {index}: {item['work_function']:.8f} eV")
-    print(f"  profile: {profile_path}")
-    print(f"  plot: {plot_path}")
-    print(f"  results: {output}")
+        cli_output(f"  work function {index}: {item['work_function']:.8f} eV")
+    cli_output(f"  profile: {profile_path}")
+    cli_output(f"  plot: {plot_path}")
+    cli_output(f"  results: {output}")
     return 0
 
 

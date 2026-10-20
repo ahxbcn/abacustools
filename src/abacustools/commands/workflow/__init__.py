@@ -1,4 +1,5 @@
 """The ``abacustools workflow`` command family."""
+from __future__ import annotations
 
 from . import band as band_workflow
 from . import bsse as bsse_workflow

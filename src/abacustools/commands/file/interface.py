@@ -14,6 +14,7 @@ from abacustools.data.interface import (
     interface_matches,
 )
 from abacustools.io.stru import AbacusSTRU
+from abacustools.core.render import cli_output
 
 
 def _structure_file(value: str) -> Path:
@@ -144,7 +145,7 @@ def _print_matches(
 ) -> None:
     """Print the lattice matches of two surfaces."""
     if as_json:
-        print(
+        cli_output(
             json.dumps(
                 {
                     "film": film_label,
@@ -157,50 +158,50 @@ def _print_matches(
         )
         return
 
-    print(f"  interface: {film_label} on {substrate_label}")
-    print(f"  matches: {len(candidates)}")
-    print("  index      area(Angstrom^2)  length strain      angle(deg)  cells")
+    cli_output(f"  interface: {film_label} on {substrate_label}")
+    cli_output(f"  matches: {len(candidates)}")
+    cli_output("  index      area(Angstrom^2)  length strain      angle(deg)  cells")
     for candidate in candidates:
         index, area, strain, angle, cells = _match_row(candidate)
-        print(f"  {index:>5}  {area:>17}  {strain:<18}{angle:>10}  {cells}")
+        cli_output(f"  {index:>5}  {area:>17}  {strain:<18}{angle:>10}  {cells}")
 
 
 def _print_result(payload: dict[str, Any]) -> None:
     """Print the report of a built interface."""
     candidate = payload
-    print(f"  interface: {payload['film']} on {payload['substrate']}")
-    print(
+    cli_output(f"  interface: {payload['film']} on {payload['substrate']}")
+    cli_output(
         f"  film: {payload['film_formula']} ({' '.join(map(str, payload['film_miller']))}), "
         f"{payload['film_thickness']:g} {'Angstrom' if payload['in_angstrom'] else 'layers'}"
     )
-    print(
+    cli_output(
         f"  substrate: {payload['substrate_formula']} "
         f"({' '.join(map(str, payload['substrate_miller']))}), "
         f"{payload['substrate_thickness']:g} {'Angstrom' if payload['in_angstrom'] else 'layers'}"
     )
     termination = "/".join(payload["termination"])
-    print(
+    cli_output(
         f"  termination: {payload['termination_index'] + 1} of {payload['terminations']}: "
         f"{termination}"
     )
     strain = " ".join(f"{value * 100:+.2f}%" for value in candidate["length_strain"])
-    print(
+    cli_output(
         f"  lattice match: #{candidate['selected_match'] + 1} of {candidate['matches']}, "
         f"area {candidate['match_area']:.2f} Angstrom^2, "
         f"length strain {strain}, angle mismatch {candidate['angle_mismatch_degree']:+.3f} deg"
     )
-    print(f"  gap: {candidate['gap']:g} Angstrom, vacuum: {candidate['vacuum']:g} Angstrom")
-    print(f"  atoms: {candidate['natoms']}")
+    cli_output(f"  gap: {candidate['gap']:g} Angstrom, vacuum: {candidate['vacuum']:g} Angstrom")
+    cli_output(f"  atoms: {candidate['natoms']}")
     lengths = " ".join(f"{value:.6f}" for value in candidate["cell_lengths"])
     angles = " ".join(f"{value:.3f}" for value in candidate["cell_angles"])
-    print(f"  cell: {lengths} Angstrom, angles {angles} deg")
-    print("  resources:")
+    cli_output(f"  cell: {lengths} Angstrom, angles {angles} deg")
+    cli_output("  resources:")
     for element, choice in candidate["resources"].items():
         files = " ".join(
             str(value) for value in (choice["pseudopotential"], choice["orbital"]) if value
         )
-        print(f"    {element}: {files or '-'} ({choice['reason']})")
-    print(f"  output: {candidate['output']}")
+        cli_output(f"    {element}: {files or '-'} ({choice['reason']})")
+    cli_output(f"  output: {candidate['output']}")
 
 
 def run(args: argparse.Namespace) -> int:
@@ -287,7 +288,7 @@ def run(args: argparse.Namespace) -> int:
         "output": str(output),
     }
     if args.json:
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        cli_output(json.dumps(payload, indent=2, sort_keys=True))
     else:
         _print_result(payload)
     return 0

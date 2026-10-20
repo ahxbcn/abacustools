@@ -20,6 +20,7 @@ from abacustools.commands.workflow import (
     register_parser as register_workflow_parser,
 )
 from abacustools.menu.runner import run_menu
+from abacustools.core.render import cli_output
 
 
 _BANNER = "\n".join(
@@ -35,11 +36,11 @@ _BANNER = "\n".join(
 
 def _print_banner() -> None:
     """Print the ASCII-art banner with the program name and version."""
-    print()
-    print(_BANNER)
-    print()
-    print(f"  Tools for accompanying using ABACUS    version {__version__}")
-    print()
+    cli_output()
+    cli_output(_BANNER)
+    cli_output()
+    cli_output(f"  Tools for accompanying using ABACUS    version {__version__}")
+    cli_output()
 
 
 def _is_interactive() -> bool:

@@ -8,6 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from abacustools.data.molden import convert_wfc_to_molden
+from abacustools.core.render import cli_output
 
 
 def _job_directory(value: str) -> Path:
@@ -61,15 +62,15 @@ def run(args: argparse.Namespace) -> int:
         atoms_unit=args.atoms_unit,
     )
     if args.json:
-        print(json.dumps(asdict(result), indent=2))
+        cli_output(json.dumps(asdict(result), indent=2))
         return 0
     kpoint_text = "Gamma" if result.gamma_only else f"k-point {result.kpoint}/{result.nkpoints}"
-    print(f"Exported {result.job} to {result.output}")
-    print(
+    cli_output(f"Exported {result.job} to {result.output}")
+    cli_output(
         f"  {kpoint_text}, nspin={result.nspin}, {result.basis_functions} basis functions, "
         f"{result.nbands} bands per spin, {result.gto_primitives} GTO primitives per NAO"
     )
-    print(f"  largest relative radial fit error: {result.max_relative_error:.3e}")
+    cli_output(f"  largest relative radial fit error: {result.max_relative_error:.3e}")
     return 0
 
 

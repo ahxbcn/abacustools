@@ -8,6 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from abacustools.data.mayer import MayerAnalysis, analyze_mayer_bond_order
+from abacustools.core.render import cli_output
 
 
 def _job_directory(value: str) -> Path:
@@ -50,14 +51,14 @@ def run(args: argparse.Namespace) -> int:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(_report(analysis, None), indent=2), encoding="utf-8")
         if not args.json:
-            print(f"Wrote Mayer bond-order report: {output}")
+            cli_output(f"Wrote Mayer bond-order report: {output}")
     if args.json:
-        print(json.dumps(_report(analysis, None), indent=2))
+        cli_output(json.dumps(_report(analysis, None), indent=2))
         return 0
-    print(f"Mayer bond order: {analysis.job} ({'gamma-only' if analysis.gamma_only else 'multi-k'}, nspin={analysis.nspin})")
-    print(f"Task: calculation={analysis.calculation}, basis functions={analysis.basis_functions}, pairs={len(analysis.pairs)}")
+    cli_output(f"Mayer bond order: {analysis.job} ({'gamma-only' if analysis.gamma_only else 'multi-k'}, nspin={analysis.nspin})")
+    cli_output(f"Task: calculation={analysis.calculation}, basis functions={analysis.basis_functions}, pairs={len(analysis.pairs)}")
     for pair in report["pairs"]:
-        print(f"  {pair['atom1']}({pair['element1']}) - {pair['atom2']}({pair['element2']}): {pair['bond_order']:.6f}  distance={pair['distance']:.6f} A")
+        cli_output(f"  {pair['atom1']}({pair['element1']}) - {pair['atom2']}({pair['element2']}): {pair['bond_order']:.6f}  distance={pair['distance']:.6f} A")
     return 0
 
 

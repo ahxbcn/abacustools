@@ -9,6 +9,7 @@ named (see [version-dialects.md](version-dialects.md)).
 
 | path | content |
 | --- | --- |
+| `abacus.json` | JSON job summary, job root (develop only): `init`, one `output` entry per ionic step (`e_fermi`, `energy`, `force`, `stress`, ...; units documented in its `comment` field), `general_info` with the ABACUS version |
 | `OUT.<suffix>/running_<calculation>.log` | driver log: `scf`, `relax`, `cell-relax`, `md`, `nscf` (rank 0) |
 | `OUT.<suffix>/running_<calculation>_<rank>.log` | per-rank logs, only with `out_alllog` |
 | `OUT.<suffix>/running_nscf1.log`, `...nscf2.log`, `...nscf3.log` | the three Berry-phase steps of a polarization run |

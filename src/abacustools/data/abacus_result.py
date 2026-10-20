@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 import numpy as np
 
 from abacustools.core.constant import BOHR_TO_ANG, RY_TO_EV
+from abacustools.data.abacus_json import latest_ionic_output, read_abacus_json
 from abacustools.data.versions import resolve_version
 from abacustools.io.abacus import ReadInput
 
@@ -1136,12 +1137,37 @@ def read_pdos_from_job(job_dir: Union[str, Path]) -> Dict[str, Any]:
 
 
 def _calculation(inputs: Dict[str, Any], output_path: Path) -> str:
-    """Get calculation type, preferring the output INPUT when available."""
-    output_input = output_path / "INPUT"
-    if output_input.is_file():
-        output_inputs = ReadInput(output_input)
-        inputs = {**inputs, **output_inputs}
+    """Get calculation type, preferring the effective INPUT when available.
+
+    The effective-input copy is read in both spellings: ``INPUT`` on the
+    LTS release and ``INPUT.info`` on develop.
+    """
+    for name in ("INPUT", "INPUT.info"):
+        output_input = output_path / name
+        if output_input.is_file():
+            inputs = {**inputs, **ReadInput(output_input)}
+            break
     return str(inputs.get("calculation", "scf")).lower()
+
+
+def _machine_efermi(job_path: Path, log_value: Optional[float]) -> Optional[float]:
+    """Prefer the machine-readable ``e_fermi`` of ``abacus.json``.
+
+    Args:
+        job_path: Job directory holding (or not) ``abacus.json``.
+        log_value: The value parsed from the ``E_Fermi`` log keywords.
+
+    Returns:
+        The Fermi energy of the latest ionic step when the job summary
+        provides one, else the log-parsed value.
+    """
+    summary = read_abacus_json(job_path)
+    if summary is None:
+        return log_value
+    entry = latest_ionic_output(summary)
+    if isinstance(entry, dict) and isinstance(entry.get("e_fermi"), (int, float)):
+        return float(entry["e_fermi"])
+    return log_value
 
 
 def _log_file(
@@ -1336,7 +1362,7 @@ def collect_scf_results(
         "scf_steps": len(energies),
         "converged": converged,
         "normal_end": normal_end,
-        "efermi": efermis[-1] if efermis else None,
+        "efermi": _machine_efermi(job_path, efermis[-1] if efermis else None),
         "force": forces[-1] if forces else None,
         "stress": stresses[-1] if stresses else None,
     }

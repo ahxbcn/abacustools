@@ -18,6 +18,7 @@ from abacustools.data.kpt import (
 )
 from abacustools.io.abacus import WriteKpt
 from abacustools.io.stru import AbacusSTRU
+from abacustools.core.render import cli_output
 
 
 def _existing_file(value: str, what: str):
@@ -119,32 +120,32 @@ def _write(values: Any, model: str, output: Path, override: bool) -> Path:
 def _print_report(report: dict[str, Any], as_json: bool) -> None:
     """Print one inspection or generation report."""
     if as_json:
-        print(json.dumps(report, indent=2, sort_keys=True))
+        cli_output(json.dumps(report, indent=2, sort_keys=True))
         return
 
-    print(f"  kpt: {report['file']}")
-    print(f"  model: {report['model']}")
+    cli_output(f"  kpt: {report['file']}")
+    cli_output(f"  model: {report['model']}")
     if report.get("dimensionality_label"):
         method = report.get("path_method")
         suffix = "" if method is None else f", {method}"
-        print(f"  dimensionality: {report['dimensionality_label']}{suffix}")
+        cli_output(f"  dimensionality: {report['dimensionality_label']}{suffix}")
     if "mesh" in report:
-        print(
+        cli_output(
             f"  mesh: {' '.join(str(value) for value in report['mesh'])} "
             f"({report['mesh_points']} grid points)"
         )
-        print(f"  shifts: {' '.join(str(value) for value in report['shifts'])}")
+        cli_output(f"  shifts: {' '.join(str(value) for value in report['shifts'])}")
     else:
-        print(f"  nodes: {report['nodes']} ({report['points_total']} points)")
+        cli_output(f"  nodes: {report['nodes']} ({report['points_total']} points)")
         labels = [label for label in report.get("labels", []) if label]
         if labels:
-            print(f"  labels: {' '.join(str(label) for label in labels)}")
+            cli_output(f"  labels: {' '.join(str(label) for label in labels)}")
     spacing = report.get("kspacing_angstrom")
     if spacing is not None:
         text = " ".join("inf" if value is None else f"{value:g}" for value in spacing)
-        print(f"  k spacing (1/Angstrom): {text}")
+        cli_output(f"  k spacing (1/Angstrom): {text}")
     if not report.get("valid", True):
-        print(f"  warning: {report.get('error', 'the KPT values are invalid')}")
+        cli_output(f"  warning: {report.get('error', 'the KPT values are invalid')}")
 
 
 def _describe(args: argparse.Namespace) -> int:

@@ -40,6 +40,7 @@ from .common import (
     write_abacus_job,
     write_manifest,
 )
+from abacustools.core.render import cli_output
 
 
 _VIBRATION_DIRECTORY = "vib"
@@ -308,7 +309,7 @@ def prepare(args: argparse.Namespace) -> int:
         stru_filename=stru_filename,
         kpoint=kpoint_file,
     )
-    print(f"  prepared {_EQUILIBRIUM_TASK}")
+    cli_output(f"  prepared {_EQUILIBRIUM_TASK}")
 
     original_coords = np.asarray(structure.coords, dtype=float)
     for item in displacement_tasks:
@@ -326,7 +327,7 @@ def prepare(args: argparse.Namespace) -> int:
             stru_filename=stru_filename,
             kpoint=kpoint_file,
         )
-        print(f"  prepared {item['task']}")
+        cli_output(f"  prepared {item['task']}")
 
     submission = generate_workflow_submission(
         job,
@@ -337,8 +338,8 @@ def prepare(args: argparse.Namespace) -> int:
         abacus_command=getattr(args, "abacus_command", None),
     )
     if submission is not None:
-        print(f"  submission type: {submission['type']}")
-        print(f"  workflow script: {submission['workflow_script']}")
+        cli_output(f"  submission type: {submission['type']}")
+        cli_output(f"  workflow script: {submission['workflow_script']}")
 
     manifest = dict(
         tasks=task_names,
@@ -349,10 +350,10 @@ def prepare(args: argparse.Namespace) -> int:
     if submission is not None:
         manifest["submission"] = submission
     write_manifest(job, "vibration", **manifest)
-    print(f"  job: {job}")
-    print(f"  selected atoms: {', '.join(str(index + 1) for index in selected_atoms)}")
-    print(f"  displacement step: {args.stepsize} Angstrom")
-    print(f"  generated calculations: {len(task_names)}")
+    cli_output(f"  job: {job}")
+    cli_output(f"  selected atoms: {', '.join(str(index + 1) for index in selected_atoms)}")
+    cli_output(f"  displacement step: {args.stepsize} Angstrom")
+    cli_output(f"  generated calculations: {len(task_names)}")
     return 0
 
 
@@ -546,7 +547,7 @@ def _write_modes_ase(
         output_stru=output_stru,
     )
     if (output_traj and traj_format == "extxyz") or (output_stru and stru_format == "extxyz"):
-        print(f"  {_momenta_note()}")
+        cli_output(f"  {_momenta_note()}")
 
     animations = _mode_animations(
         vibration.energies,
@@ -571,7 +572,7 @@ def _write_modes_ase(
             else:
                 path = trajectory_dir / f"mode_{mode_number}.extxyz"
                 write(path, images, format="extxyz")
-            print(f"  trajectory for mode {mode_number} ({label} cm^-1): {path}")
+            cli_output(f"  trajectory for mode {mode_number} ({label} cm^-1): {path}")
 
         if output_stru:
             image = equilibrium.copy()
@@ -582,7 +583,7 @@ def _write_modes_ase(
             else:
                 path = structure_dir / f"mode_{mode_number}.xyz"
                 write(path, image, format="extxyz")
-            print(f"  structure for mode {mode_number} ({label} cm^-1): {path}")
+            cli_output(f"  structure for mode {mode_number} ({label} cm^-1): {path}")
 
 
 def _write_ase_trajectory(
@@ -670,7 +671,7 @@ def _write_modes_builtin(
     )
 
     if (output_traj and traj_format == "extxyz") or (output_stru and stru_format == "extxyz"):
-        print(f"  {_momenta_note()}")
+        cli_output(f"  {_momenta_note()}")
 
     animations = _mode_animations(
         vibration.energies,
@@ -712,7 +713,7 @@ def _write_modes_builtin(
                         for index in range(frames)
                     ],
                 )
-            print(f"  trajectory for mode {mode_number} ({label} cm^-1): {path}")
+            cli_output(f"  trajectory for mode {mode_number} ({label} cm^-1): {path}")
 
         if output_stru:
             if stru_format == "poscar":
@@ -739,7 +740,7 @@ def _write_modes_builtin(
                         metadata,
                     ),
                 )
-            print(f"  structure for mode {mode_number} ({label} cm^-1): {path}")
+            cli_output(f"  structure for mode {mode_number} ({label} cm^-1): {path}")
 
 
 def _equilibrium_energy(job: Path, version: str) -> float | None:
@@ -863,7 +864,7 @@ def postprocess(args: argparse.Namespace) -> int:
             thermo=thermo_corr.get(f"{temperatures[0]:g}K"),
             periodic=not getattr(args, "no_cell", False),
         )
-        print(f"  fake Gaussian log: {path}")
+        cli_output(f"  fake Gaussian log: {path}")
     result = {
         "selected_atoms": [index + 1 for index in selected_atoms],
         "masses": [float(per_atom_masses[index]) for index in selected_atoms],
@@ -881,16 +882,16 @@ def postprocess(args: argparse.Namespace) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 
-    print(f"  job: {job}")
-    print("  frequencies (cm^-1): " + " ".join(f"{value:.6f}" for value in frequencies))
+    cli_output(f"  job: {job}")
+    cli_output("  frequencies (cm^-1): " + " ".join(f"{value:.6f}" for value in frequencies))
     imaginary = [index for index, value in enumerate(frequencies) if value < 0]
     if imaginary:
-        print(
+        cli_output(
             "  imaginary modes: "
             + ", ".join(f"{index + 1} ({frequencies[index]:.2f} cm^-1)" for index in imaginary)
         )
-    print(f"  zero-point energy: {result['zero_point_energy']:.8f} eV")
-    print(f"  results: {output}")
+    cli_output(f"  zero-point energy: {result['zero_point_energy']:.8f} eV")
+    cli_output(f"  results: {output}")
     return 0
 
 

@@ -27,6 +27,7 @@ from .common import (
     write_abacus_job,
     write_manifest,
 )
+from abacustools.core.render import cli_output
 
 
 _ANGULAR_LABEL = {2: "d", 3: "f"}
@@ -47,7 +48,7 @@ def _validate_u_values(values: list[float]) -> list[float]:
     # Ensure U=0 is included for bare response calculation
     if 0.0 not in result:
         result.insert(0, 0.0)
-        print("  note: U=0.0 automatically added for bare response calculation")
+        cli_output("  note: U=0.0 automatically added for bare response calculation")
 
     return sorted(result)
 
@@ -384,8 +385,8 @@ def prepare(args: argparse.Namespace) -> int:
         abacus_command=getattr(args, "abacus_command", None),
     )
     if submission is not None:
-        print(f"  submission type: {submission['type']}")
-        print(f"  workflow script: {submission['workflow_script']}")
+        cli_output(f"  submission type: {submission['type']}")
+        cli_output(f"  workflow script: {submission['workflow_script']}")
     
     # Write manifest
     manifest_data = {
@@ -400,9 +401,9 @@ def prepare(args: argparse.Namespace) -> int:
         manifest_data["submission"] = submission
     write_manifest(job, "dftu", **manifest_data)
     
-    print(f"Prepared {len(all_task_names)} DFT+U calculations for {len(atom_indices)} atoms under {job}/")
+    cli_output(f"Prepared {len(all_task_names)} DFT+U calculations for {len(atom_indices)} atoms under {job}/")
     for atom_idx, task_names in atom_task_map.items():
-        print(f"  Atom {atom_idx + 1}: {len(task_names)} tasks")
+        cli_output(f"  Atom {atom_idx + 1}: {len(task_names)} tasks")
     
     return 0
 
@@ -434,7 +435,7 @@ def postprocess(args: argparse.Namespace) -> int:
         task_names = atom_task_map.get(str(atom_idx_1based), [])
         
         if not task_names:
-            print(f"Warning: No tasks found for atom {atom_idx_1based}")
+            cli_output(f"Warning: No tasks found for atom {atom_idx_1based}")
             continue
         
         # Collect occupation data for this atom
@@ -507,7 +508,7 @@ def postprocess(args: argparse.Namespace) -> int:
         occ_range = np.max(occ_array) - np.min(occ_array)
         
         if occ_range < 1e-6:
-            print(f"Warning: Occupation for atom {atom_idx_1based} does not vary with U "
+            cli_output(f"Warning: Occupation for atom {atom_idx_1based} does not vary with U "
                   f"(range = {occ_range:.2e}). Skipping this atom.")
             continue
         
@@ -561,24 +562,24 @@ def postprocess(args: argparse.Namespace) -> int:
     output_path.write_text(json.dumps(report, indent=2, sort_keys=False) + "\n")
 
     # Print summary
-    print(f"Hubbard U from linear response ({l_label} orbitals)")
-    print(f"{'Atom':>8s}  {'chi_0 (eV^-1)':>14s}  {'chi (eV^-1)':>14s}  {'U (eV)':>10s}")
-    print("-" * 54)
+    cli_output(f"Hubbard U from linear response ({l_label} orbitals)")
+    cli_output(f"{'Atom':>8s}  {'chi_0 (eV^-1)':>14s}  {'chi (eV^-1)':>14s}  {'U (eV)':>10s}")
+    cli_output("-" * 54)
     for resp in results:
-        print(
+        cli_output(
             f"{resp.atom_index + 1:>8d}  {resp.chi_0:>14.6f}  "
             f"{resp.chi:>14.6f}  {resp.hubbard_u:>10.4f}"
         )
 
-    print(f"\nResults written to {output_path}")
+    cli_output(f"\nResults written to {output_path}")
 
     # Try to generate plot
     try:
         _plot_response(job, results, args.plot, l_label)
     except ImportError:
-        print("  (matplotlib not available, skipping plot)")
+        cli_output("  (matplotlib not available, skipping plot)")
     except Exception as exc:
-        print(f"  (plot generation failed: {exc})")
+        cli_output(f"  (plot generation failed: {exc})")
 
     return 0
 
@@ -631,7 +632,7 @@ def _plot_response(
     plt.tight_layout()
     fig.savefig(plot_path, dpi=150)
     plt.close(fig)
-    print(f"Plot written to {plot_path}")
+    cli_output(f"Plot written to {plot_path}")
 
 
 def register_parser(subparsers) -> None:
