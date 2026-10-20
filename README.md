@@ -1019,7 +1019,15 @@ fallback through `out_mat_hs2=1` or `out_hsr=1`:
 ```text
 abacustools postprocess mayer -j JOB --cutoff 3.0
 abacustools postprocess mayer -j JOB --pairs 1-2,1-3 --json -o mayer.json
+abacustools postprocess mayer -j JOB --pairs 1-2 --shells
 ```
+
+With `--shells` every bond order is decomposed into the contributions of the
+s/p/d/f shells of the two atoms, for example `s-p 0.0512  p-p 0.9031`. The
+same breakdown is always part of the JSON report as `shell_bond_orders`
+(shell of the first atom, shell of the second atom, contribution). The
+contributions of radial functions with the same angular momentum are summed,
+and all values add up to the pair bond order.
 
 The analyzer reads numerical orbitals, overlap matrices, density matrices or
 NAO wavefunctions, validates their dimensions, and reports atom indices,

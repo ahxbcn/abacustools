@@ -971,4 +971,135 @@ def test_symmetry_reduced_kpoints_reproduce_the_full_mesh(tmp_path):
     assert with_reduction.pairs[0].bond_order == pytest.approx(
         with_full_mesh.pairs[0].bond_order, rel=1e-9
     )
+    reduced_shells = {
+        (first, second): value
+        for first, second, value in with_reduction.pairs[0].shell_bond_orders
+    }
+    full_shells = {
+        (first, second): value
+        for first, second, value in with_full_mesh.pairs[0].shell_bond_orders
+    }
+    assert reduced_shells == pytest.approx(full_shells)
 
+
+
+SP_ORB = """Element H
+Energy Cutoff(Ry) 100
+Radius Cutoff(a.u.) 6
+Lmax 1
+Number of Sorbital--> 1
+Number of Porbital--> 1
+SUMMARY  END
+
+Mesh 3
+dr 0.01
+Type L N
+0 0 0
+1.0 2.0 3.0
+Type L N
+1 1 0
+1.0 2.0 3.0
+"""
+
+SP_STRU = """ATOMIC_SPECIES
+H 1.008 H.upf
+
+NUMERICAL_ORBITAL
+H.orb
+
+LATTICE_CONSTANT
+1.889726
+
+LATTICE_VECTORS
+10 0 0
+0 10 0
+0 0 10
+
+ATOMIC_POSITIONS
+Cartesian
+
+H
+0.0
+2
+0.0 0.0 0.0 1 1 1
+0.0 0.0 0.7 1 1 1
+"""
+
+
+def _sp_density() -> np.ndarray:
+    """Density matrix with known s-s, s-p, p-s and p-p cross blocks."""
+
+    density = np.eye(8)
+    cross = {
+        (0, 4): 0.5,
+        (0, 5): 0.2,
+        (0, 6): 0.1,
+        (1, 4): 0.2,
+        (2, 4): 0.1,
+        (1, 5): 0.3,
+        (2, 6): 0.4,
+    }
+    for (first, second), value in cross.items():
+        density[first, second] = density[second, first] = value
+    return density
+
+
+def _write_develop_sp_job(root: Path, *, nspin: int = 1) -> None:
+    """Write a two-atom job with one s and one p radial function per atom."""
+
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "H.orb").write_text(SP_ORB, encoding="utf-8")
+    (root / "H.upf").write_text("", encoding="utf-8")
+    (root / "STRU").write_text(SP_STRU, encoding="utf-8")
+    (root / "INPUT").write_text(
+        "INPUT_PARAMETERS\ncalculation scf\nbasis_type lcao\n"
+        f"nspin {nspin}\nout_mat_hs 1\nout_dmk 1\n",
+        encoding="utf-8",
+    )
+    output = root / "OUT.ABACUS"
+    output.mkdir()
+    _write_csr_matrix(output / "sr_nao.csr", np.eye(8))
+    density = _sp_density()
+    if nspin == 1:
+        _write_develop_density(
+            output / "dmg1_nao.txt", density, spin=1, nspin=1, weight=2.0
+        )
+    else:
+        _write_develop_density(output / "dms1g1_nao.txt", density, spin=1)
+        _write_develop_density(output / "dms2g1_nao.txt", density, spin=2)
+
+
+def test_mayer_shell_decomposition(tmp_path):
+    """Shell contributions add up to the bond order and match the blocks."""
+
+    _write_develop_sp_job(tmp_path)
+    pair = analyze_mayer_bond_order(tmp_path).pairs[0]
+
+    assert pair.bond_order == pytest.approx(0.6)
+    shells = {
+        (first, second): value
+        for first, second, value in pair.shell_bond_orders
+    }
+    assert shells[("s", "s")] == pytest.approx(0.25)
+    assert shells[("s", "p")] == pytest.approx(0.05)
+    assert shells[("p", "s")] == pytest.approx(0.05)
+    assert shells[("p", "p")] == pytest.approx(0.25)
+    assert sum(shells.values()) == pytest.approx(pair.bond_order)
+
+
+def test_mayer_shell_decomposition_nspin2(tmp_path):
+    """Both spin channels enter with the unrestricted factor of two."""
+
+    _write_develop_sp_job(tmp_path, nspin=2)
+    pair = analyze_mayer_bond_order(tmp_path).pairs[0]
+
+    assert pair.bond_order == pytest.approx(2.4)
+    shells = {
+        (first, second): value
+        for first, second, value in pair.shell_bond_orders
+    }
+    assert shells[("s", "s")] == pytest.approx(1.0)
+    assert shells[("s", "p")] == pytest.approx(0.2)
+    assert shells[("p", "s")] == pytest.approx(0.2)
+    assert shells[("p", "p")] == pytest.approx(1.0)
+    assert sum(shells.values()) == pytest.approx(pair.bond_order)
