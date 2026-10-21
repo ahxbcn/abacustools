@@ -236,7 +236,8 @@ class TestElasticWorkflow(unittest.TestCase):
             self.assertEqual(manifest["strain_modes"], [0])
             self.assertEqual(len(manifest["tasks"]), 5)
 
-    def test_postprocess_adds_pymatgen_properties_and_keeps_custom_results(self) -> None:
+    def _postprocess_pymatgen_job(self, dimensionality: str) -> dict:
+        """Run one mock postprocessing pass on a Pymatgen-enabled job."""
         from pymatgen.core import Structure
 
         expected = np.array(
@@ -281,7 +282,7 @@ class TestElasticWorkflow(unittest.TestCase):
                 "strains": strains,
                 "strain_modes": [0, 3],
                 "dimension": {
-                    "dimensionality": "bulk",
+                    "dimensionality": dimensionality,
                     "vacuum_axis": None,
                     "in_plane_modes": None,
                 },
@@ -315,21 +316,34 @@ class TestElasticWorkflow(unittest.TestCase):
                 )
 
             self.assertEqual(exit_code, 0)
-            result = json.loads(
+            return json.loads(
                 (job / "elastic_results.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(result["fit"]["method"], "independent")
-            self.assertAlmostEqual(result["bulk_modulus"], 96.33333333333333)
-            self.assertAlmostEqual(result["shear_modulus"], 65.0)
-            self.assertAlmostEqual(result["young_modulus"], 159.19491525423726)
-            self.assertIn("pymatgen", result)
-            self.assertTrue(result["pymatgen"]["available"])
-            self.assertAlmostEqual(
-                result["pymatgen"]["properties"]["k_voigt"], 96.33333333333333
-            )
-            self.assertAlmostEqual(
-                result["pymatgen"]["properties"]["g_voigt"], 65.0
-            )
+
+    def test_postprocess_adds_pymatgen_properties_and_keeps_custom_results(self) -> None:
+        result = self._postprocess_pymatgen_job("bulk")
+
+        self.assertEqual(result["fit"]["method"], "independent")
+        self.assertAlmostEqual(result["bulk_modulus"], 96.33333333333333)
+        self.assertAlmostEqual(result["shear_modulus"], 65.0)
+        self.assertAlmostEqual(result["young_modulus"], 159.19491525423726)
+        self.assertIn("pymatgen", result)
+        self.assertTrue(result["pymatgen"]["available"])
+        self.assertAlmostEqual(
+            result["pymatgen"]["properties"]["k_voigt"], 96.33333333333333
+        )
+        self.assertAlmostEqual(
+            result["pymatgen"]["properties"]["g_voigt"], 65.0
+        )
+
+    def test_postprocess_skips_pymatgen_properties_for_non_bulk_cells(self) -> None:
+        """Wire and molecule cells also contain vacuum and must be skipped."""
+        result = self._postprocess_pymatgen_job("wire")
+
+        self.assertEqual(result["pymatgen"]["available"], False)
+        self.assertIn("wire", result["pymatgen"]["error"])
+        # The custom elastic results are still written.
+        self.assertAlmostEqual(result["bulk_modulus"], 96.33333333333333)
 
     def test_prepare_reports_an_unusable_cell(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -1268,9 +1268,10 @@ abacustools workflow elastic postprocess -j JOB --pymatgen
 ```
 
 The structure-dependent pymatgen properties are offered for three-dimensional
-cells. A slab keeps the custom in-plane block in N/m instead, because pymatgen
-computes its velocities and Debye temperature per cell volume, and that volume
-contains the vacuum.
+cells only. A slab, wire or molecule cell is reported as unavailable, because
+pymatgen computes its velocities and Debye temperature per cell volume, and
+that volume contains the vacuum. A slab keeps the custom in-plane block in N/m
+instead.
 
 A two dimensional material is recognised automatically: when the reference
 cell has vacuum along one direction, only the strain components of the two

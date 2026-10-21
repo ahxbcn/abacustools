@@ -583,13 +583,16 @@ def postprocess(args: argparse.Namespace) -> int:
 
     pymatgen_requested = bool(getattr(args, "pymatgen", False))
     if pymatgen_requested:
-        if dimension.get("dimensionality") == "slab":
+        dimensionality = str(dimension.get("dimensionality", "bulk"))
+        if dimensionality != "bulk":
             result["pymatgen"] = {
                 "available": False,
                 "error": (
                     "pymatgen ElasticTensor properties need a three-dimensional "
-                    "periodic cell; use the custom two-dimensional block in "
-                    "this report for a slab"
+                    f"periodic cell, but this structure is classified as "
+                    f"{dimensionality}; its volume-based velocities, Debye "
+                    "temperature and thermal conductivities would include the "
+                    "vacuum (a slab keeps the custom in-plane block)"
                 ),
             }
         else:
