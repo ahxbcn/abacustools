@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Optional, Sequence
 
 import numpy as np
 
@@ -21,6 +21,9 @@ from abacustools.data.grid import Charge
 from abacustools.data.mayer import read_overlap_matrix, read_overlap_matrix_develop
 from abacustools.io.abacus import ReadInput
 from abacustools.io.stru import AbacusSTRU
+
+if TYPE_CHECKING:
+    from abacustools.data.nocv import NOCVEnergyDecomposition
 
 
 _DEVELOP_H_FILE = re.compile(
@@ -240,6 +243,28 @@ class ElectrostaticCrossTerms:
     electron_nucleus_ba: float
     ion_ion: float
     total: float
+    unit: str = "eV"
+
+
+@dataclass(frozen=True)
+class PEDANOCVResult:
+    """Combined pEDA and NOCV result for one Gamma-point complex.
+
+    Attributes:
+        terms: Preparation, electrostatic, Pauli, orbital and dispersion terms.
+        electrostatic: Individual electrostatic cross terms.
+        nocv_channels: NOCV channel energies keyed by spin channel.
+        nocv_total_ev: Sum of NOCV channel energies in eV.
+        orbital_error_ev: Difference between the NOCV sum and the pEDA
+            orbital term.
+        unit: Energy unit of the returned energy fields.
+    """
+
+    terms: PEDAEnergyTerms
+    electrostatic: ElectrostaticCrossTerms
+    nocv_channels: dict[int, NOCVEnergyDecomposition]
+    nocv_total_ev: float
+    orbital_error_ev: float
     unit: str = "eV"
 
 
@@ -787,3 +812,160 @@ def read_abacus_harris_energy(
     if value is None or not np.isfinite(float(value)):
         raise ValueError(f"no Harris energy found in ABACUS log: {job}")
     return float(value)
+
+
+def analyze_gamma_peda_nocv(
+    full_job: str | Path,
+    fragment_a_job: str | Path,
+    fragment_b_job: str | Path,
+    p0_job: str | Path,
+    p_ts_job: str | Path,
+    fragment_a_atoms: Sequence[int],
+    fragment_b_atoms: Sequence[int],
+    *,
+    reference_a_job: Optional[str | Path] = None,
+    reference_b_job: Optional[str | Path] = None,
+    version: Optional[str] = None,
+    occupation_tolerance: float = 1e-6,
+    require_converged_fragments: bool = False,
+    validate_orbital: bool = True,
+    orbital_absolute_tolerance: float = 0.05,
+    orbital_relative_tolerance: float = 0.05,
+) -> PEDANOCVResult:
+    """Assemble a Gamma-point pEDA decomposition and its NOCV channel energies.
+
+    The P0 state job supplies the Harris energy of the orthogonalized fragment
+    determinant.  Its Kohn-Sham energy is not used because a one-step
+    fixed-density run updates the density matrix before printing that energy.
+    The P_TS state job supplies the Hamiltonian built from the transition-state
+    density, which is the Fock matrix used by the NOCV energy formula.
+
+    Args:
+        full_job: Converged full-system ABACUS job.
+        fragment_a_job: Fragment A SCF job at the complex geometry.
+        fragment_b_job: Fragment B SCF job at the complex geometry.
+        p0_job: Fixed-density job prepared from ``P0``.
+        p_ts_job: Fixed-density job prepared from ``P_TS``.
+        fragment_a_atoms: Zero-based full-system atom indices of fragment A.
+        fragment_b_atoms: Zero-based full-system atom indices of fragment B.
+        reference_a_job: Isolated reference A job; defaults to fragment A.
+        reference_b_job: Isolated reference B job; defaults to fragment B.
+        version: Optional ABACUS version hint.
+        occupation_tolerance: Tolerance for integer fragment occupations.
+        require_converged_fragments: Refuse non-converged fragment SCF jobs.
+        validate_orbital: Whether to reject a NOCV sum far from the pEDA
+            orbital term.
+        orbital_absolute_tolerance: Absolute NOCV-sum tolerance in eV.
+        orbital_relative_tolerance: Relative NOCV-sum tolerance.
+
+    Returns:
+        The pEDA energy terms, NOCV channel energies and their validation error.
+
+    Raises:
+        ValueError: If the jobs are not a single Gamma state, the Harris energy
+            is missing, or the NOCV sum disagrees with the orbital term.
+    """
+
+    from abacustools.data.lcao import build_peda_kpoint_states, operator_matrix_in_basis
+    from abacustools.data.nocv import diagonalize_nocv, nocv_channel_energies
+
+    states = build_peda_kpoint_states(
+        full_job,
+        fragment_a_job,
+        fragment_b_job,
+        fragment_a_atoms,
+        fragment_b_atoms,
+        nspin=None,
+        gamma_only=True,
+        occupation_tolerance=occupation_tolerance,
+    )
+    if len(states) != 1:
+        raise ValueError("Gamma pEDA+NOCV requires exactly one k-point")
+    state = states[0]
+    if not np.allclose(state.direct, 0.0, atol=1e-6):
+        raise ValueError("Gamma pEDA+NOCV requires a Gamma-point state")
+
+    p0_result = read_gamma_fixed_density_result(p0_job, version=version)
+    p_ts_result = read_gamma_fixed_density_result(p_ts_job, version=version)
+    if p0_result.harris_energy_ev is None:
+        raise ValueError(
+            "the P0 fixed-density job did not print E_Harris; update abacustools "
+            "or the ABACUS version to the current log format"
+        )
+
+    e_ab = _finite_energy(
+        "full-system energy", get_result_from_job(str(full_job), ["energy"], version)["energy"]
+    )
+    e_a = _finite_energy(
+        "fragment A energy",
+        get_result_from_job(str(fragment_a_job), ["energy"], version)["energy"],
+    )
+    e_b = _finite_energy(
+        "fragment B energy",
+        get_result_from_job(str(fragment_b_job), ["energy"], version)["energy"],
+    )
+    if reference_a_job is None:
+        e_a0 = e_a
+    else:
+        e_a0 = _finite_energy(
+            "reference A energy",
+            get_result_from_job(str(reference_a_job), ["energy"], version)["energy"],
+        )
+    if reference_b_job is None:
+        e_b0 = e_b
+    else:
+        e_b0 = _finite_energy(
+            "reference B energy",
+            get_result_from_job(str(reference_b_job), ["energy"], version)["energy"],
+        )
+
+    electrostatic = electrostatic_cross_term_from_jobs(
+        full_job,
+        fragment_a_job,
+        fragment_b_job,
+        version=version,
+        require_converged=require_converged_fragments,
+    )
+    terms = compute_peda_energy_terms(
+        e_ab=e_ab,
+        e_a=e_a,
+        e_b=e_b,
+        e_a0=e_a0,
+        e_b0=e_b0,
+        e0=float(p0_result.harris_energy_ev),
+        delta_e_elstat=electrostatic.total,
+    )
+
+    nocv_channels: dict[int, NOCVEnergyDecomposition] = {}
+    for spin in sorted(state.channels):
+        channel = state.channels[spin]
+        decomposition = diagonalize_nocv(channel.delta_p_lambda)
+        if spin not in p_ts_result.hamiltonians:
+            raise ValueError(f"P_TS state job has no Hamiltonian for spin {spin}")
+        f_ts = operator_matrix_in_basis(
+            p_ts_result.hamiltonians[spin],
+            channel.basis.combined,
+        )
+        nocv_channels[spin] = nocv_channel_energies(decomposition, f_ts)
+
+    nocv_total = float(sum(item.total_ev for item in nocv_channels.values()))
+    orbital_error = nocv_total - terms.orbital
+    tolerance = max(
+        abs(float(orbital_absolute_tolerance)),
+        abs(float(orbital_relative_tolerance)) * abs(terms.orbital),
+    )
+    if validate_orbital and abs(orbital_error) > tolerance:
+        raise ValueError(
+            "NOCV channel energies do not reproduce the pEDA orbital term: "
+            f"sum={nocv_total:.6f} eV, orbital={terms.orbital:.6f} eV, "
+            f"error={orbital_error:.6f} eV, tolerance={tolerance:.6f} eV. "
+            "Check for core-valence contamination or a non-self-consistent "
+            "P0/PTS state."
+        )
+    return PEDANOCVResult(
+        terms=terms,
+        electrostatic=electrostatic,
+        nocv_channels=nocv_channels,
+        nocv_total_ev=nocv_total,
+        orbital_error_ev=orbital_error,
+    )

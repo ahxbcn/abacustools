@@ -8,9 +8,10 @@ import pytest
 
 import abacustools.data.lcao as lcao
 from abacustools.commands.workflow.eda import prepare_gamma_state_job
-from abacustools.core.constant import COULOMB_EV_ANGSTROM
+from abacustools.core.constant import COULOMB_EV_ANGSTROM, RY_TO_EV
 from abacustools.data.charge import ChargeDensityError, read_job_total_density
 from abacustools.data.eda import (
+    analyze_gamma_peda_nocv,
     compute_peda_energy_terms,
     electron_electron_cross_term,
     electron_nucleus_cross_term,
@@ -965,3 +966,89 @@ def test_read_abacus_harris_energy(tmp_path):
     )
 
     assert read_abacus_harris_energy(job) == pytest.approx(-9.75)
+
+
+def _mock_gamma_peda_jobs(monkeypatch, *, fock_expectation_difference):
+    import abacustools.data.eda as eda_module
+    import abacustools.data.lcao as lcao_module
+
+    fake_state = SimpleNamespace(
+        direct=(0.0, 0.0, 0.0),
+        channels={
+            1: SimpleNamespace(
+                delta_p_lambda=np.diag([-1.0, 1.0]),
+                basis=SimpleNamespace(combined=np.eye(2)),
+            )
+        },
+    )
+    monkeypatch.setattr(
+        lcao_module,
+        "build_peda_kpoint_states",
+        lambda *args, **kwargs: [fake_state],
+    )
+    monkeypatch.setattr(
+        eda_module,
+        "read_gamma_fixed_density_result",
+        lambda job, **kwargs: (
+            SimpleNamespace(harris_energy_ev=-9.0)
+            if str(job).endswith("p0")
+            else SimpleNamespace(
+                hamiltonians={
+                    1: np.diag(
+                        [-0.5 * fock_expectation_difference, 0.5 * fock_expectation_difference]
+                    )
+                }
+            )
+        ),
+    )
+    energy_map = {"full": -10.0, "fragment_a": -4.0, "fragment_b": -4.0}
+
+    def fake_result(job, *args, **kwargs):
+        name = Path(job).name
+        return {"energy": energy_map[name]}
+
+    monkeypatch.setattr(eda_module, "get_result_from_job", fake_result)
+    monkeypatch.setattr(
+        eda_module,
+        "electrostatic_cross_term_from_jobs",
+        lambda *args, **kwargs: SimpleNamespace(total=-0.5),
+    )
+
+
+def test_analyze_gamma_peda_nocv_validates_orbital_sum(monkeypatch):
+    _mock_gamma_peda_jobs(
+        monkeypatch,
+        fock_expectation_difference=-1.0 / RY_TO_EV,
+    )
+
+    result = analyze_gamma_peda_nocv(
+        "/tmp/full",
+        "/tmp/fragment_a",
+        "/tmp/fragment_b",
+        "/tmp/p0",
+        "/tmp/p_ts",
+        [0],
+        [1],
+    )
+
+    assert result.terms.orbital == pytest.approx(-1.0)
+    assert result.nocv_total_ev == pytest.approx(-1.0)
+    assert result.orbital_error_ev == pytest.approx(0.0, abs=1e-12)
+
+
+def test_analyze_gamma_peda_nocv_rejects_orbital_mismatch(monkeypatch):
+    _mock_gamma_peda_jobs(
+        monkeypatch,
+        fock_expectation_difference=-0.2,
+    )
+
+    with pytest.raises(ValueError, match="NOCV channel energies"):
+        analyze_gamma_peda_nocv(
+            "/tmp/full",
+            "/tmp/fragment_a",
+            "/tmp/fragment_b",
+            "/tmp/p0",
+            "/tmp/p_ts",
+            [0],
+            [1],
+        )
