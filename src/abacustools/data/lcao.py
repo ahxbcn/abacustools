@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence
 import numpy as np
 
 from abacustools.core.constant import BOHR_TO_ANG
-from abacustools.data.mayer import read_wfc_nao_k_data
+from abacustools.data.mayer import read_nao_basis_layout, read_wfc_nao_k_data
 from abacustools.io.abacus import ReadInput
 from abacustools.io.stru import AbacusSTRU
 
@@ -1064,6 +1064,304 @@ def load_lcao_kpoint_orbitals(
                 energies=energies,
                 occupations=occupations,
                 data_files=tuple(dict.fromkeys(files)),
+            )
+        )
+    return result
+
+
+def density_matrix_from_orbitals(
+    coefficients: np.ndarray,
+    occupations: Sequence[float],
+) -> np.ndarray:
+    """Build a density matrix from orbital coefficients and occupations."""
+
+    coeff = np.asarray(coefficients)
+    values = np.asarray(occupations, dtype=float)
+    if coeff.ndim != 2:
+        raise ValueError("coefficients must be a two-dimensional matrix")
+    if values.ndim != 1 or values.size != coeff.shape[1]:
+        raise ValueError("occupations must match the number of bands")
+    if not np.all(np.isfinite(coeff)) or not np.all(np.isfinite(values)):
+        raise ValueError("coefficients and occupations must be finite")
+    if np.any(values < 0.0):
+        raise ValueError("occupations must be non-negative")
+    weighted = coeff * np.sqrt(values)[np.newaxis, :]
+    density = weighted @ weighted.conj().T
+    return 0.5 * (density + density.conj().T)
+
+
+def _split_fragment_orbitals(
+    coefficients: np.ndarray,
+    occupations: Sequence[float],
+    *,
+    nspin: int,
+    tolerance: float,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """Split coefficients into occupied and virtual columns."""
+
+    coeff = np.asarray(coefficients)
+    values = np.asarray(occupations, dtype=float)
+    if coeff.ndim != 2 or values.ndim != 1 or coeff.shape[1] != values.size:
+        raise LCAODataError("fragment coefficients and occupations are inconsistent")
+    maximum = 2.0 if nspin == 1 else 1.0
+    occupied_mask = np.abs(values - maximum) <= tolerance
+    virtual_mask = np.abs(values) <= tolerance
+    if not np.all(occupied_mask | virtual_mask):
+        raise LCAODataError(
+            "pEDA currently requires integer fragment occupations "
+            f"(0 or {maximum:g}); got {values.tolist()}"
+        )
+    if not np.any(occupied_mask):
+        raise LCAODataError("fragment has no occupied orbital")
+    if not np.any(virtual_mask):
+        raise LCAODataError("fragment has no virtual orbital")
+    return coeff[:, occupied_mask], coeff[:, virtual_mask], maximum
+
+
+@dataclass(frozen=True)
+class PEDAChannelState:
+    """One spin channel of a pEDA k-point state."""
+
+    spin: int
+    maximum_occupation: float
+    basis: OrthogonalizedFragmentBasis
+    p0_lambda: np.ndarray
+    p_ab_lambda: np.ndarray
+    p_ts_lambda: np.ndarray
+    delta_p_lambda: np.ndarray
+    p0_nao: np.ndarray
+    p_ab_nao: np.ndarray
+    p_ts_nao: np.ndarray
+
+
+@dataclass(frozen=True)
+class PEDAOrbitalState:
+    """pEDA intermediate states at one k-point."""
+
+    index: int
+    direct: tuple[float, float, float]
+    weight: float
+    overlap: np.ndarray
+    channels: dict[int, PEDAChannelState]
+    data_files: tuple[str, ...]
+
+
+def assemble_peda_kpoint_state(
+    full: KPointOrbitals,
+    fragment_a: KPointOrbitals,
+    fragment_b: KPointOrbitals,
+    full_atom_ranges: Sequence[tuple[int, int]],
+    fragment_a_atoms: Sequence[int],
+    fragment_b_atoms: Sequence[int],
+    *,
+    nspin: int,
+    occupation_tolerance: float = 1e-6,
+) -> PEDAOrbitalState:
+    """Assemble P0, P_AB and P_TS for one k-point.
+
+    Args:
+        full: Full-system orbitals and overlap at one k-point.
+        fragment_a: Fragment A orbitals at the same k-point.
+        fragment_b: Fragment B orbitals at the same k-point.
+        full_atom_ranges: NAO basis range of every full-system atom.
+        fragment_a_atoms: Full-system atom indices belonging to fragment A.
+        fragment_b_atoms: Full-system atom indices belonging to fragment B.
+        nspin: Number of spin channels.
+        occupation_tolerance: Tolerance for integer fragment occupations.
+
+    Returns:
+        The per-spin P0, P_AB, P_TS and ΔP matrices in both NAO and orthonormal
+        fragment bases.
+
+    Raises:
+        LCAODataError: If the k-points, spin channels or fragment occupations
+            are inconsistent.
+    """
+
+    if nspin not in (1, 2):
+        raise LCAODataError(f"pEDA state assembly supports nspin=1 or 2, got {nspin}")
+    if (
+        _periodic_direct_distance(full.direct, fragment_a.direct) > 1e-6
+        or _periodic_direct_distance(full.direct, fragment_b.direct) > 1e-6
+    ):
+        raise LCAODataError("fragment and full-system k-point coordinates do not match")
+    if not (
+        np.isclose(full.weight, fragment_a.weight, atol=1e-8)
+        and np.isclose(full.weight, fragment_b.weight, atol=1e-8)
+    ):
+        raise LCAODataError("fragment and full-system k-point weights do not match")
+    if set(full.coefficients) != ({1} if nspin == 1 else {1, 2}):
+        raise LCAODataError("full-system spin channels do not match nspin")
+    if set(fragment_a.coefficients) != set(full.coefficients) or set(
+        fragment_b.coefficients
+    ) != set(full.coefficients):
+        raise LCAODataError("fragment spin channels do not match the full system")
+
+    full_dimension = int(full.overlap.shape[0])
+    channels: dict[int, PEDAChannelState] = {}
+    for spin in sorted(full.coefficients):
+        occ_a, vir_a, maximum = _split_fragment_orbitals(
+            fragment_a.coefficients[spin],
+            fragment_a.occupations[spin],
+            nspin=nspin,
+            tolerance=occupation_tolerance,
+        )
+        occ_b, vir_b, maximum_b = _split_fragment_orbitals(
+            fragment_b.coefficients[spin],
+            fragment_b.occupations[spin],
+            nspin=nspin,
+            tolerance=occupation_tolerance,
+        )
+        if not np.isclose(maximum, maximum_b):
+            raise LCAODataError("fragment A and B use different maximum occupations")
+
+        occ_a_full = embed_fragment_coefficients(
+            occ_a,
+            fragment_a_atoms,
+            full_atom_ranges,
+            full_dimension=full_dimension,
+        )
+        vir_a_full = embed_fragment_coefficients(
+            vir_a,
+            fragment_a_atoms,
+            full_atom_ranges,
+            full_dimension=full_dimension,
+        )
+        occ_b_full = embed_fragment_coefficients(
+            occ_b,
+            fragment_b_atoms,
+            full_atom_ranges,
+            full_dimension=full_dimension,
+        )
+        vir_b_full = embed_fragment_coefficients(
+            vir_b,
+            fragment_b_atoms,
+            full_atom_ranges,
+            full_dimension=full_dimension,
+        )
+
+        occupied = np.hstack((occ_a_full, occ_b_full))
+        virtual = np.hstack((vir_a_full, vir_b_full))
+        basis = orthogonalize_fragment_orbitals(
+            occupied,
+            virtual,
+            full.overlap,
+            threshold=occupation_tolerance,
+        )
+        p_ab_nao = density_matrix_from_orbitals(
+            full.coefficients[spin],
+            full.occupations[spin],
+        )
+        p0_nao = build_p0_nao(
+            basis.occupied,
+            [maximum] * basis.occupied.shape[1],
+        )
+        p_ts_nao = build_transition_density(p_ab_nao, p0_nao)
+        p0_lambda = build_p0_lambda(
+            [maximum] * basis.occupied.shape[1],
+            n_orbitals=basis.combined.shape[1],
+        )
+        p_ab_lambda = density_matrix_in_basis(p_ab_nao, full.overlap, basis.combined)
+        p_ts_lambda = density_matrix_in_basis(p_ts_nao, full.overlap, basis.combined)
+        delta_p_lambda = p_ab_lambda - p0_lambda
+        channels[spin] = PEDAChannelState(
+            spin=spin,
+            maximum_occupation=maximum,
+            basis=basis,
+            p0_lambda=p0_lambda,
+            p_ab_lambda=p_ab_lambda,
+            p_ts_lambda=p_ts_lambda,
+            delta_p_lambda=delta_p_lambda,
+            p0_nao=p0_nao,
+            p_ab_nao=p_ab_nao,
+            p_ts_nao=p_ts_nao,
+        )
+
+    files = tuple(dict.fromkeys((*full.data_files, *fragment_a.data_files, *fragment_b.data_files)))
+    return PEDAOrbitalState(
+        index=full.index,
+        direct=full.direct,
+        weight=full.weight,
+        overlap=full.overlap,
+        channels=channels,
+        data_files=files,
+    )
+
+
+def _periodic_direct_distance(
+    first: Sequence[float],
+    second: Sequence[float],
+) -> float:
+    """Return the maximum periodic difference between two direct coordinates."""
+
+    differences = []
+    for left, right in zip(first, second):
+        delta = (float(left) - float(right) + 0.5) % 1.0 - 0.5
+        differences.append(abs(delta))
+    return max(differences)
+
+
+def build_peda_kpoint_states(
+    full_job: str | Path,
+    fragment_a_job: str | Path,
+    fragment_b_job: str | Path,
+    fragment_a_atoms: Sequence[int],
+    fragment_b_atoms: Sequence[int],
+    *,
+    nspin: Optional[int] = None,
+    gamma_only: Optional[bool] = None,
+    occupation_tolerance: float = 1e-6,
+) -> list[PEDAOrbitalState]:
+    """Load three LCAO jobs and assemble pEDA states at every k-point."""
+
+    full = load_lcao_kpoint_orbitals(full_job, nspin=nspin, gamma_only=gamma_only)
+    part_a = load_lcao_kpoint_orbitals(fragment_a_job, nspin=nspin, gamma_only=gamma_only)
+    part_b = load_lcao_kpoint_orbitals(fragment_b_job, nspin=nspin, gamma_only=gamma_only)
+    if not full:
+        raise LCAODataError("full-system job contains no k-points")
+    if len(part_a) != len(full) or len(part_b) != len(full):
+        raise LCAODataError("fragment and full-system k-point counts do not match")
+
+    structure, full_atom_ranges, _basis_functions = read_nao_basis_layout(full_job)
+    atoms_a = [int(index) for index in fragment_a_atoms]
+    atoms_b = [int(index) for index in fragment_b_atoms]
+    if not atoms_a or not atoms_b:
+        raise LCAODataError("both fragments must contain at least one atom")
+    if len(set(atoms_a)) != len(atoms_a) or len(set(atoms_b)) != len(atoms_b):
+        raise LCAODataError("fragment atom indices must be unique")
+    if set(atoms_a) & set(atoms_b):
+        raise LCAODataError("fragment atom indices must be disjoint")
+    if any(index < 0 or index >= structure.natoms for index in atoms_a + atoms_b):
+        raise LCAODataError("fragment atom index is outside the full structure")
+
+    actual_nspin = len(full[0].coefficients)
+    if actual_nspin not in (1, 2):
+        raise LCAODataError(f"pEDA supports nspin=1 or 2, got {actual_nspin}")
+
+    result: list[PEDAOrbitalState] = []
+    for full_state in full:
+        matches_a = [
+            state
+            for state in part_a
+            if _periodic_direct_distance(full_state.direct, state.direct) <= 1e-6
+        ]
+        matches_b = [
+            state
+            for state in part_b
+            if _periodic_direct_distance(full_state.direct, state.direct) <= 1e-6
+        ]
+        if len(matches_a) != 1 or len(matches_b) != 1:
+            raise LCAODataError(f"cannot align k-point {full_state.direct} across all three jobs")
+        result.append(
+            assemble_peda_kpoint_state(
+                full_state,
+                matches_a[0],
+                matches_b[0],
+                full_atom_ranges,
+                atoms_a,
+                atoms_b,
+                nspin=actual_nspin,
+                occupation_tolerance=occupation_tolerance,
             )
         )
     return result
