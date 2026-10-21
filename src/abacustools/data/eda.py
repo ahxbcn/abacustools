@@ -13,6 +13,7 @@ from abacustools.core.constant import COULOMB_EV_ANGSTROM
 from abacustools.data.abacus_result import get_result_from_job
 from abacustools.data.charge import (
     ChargeDensityError,
+    read_job_total_density,
     valence_electrons,
     validate_same_grid,
 )
@@ -212,6 +213,27 @@ class FragmentNuclei:
     cell: np.ndarray
     pseudopotentials: tuple[str, ...]
     unit: str = "angstrom"
+
+
+@dataclass(frozen=True)
+class ElectrostaticCrossTerms:
+    """Fragment electrostatic cross terms read from three ABACUS jobs.
+
+    Attributes:
+        electron_electron: Electron-electron cross term in eV.
+        electron_nucleus_ab: A electrons with B nuclei in eV.
+        electron_nucleus_ba: B electrons with A nuclei in eV.
+        ion_ion: Nuclear-nuclear Ewald cross term in eV.
+        total: Sum of the four cross terms in eV.
+        unit: Energy unit of every field.
+    """
+
+    electron_electron: float
+    electron_nucleus_ab: float
+    electron_nucleus_ba: float
+    ion_ion: float
+    total: float
+    unit: str = "eV"
 
 
 def _finite_energy(name: str, value: float) -> float:
@@ -624,4 +646,100 @@ def fragment_nuclei(job: str | Path) -> FragmentNuclei:
         charges=charges,
         cell=cell,
         pseudopotentials=tuple(str(value) for value in structure.pps),
+    )
+
+
+def _validate_nuclear_cell(
+    density: Charge,
+    nuclei: FragmentNuclei,
+    description: str,
+) -> None:
+    """Reject nuclear positions and a density that use different cells."""
+
+    density_cell = np.asarray(density.cell, dtype=float)
+    nuclear_cell = np.asarray(nuclei.cell, dtype=float)
+    if (
+        density_cell.shape != (3, 3)
+        or nuclear_cell.shape != (3, 3)
+        or not np.allclose(density_cell, nuclear_cell, rtol=0.0, atol=1e-6)
+    ):
+        raise ValueError(f"{description} nuclear cell does not match its charge-density cell")
+
+
+def electrostatic_cross_term_from_jobs(
+    full_job: str | Path,
+    fragment_a_job: str | Path,
+    fragment_b_job: str | Path,
+    *,
+    version: Optional[str] = None,
+    require_converged: bool = False,
+) -> ElectrostaticCrossTerms:
+    """Assemble the pEDA fragment electrostatic cross term from three jobs.
+
+    The full job supplies only the Ewald reference energy.  The two fragment
+    jobs supply neutral total densities and their pseudopotential-derived
+    point nuclei, so electron-electron, both electron-nucleus directions and
+    the Ewald difference use the same fragment definitions.
+
+    Args:
+        full_job: ABACUS job of the complete complex.
+        fragment_a_job: ABACUS job of fragment A in the complex cell.
+        fragment_b_job: ABACUS job of fragment B in the complex cell.
+        version: Optional ABACUS version hint for logs.
+        require_converged: Refuse fragment densities whose SCF did not converge.
+
+    Returns:
+        The four cross terms and their sum, all in eV.
+
+    Raises:
+        FileNotFoundError: If an ABACUS input, density or Ewald log is missing.
+        ValueError: If a fragment is charged, the grids or cells disagree, or
+            a component is non-finite.
+    """
+
+    density_a = read_job_total_density(
+        Path(fragment_a_job),
+        version=version,
+        require_converged=require_converged,
+        description="pEDA fragment A",
+    )
+    density_b = read_job_total_density(
+        Path(fragment_b_job),
+        version=version,
+        require_converged=require_converged,
+        description="pEDA fragment B",
+    )
+    nuclei_a = fragment_nuclei(fragment_a_job)
+    nuclei_b = fragment_nuclei(fragment_b_job)
+    _validate_nuclear_cell(density_a, nuclei_a, "fragment A")
+    _validate_nuclear_cell(density_b, nuclei_b, "fragment B")
+
+    electron_electron = electron_electron_cross_term(density_a, density_b)
+    electron_nucleus_ab = electron_nucleus_cross_term(
+        density_a,
+        nuclei_b.positions,
+        nuclei_b.charges,
+    )
+    electron_nucleus_ba = electron_nucleus_cross_term(
+        density_b,
+        nuclei_a.positions,
+        nuclei_a.charges,
+    )
+    ion_ion = ion_ion_cross_term(
+        read_abacus_ewald_energy(full_job, version=version),
+        read_abacus_ewald_energy(fragment_a_job, version=version),
+        read_abacus_ewald_energy(fragment_b_job, version=version),
+    )
+    total = electrostatic_cross_term(
+        electron_electron,
+        electron_nucleus_ab,
+        electron_nucleus_ba,
+        ion_ion,
+    )
+    return ElectrostaticCrossTerms(
+        electron_electron=electron_electron,
+        electron_nucleus_ab=electron_nucleus_ab,
+        electron_nucleus_ba=electron_nucleus_ba,
+        ion_ion=ion_ion,
+        total=total,
     )

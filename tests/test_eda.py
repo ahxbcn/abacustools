@@ -9,12 +9,13 @@ import pytest
 import abacustools.data.lcao as lcao
 from abacustools.commands.workflow.eda import prepare_gamma_state_job
 from abacustools.core.constant import COULOMB_EV_ANGSTROM
-from abacustools.data.charge import ChargeDensityError
+from abacustools.data.charge import ChargeDensityError, read_job_total_density
 from abacustools.data.eda import (
     compute_peda_energy_terms,
     electron_electron_cross_term,
     electron_nucleus_cross_term,
     electrostatic_cross_term,
+    electrostatic_cross_term_from_jobs,
     fragment_nuclei,
     ion_ion_cross_term,
     read_abacus_ewald_energy,
@@ -773,3 +774,126 @@ def test_fragment_nuclei_rejects_ghost_atoms(tmp_path):
 
     with pytest.raises(ValueError, match="ghost atoms"):
         fragment_nuclei(job)
+
+
+def _write_ewald_job(job: Path, energy: float) -> Path:
+    output = job / "OUT.ABACUS"
+    output.mkdir(parents=True, exist_ok=True)
+    if not (job / "INPUT").is_file():
+        (job / "INPUT").write_text(
+            "INPUT_PARAMETERS\ncalculation scf\nsuffix ABACUS\n",
+            encoding="utf-8",
+        )
+    (output / "running_scf.log").write_text(f"E_Ewald 0.0 {energy}\n", encoding="utf-8")
+    return job
+
+
+def _write_density_fragment_job(
+    job: Path,
+    *,
+    direct_position: tuple[float, float, float],
+    amplitude: float,
+    density_cell: np.ndarray | None = None,
+) -> Path:
+    pseudopotentials = job / "pp"
+    output = job / "OUT.ABACUS"
+    pseudopotentials.mkdir(parents=True)
+    output.mkdir(parents=True)
+    (pseudopotentials / "H.upf").write_text(_minimal_upf("H", 1.0), encoding="utf-8")
+    (job / "INPUT").write_text(
+        "INPUT_PARAMETERS\ncalculation scf\nsuffix ABACUS\nstru_file STRU\npseudo_dir pp\n",
+        encoding="utf-8",
+    )
+    (job / "STRU").write_text(
+        f"""ATOMIC_SPECIES
+H 1.0 H.upf
+
+LATTICE_CONSTANT
+1.889726125457828
+
+LATTICE_VECTORS
+1 0 0
+0 1 0
+0 0 1
+
+ATOMIC_POSITIONS
+Direct
+
+H
+0.0
+1
+{direct_position[0]} {direct_position[1]} {direct_position[2]}
+""",
+        encoding="utf-8",
+    )
+
+    coordinates = np.arange(8) / 8
+    profile = 1.0 + amplitude * np.cos(2.0 * np.pi * coordinates)
+    data = np.broadcast_to(profile[:, None, None], (8, 8, 8)).copy()
+    cell = np.eye(3) if density_cell is None else np.asarray(density_cell, dtype=float)
+    charge = Charge(
+        data,
+        cell,
+        atom_positions=np.asarray([direct_position], dtype=float) @ cell,
+        atom_types=[1],
+        atom_charges=[1.0],
+    )
+    charge.save_cube(str(output / "SPIN1_CHG.cube"))
+    return job
+
+
+def test_electrostatic_cross_term_from_three_jobs(tmp_path):
+    full_job = _write_ewald_job(tmp_path / "full", -10.0)
+    fragment_a_job = _write_density_fragment_job(
+        tmp_path / "fragment_a",
+        direct_position=(0.0, 0.0, 0.0),
+        amplitude=0.1,
+    )
+    fragment_b_job = _write_density_fragment_job(
+        tmp_path / "fragment_b",
+        direct_position=(0.5, 0.5, 0.5),
+        amplitude=0.2,
+    )
+    _write_ewald_job(fragment_a_job, -6.0)
+    _write_ewald_job(fragment_b_job, -3.0)
+
+    terms = electrostatic_cross_term_from_jobs(
+        full_job,
+        fragment_a_job,
+        fragment_b_job,
+    )
+
+    density_a = read_job_total_density(fragment_a_job)
+    density_b = read_job_total_density(fragment_b_job)
+    nuclei_a = fragment_nuclei(fragment_a_job)
+    nuclei_b = fragment_nuclei(fragment_b_job)
+    expected_ee = electron_electron_cross_term(density_a, density_b)
+    expected_ab = electron_nucleus_cross_term(density_a, nuclei_b.positions, nuclei_b.charges)
+    expected_ba = electron_nucleus_cross_term(density_b, nuclei_a.positions, nuclei_a.charges)
+
+    assert terms.electron_electron == pytest.approx(expected_ee)
+    assert terms.electron_nucleus_ab == pytest.approx(expected_ab)
+    assert terms.electron_nucleus_ba == pytest.approx(expected_ba)
+    assert terms.ion_ion == pytest.approx(-1.0)
+    assert terms.total == pytest.approx(expected_ee + expected_ab + expected_ba - 1.0)
+    assert terms.unit == "eV"
+
+
+def test_electrostatic_cross_term_from_jobs_rejects_density_cell_mismatch(tmp_path):
+    full_job = _write_ewald_job(tmp_path / "full", -10.0)
+    fragment_a_job = _write_density_fragment_job(
+        tmp_path / "fragment_a",
+        direct_position=(0.0, 0.0, 0.0),
+        amplitude=0.1,
+        density_cell=2.0 * np.eye(3),
+    )
+    fragment_b_job = _write_density_fragment_job(
+        tmp_path / "fragment_b",
+        direct_position=(0.5, 0.5, 0.5),
+        amplitude=0.2,
+    )
+    _write_ewald_job(fragment_a_job, -6.0)
+    _write_ewald_job(fragment_b_job, -3.0)
+
+    with pytest.raises(ValueError, match="nuclear cell"):
+        electrostatic_cross_term_from_jobs(full_job, fragment_a_job, fragment_b_job)
