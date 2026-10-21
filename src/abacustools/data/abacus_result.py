@@ -20,6 +20,7 @@ from abacustools.io.abacus import ReadInput
 grouped_params = {
     "scf_results": [
         "energy",
+        "harris_energy",
         "drho",
         "denergy",
         "scf_steps",
@@ -1553,6 +1554,7 @@ def collect_scf_results(
 
     requested = set(param_groups["scf_results"])
     want_energy = bool({"energy", "denergy", "scf_steps"} & requested)
+    want_harris = "harris_energy" in requested
     want_final = "energy" in requested
     want_drho = "drho" in requested
     want_efermi = "efermi" in requested
@@ -1565,6 +1567,8 @@ def collect_scf_results(
     literals: tuple[str, ...] = ()
     if want_energy:
         literals += profile.energy_keywords
+    if want_harris:
+        literals += profile.harris_keywords
     if want_final:
         literals += profile.final_energy_keywords
     if want_drho:
@@ -1580,6 +1584,7 @@ def collect_scf_results(
     gate = _gate(literals)
 
     energies: List[float] = []
+    harris_energies: List[float] = []
     drhos: List[float] = []
     efermis: List[float] = []
     final_energies: List[float] = []
@@ -1595,6 +1600,10 @@ def collect_scf_results(
             values = _numbers(line)
             if values:
                 energies.append(values[-1])
+        elif want_harris and _contains_any(lower_line, profile.harris_keywords):
+            values = _numbers(line)
+            if values:
+                harris_energies.append(values[-1])
         elif want_drho and _contains_any(lower_line, profile.density_error_keywords):
             values = _numbers(line)
             if values:
@@ -1623,6 +1632,7 @@ def collect_scf_results(
     energy_values = (final_energies or energies) if want_final else energies
     available = {
         "energy": energy_values[-1] if energy_values else None,
+        "harris_energy": harris_energies[-1] if harris_energies else None,
         "drho": drhos[-1] if drhos else None,
         "denergy": energies[-1] - energies[-2] if len(energies) > 1 else None,
         "scf_steps": len(energies),

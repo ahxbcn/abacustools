@@ -59,6 +59,7 @@ _MARKER_FIELDS = (
     "aliases",
     "version_prefixes",
     "energy_keywords",
+    "harris_keywords",
     "final_energy_keywords",
     "density_error_keywords",
     "scf_converged_keywords",
@@ -96,6 +97,7 @@ class VersionProfile:
     aliases: tuple[str, ...] = ()
     version_prefixes: tuple[str, ...] = ()
     energy_keywords: tuple[str, ...] = ("e_kohnsham",)
+    harris_keywords: tuple[str, ...] = ("e_harris",)
     final_energy_keywords: tuple[str, ...] = ("final etot",)
     density_error_keywords: tuple[str, ...] = ("density error",)
     scf_converged_keywords: tuple[str, ...] = (

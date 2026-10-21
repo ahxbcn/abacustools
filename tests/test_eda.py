@@ -19,6 +19,7 @@ from abacustools.data.eda import (
     fragment_nuclei,
     ion_ion_cross_term,
     read_abacus_ewald_energy,
+    read_abacus_harris_energy,
     read_gamma_fixed_density_result,
 )
 from abacustools.data.grid import Charge
@@ -395,6 +396,7 @@ def _fixed_density_job(
     *,
     nspin: int = 1,
     energy: float = -10.0,
+    harris: float = -9.75,
     vdw: float = -0.5,
 ) -> tuple[Path, dict[int, np.ndarray]]:
     job = tmp_path / "state"
@@ -411,6 +413,7 @@ def _fixed_density_job(
     )
     (output / "running_scf.log").write_text(
         f"E_KohnSham = {energy:.8f} eV\n"
+        f"E_Harris = {harris:.8f} eV\n"
         f"E_vdwD3 = {vdw:.8f} eV\n"
         "charge density convergence is achieved\n"
         f"final etot is {energy:.8f} eV\n",
@@ -431,6 +434,7 @@ def test_read_gamma_fixed_density_result_single_spin(tmp_path):
     result = read_gamma_fixed_density_result(job)
 
     assert result.energy_ev == pytest.approx(-10.0)
+    assert result.harris_energy_ev == pytest.approx(-9.75)
     assert result.vdw_energy_ev == pytest.approx(-0.5)
     assert result.electronic_energy_ev == pytest.approx(-9.5)
     assert result.nspin == 1
@@ -945,3 +949,19 @@ def test_electrostatic_cross_term_from_jobs_rejects_density_cell_mismatch(tmp_pa
 
     with pytest.raises(ValueError, match="nuclear cell"):
         electrostatic_cross_term_from_jobs(full_job, fragment_a_job, fragment_b_job)
+
+
+def test_read_abacus_harris_energy(tmp_path):
+    job = tmp_path / "job"
+    output = job / "OUT.ABACUS"
+    output.mkdir(parents=True)
+    (job / "INPUT").write_text(
+        "INPUT_PARAMETERS\ncalculation scf\nbasis_type lcao\ngamma_only 1\nsuffix ABACUS\n",
+        encoding="utf-8",
+    )
+    (output / "running_scf.log").write_text(
+        "E_KohnSham = -10.000000 eV\nE_Harris = -9.750000 eV\n",
+        encoding="utf-8",
+    )
+
+    assert read_abacus_harris_energy(job) == pytest.approx(-9.75)

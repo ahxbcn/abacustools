@@ -35,6 +35,9 @@ class GammaFixedDensityResult:
 
     Attributes:
         energy_ev: Total energy printed by ABACUS, in eV.
+        harris_energy_ev: Harris functional energy of the input density when
+            printed, in eV.  This is the appropriate pEDA intermediate energy
+            for a fixed-density state that is not self-consistent.
         vdw_energy_ev: DFT-D energy when present, in eV.
         electronic_energy_ev: Total energy without the separate DFT-D term.
         converged: ABACUS SCF convergence flag.  A one-step fixed-density job
@@ -47,6 +50,7 @@ class GammaFixedDensityResult:
 
     job: str
     energy_ev: float
+    harris_energy_ev: Optional[float]
     vdw_energy_ev: Optional[float]
     electronic_energy_ev: float
     converged: Optional[bool]
@@ -150,7 +154,7 @@ def read_gamma_fixed_density_result(
 
     result = get_result_from_job(
         str(job_path),
-        ["energy", "vdw_energy", "converged", "normal_end"],
+        ["energy", "harris_energy", "vdw_energy", "converged", "normal_end"],
         version=version,
     )
     energy = result.get("energy")
@@ -166,6 +170,9 @@ def read_gamma_fixed_density_result(
     return GammaFixedDensityResult(
         job=str(job_path),
         energy_ev=float(energy),
+        harris_energy_ev=(
+            None if result.get("harris_energy") is None else float(result["harris_energy"])
+        ),
         vdw_energy_ev=vdw_value,
         electronic_energy_ev=electronic,
         converged=result.get("converged"),
@@ -757,3 +764,26 @@ def electrostatic_cross_term_from_jobs(
         ion_ion=ion_ion,
         total=total,
     )
+
+
+def read_abacus_harris_energy(
+    job: str | Path,
+    *,
+    version: Optional[str] = None,
+) -> float:
+    """Read the final ABACUS Harris energy in eV.
+
+    The Harris functional is evaluated from the input density and the
+    eigenvalues obtained with its potential.  It is the appropriate energy for
+    a non-self-consistent pEDA intermediate state such as ``P0``.
+    """
+
+    result = get_result_from_job(
+        str(Path(job).resolve()),
+        ["harris_energy"],
+        version=version,
+    )
+    value = result.get("harris_energy")
+    if value is None or not np.isfinite(float(value)):
+        raise ValueError(f"no Harris energy found in ABACUS log: {job}")
+    return float(value)

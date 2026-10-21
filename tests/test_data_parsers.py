@@ -345,3 +345,15 @@ def test_get_result_reads_ewald_energy(tmp_path):
     result = get_result_from_job(tmp_path, ["ewald_energy"], version="")
 
     assert result["ewald_energy"] == pytest.approx(13.605693)
+
+
+def test_get_result_reads_harris_energy(tmp_path):
+    output = _job_with_output(tmp_path)
+    (output / "running_scf.log").write_text(
+        "E_KohnSham = -10.000000 eV\nE_Harris = -9.750000 eV\n",
+        encoding="utf-8",
+    )
+
+    result = get_result_from_job(tmp_path, ["harris_energy"], version="")
+
+    assert result["harris_energy"] == pytest.approx(-9.75)
