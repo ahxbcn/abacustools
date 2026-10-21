@@ -4,7 +4,9 @@ import numpy as np
 import pytest
 
 from abacustools.data.lcao import (
+    LCAODataError,
     kpoint_density_to_real_space,
+    load_lcao_kpoint_densities,
     real_space_density_to_kpoints,
     write_csr_matrix_blocks,
 )
@@ -166,3 +168,15 @@ def test_real_space_density_to_kpoints_uses_abacus_minus_phase():
     )
 
     np.testing.assert_allclose(result[0][2], zero - one, atol=1e-12)
+
+
+def test_load_lcao_kpoint_densities_rejects_missing_job(tmp_path):
+    with pytest.raises(LCAODataError, match="job directory"):
+        load_lcao_kpoint_densities(tmp_path / "missing")
+
+
+def test_load_lcao_kpoint_densities_rejects_missing_input(tmp_path):
+    job = tmp_path / "job"
+    job.mkdir()
+    with pytest.raises(LCAODataError, match="INPUT"):
+        load_lcao_kpoint_densities(job)

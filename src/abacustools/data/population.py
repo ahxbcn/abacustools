@@ -359,7 +359,9 @@ def _load_lts_gamma_data(output: Path, nspin: int) -> list[KPointDensity]:
     ]
 
 
-def _load_density_data(output: Path, nspin: int, gamma_only: bool) -> list[KPointDensity]:
+def load_kpoint_densities_from_output(
+    output: Path, nspin: int, gamma_only: bool
+) -> list[KPointDensity]:
     kpoints = _load_develop_density_data(output, nspin)
     if kpoints:
         return kpoints
@@ -375,6 +377,10 @@ def _load_density_data(output: Path, nspin: int, gamma_only: bool) -> list[KPoin
         "write out_dmk=1 for the develop layout, or out_wfc_lcao=1 for the LTS "
         "layout, before running the population analysis"
     )
+
+
+# Backward-compatible private alias for existing callers and tests.
+_load_density_data = load_kpoint_densities_from_output
 
 
 def _trace_electrons(
@@ -684,7 +690,7 @@ def analyze_population(
         pairs_str=pairs,
         pairs_file=pairs_file,
     )
-    kpoints = _load_density_data(output, nspin, gamma_only)
+    kpoints = load_kpoint_densities_from_output(output, nspin, gamma_only)
     for kpoint in kpoints:
         if kpoint.overlap.shape != (basis_functions, basis_functions):
             raise PopulationAnalysisError(
@@ -801,8 +807,7 @@ def analyze_population(
     }
     if nspin == 2:
         pair_population = {
-            pair: float(value * spin_factor)
-            for pair, value in pair_population.items()
+            pair: float(value * spin_factor) for pair, value in pair_population.items()
         }
 
     valences = None

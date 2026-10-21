@@ -10,12 +10,16 @@ density-to-energy conversion.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence
 
 import numpy as np
 
 from abacustools.core.constant import BOHR_TO_ANG
+from abacustools.io.abacus import ReadInput
 from abacustools.io.stru import AbacusSTRU
+
+if TYPE_CHECKING:
+    from abacustools.data.population import KPointDensity
 
 
 def _matrix_token(value: complex, precision: int) -> str:
@@ -326,3 +330,80 @@ def real_space_density_to_kpoints(
             total += phase * np.asarray(matrix, dtype=np.complex128)
         result.append((direct, weight, total))
     return result
+
+
+class LCAODataError(RuntimeError):
+    """Raised when LCAO density-matrix data cannot be loaded."""
+
+
+def _scalar(value: Any) -> Any:
+    """Return the first element of an ABACUS scalar field."""
+
+    if isinstance(value, (list, tuple)) and value:
+        return value[0]
+    return value
+
+
+def load_lcao_kpoint_densities(
+    job: str | Path,
+    *,
+    inputs: Any = None,
+    nspin: Optional[int] = None,
+    gamma_only: Optional[bool] = None,
+) -> list[KPointDensity]:
+    """Load the k-resolved density and overlap matrices of an LCAO job.
+
+    This is the public entry point shared by population analysis, COHP/COOP and
+    the future EDA workflow.  The implementation currently delegates to the
+    existing population loader so the two analysis families cannot drift apart
+    while the LCAO data layer is being consolidated.
+
+    Args:
+        job: ABACUS job directory.
+        inputs: Parsed ``INPUT`` mapping, read from ``job`` when omitted.
+        nspin: Override the spin channel count; otherwise read from ``INPUT``.
+        gamma_only: Override the Gamma-only flag; otherwise read from
+            ``INPUT``.
+
+    Returns:
+        One :class:`KPointDensity` per computed k-point, in file order.
+
+    Raises:
+        LCAODataError: If the job, ``INPUT``, output directory, or matrix
+            outputs cannot be read consistently.
+    """
+
+    job_path = Path(job).resolve()
+    if not job_path.is_dir():
+        raise LCAODataError(f"job directory does not exist: {job_path}")
+
+    if inputs is None:
+        input_path = job_path / "INPUT"
+        if not input_path.is_file():
+            raise LCAODataError(f"INPUT file does not exist: {input_path}")
+        inputs = ReadInput(str(input_path))
+    if not inputs:
+        raise LCAODataError(f"could not read INPUT in {job_path}")
+
+    suffix = str(_scalar(inputs.get("suffix", "ABACUS")))
+    output = job_path / f"OUT.{suffix}"
+    if not output.is_dir():
+        raise LCAODataError(f"ABACUS output directory does not exist: {output}")
+
+    actual_nspin = int(_scalar(inputs.get("nspin", 1))) if nspin is None else int(nspin)
+    if actual_nspin not in (1, 2):
+        raise LCAODataError(f"LCAO density loading supports nspin=1 or 2, got {actual_nspin}")
+    if gamma_only is None:
+        actual_gamma = bool(int(_scalar(inputs.get("gamma_only", 0)) or 0))
+    else:
+        actual_gamma = bool(gamma_only)
+
+    from abacustools.data.population import (
+        PopulationAnalysisError,
+        load_kpoint_densities_from_output,
+    )
+
+    try:
+        return load_kpoint_densities_from_output(output, actual_nspin, actual_gamma)
+    except (PopulationAnalysisError, OSError, ValueError) as error:
+        raise LCAODataError(str(error)) from error

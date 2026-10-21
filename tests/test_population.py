@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from abacustools.data.lcao import load_lcao_kpoint_densities
 from abacustools.data.population import (
     PopulationAnalysisError,
     _expand_atom_values,
@@ -176,9 +177,7 @@ def _write_kpoints_with_mesh(
         " KPOINTS DIRECT_X DIRECT_Y DIRECT_Z WEIGHT",
     ]
     for index, (point, weight) in enumerate(nodes, start=1):
-        lines.append(
-            f" {index} {point[0]} {point[1]} {point[2]} {weight:.4f}"
-        )
+        lines.append(f" {index} {point[0]} {point[1]} {point[2]} {weight:.4f}")
     lines += [
         "",
         f" nkstot = {len(mesh)}",
@@ -378,9 +377,7 @@ def test_multik_weight_convention_is_detected(tmp_path, weighted):
 def test_nspin2_total_and_difference(tmp_path):
     total = analyze_population(_nspin2_gamma_job(tmp_path), method="mulliken", spin="total")
     difference = analyze_population(tmp_path, method="mulliken", spin="difference")
-    legacy_scale = analyze_population(
-        tmp_path, method="mulliken", spin="total", spin_factor=2.0
-    )
+    legacy_scale = analyze_population(tmp_path, method="mulliken", spin="total", spin_factor=2.0)
 
     np.testing.assert_allclose([atom.population for atom in total.atoms], [1.0, 1.0])
     assert total.total_magnetization == pytest.approx(0.25)
@@ -411,12 +408,7 @@ def test_develop_dm_uses_the_recorded_symmetry_weights(tmp_path):
 def test_electron_count_falls_back_to_the_scf_log(tmp_path):
     root = _gamma_job(tmp_path)
     (root / "INPUT").write_text(
-        "INPUT_PARAMETERS\n"
-        "calculation scf\n"
-        "basis_type lcao\n"
-        "nspin 1\n"
-        "gamma_only 1\n"
-        "out_dmk 1\n",
+        "INPUT_PARAMETERS\ncalculation scf\nbasis_type lcao\nnspin 1\ngamma_only 1\nout_dmk 1\n",
         encoding="utf-8",
     )
     (root / "OUT.ABACUS" / "running_scf.log").write_text(
@@ -438,9 +430,7 @@ def test_lts_wfc_nspin2_total_and_difference(tmp_path):
     assert total.total_electrons == pytest.approx(2.0)
     np.testing.assert_allclose([atom.population for atom in total.atoms], [1.0, 1.0])
     assert total.total_magnetization == pytest.approx(0.0)
-    np.testing.assert_allclose(
-        [atom.population for atom in difference.atoms], [0.0, 0.0]
-    )
+    np.testing.assert_allclose([atom.population for atom in difference.atoms], [0.0, 0.0])
 
 
 def test_spin_selection_requires_nspin2(tmp_path):
@@ -474,3 +464,31 @@ def test_star_expansion_maps_atoms_and_pairs():
     )
     np.testing.assert_allclose(atoms, [1.0, 1.0])
     assert pairs[(0, 1)] == pytest.approx(1.0)
+
+
+def _assert_same_kpoint_densities(left, right):
+    assert len(left) == len(right)
+    for first, second in zip(left, right):
+        assert first.index == second.index
+        np.testing.assert_allclose(first.direct, second.direct)
+        assert first.weight == pytest.approx(second.weight)
+        np.testing.assert_allclose(first.overlap, second.overlap)
+        assert set(first.densities) == set(second.densities)
+        for spin in first.densities:
+            np.testing.assert_allclose(first.densities[spin], second.densities[spin])
+
+
+def test_public_lcao_loader_matches_gamma_population_loader(tmp_path):
+    root = _gamma_job(tmp_path)
+    public = load_lcao_kpoint_densities(root)
+    private = _load_density_data(root / "OUT.ABACUS", 1, True)
+
+    _assert_same_kpoint_densities(public, private)
+
+
+def test_public_lcao_loader_matches_multik_population_loader(tmp_path):
+    root = _multik_job(tmp_path, weighted=False)
+    public = load_lcao_kpoint_densities(root)
+    private = _load_density_data(root / "OUT.ABACUS", 1, False)
+
+    _assert_same_kpoint_densities(public, private)
