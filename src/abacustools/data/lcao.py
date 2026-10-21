@@ -1365,3 +1365,81 @@ def build_peda_kpoint_states(
             )
         )
     return result
+
+
+def _peda_channel_matrix(channel: PEDAChannelState, field: str) -> np.ndarray:
+    """Return one density matrix from a pEDA channel."""
+
+    matrices = {
+        "p0": channel.p0_nao,
+        "p_ab": channel.p_ab_nao,
+        "p_ts": channel.p_ts_nao,
+    }
+    try:
+        return matrices[field]
+    except KeyError as error:
+        raise ValueError(f"unknown pEDA state field: {field}") from error
+
+
+def write_peda_state_dmr(
+    states: Sequence[PEDAOrbitalState],
+    structure: AbacusSTRU,
+    output_dir: str | Path,
+    *,
+    field: str = "p0",
+    precision: int = 8,
+    sparse_threshold: float = 1e-10,
+) -> dict[int, Path]:
+    """Write Gamma-point pEDA density matrices as ABACUS DMR files.
+
+    The first version intentionally handles only one Gamma k-point.  Multi-k
+    export needs an explicit set of R blocks and will be added separately.
+
+    Args:
+        states: pEDA k-point states.  Exactly one Gamma-point state is required.
+        structure: Full-system structure used for the ABACUS CSR header.
+        output_dir: Directory in which ``dmrs{spin}_nao.csr`` files are written.
+        field: ``p0``, ``p_ab`` or ``p_ts``.
+        precision: Text precision passed to the CSR writer.
+        sparse_threshold: Entries below this magnitude are omitted.
+
+    Returns:
+        Mapping from one-based spin index to the written file path.
+
+    Raises:
+        ValueError: If the state is not a single Gamma point or the requested
+            field is invalid.
+    """
+
+    if len(states) != 1:
+        raise ValueError("Gamma-point DMR export requires exactly one k-point")
+    state = states[0]
+    if _periodic_direct_distance(state.direct, (0.0, 0.0, 0.0)) > 1e-6:
+        raise ValueError("multi-k DMR export requires explicit R blocks; only Gamma is supported")
+    if field not in {"p0", "p_ab", "p_ts"}:
+        raise ValueError(f"unknown pEDA state field: {field}")
+    if not state.channels:
+        raise ValueError("pEDA state has no spin channels")
+
+    spins = sorted(state.channels)
+    nspin = len(spins)
+    if nspin not in (1, 2):
+        raise ValueError(f"DMR export supports nspin=1 or 2, got {nspin}")
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+
+    result: dict[int, Path] = {}
+    for spin in spins:
+        matrix = np.asarray(_peda_channel_matrix(state.channels[spin], field))
+        path = output / f"dmrs{spin}_nao.csr"
+        write_csr_matrix_blocks(
+            path,
+            {(0, 0, 0): matrix},
+            structure=structure,
+            nspin=nspin,
+            spin=spin,
+            precision=precision,
+            sparse_threshold=sparse_threshold,
+        )
+        result[spin] = path
+    return result
