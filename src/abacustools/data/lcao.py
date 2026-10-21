@@ -407,3 +407,175 @@ def load_lcao_kpoint_densities(
         return load_kpoint_densities_from_output(output, actual_nspin, actual_gamma)
     except (PopulationAnalysisError, OSError, ValueError) as error:
         raise LCAODataError(str(error)) from error
+
+
+def _validated_full_atom_ranges(
+    full_atom_ranges: Sequence[tuple[int, int]],
+    full_dimension: Optional[int],
+) -> tuple[list[tuple[int, int]], int]:
+    """Validate atom-to-orbital ranges and return the full basis size."""
+
+    if not full_atom_ranges:
+        raise ValueError("full_atom_ranges must not be empty")
+    ranges: list[tuple[int, int]] = []
+    previous_stop = 0
+    for index, item in enumerate(full_atom_ranges):
+        if len(item) != 2:
+            raise ValueError(f"atom range {index} must contain start and stop")
+        start, stop = int(item[0]), int(item[1])
+        if start < 0 or stop <= start:
+            raise ValueError(f"atom range {index} is invalid: {(start, stop)}")
+        if start < previous_stop:
+            raise ValueError("full_atom_ranges must be ordered and non-overlapping")
+        ranges.append((start, stop))
+        previous_stop = stop
+    inferred = previous_stop
+    if full_dimension is None:
+        return ranges, inferred
+    dimension = int(full_dimension)
+    if dimension < inferred:
+        raise ValueError(
+            f"full_dimension={dimension} is smaller than the last atom stop={inferred}"
+        )
+    return ranges, dimension
+
+
+def _fragment_axis_slices(
+    fragment_atom_indices: Sequence[int],
+    full_atom_ranges: Sequence[tuple[int, int]],
+    fragment_dimension: int,
+    full_dimension: Optional[int],
+) -> tuple[list[tuple[slice, slice]], int]:
+    """Return corresponding fragment and full basis slices."""
+
+    if not fragment_atom_indices:
+        raise ValueError("at least one fragment atom is required")
+    indices = [int(index) for index in fragment_atom_indices]
+    if len(set(indices)) != len(indices):
+        raise ValueError("fragment atom indices must be unique")
+    ranges, full_size = _validated_full_atom_ranges(full_atom_ranges, full_dimension)
+    pairs: list[tuple[slice, slice]] = []
+    offset = 0
+    for index in indices:
+        if index < 0 or index >= len(ranges):
+            raise ValueError(f"fragment atom index is outside the full structure: {index}")
+        start, stop = ranges[index]
+        length = stop - start
+        pairs.append((slice(offset, offset + length), slice(start, stop)))
+        offset += length
+    if offset != int(fragment_dimension):
+        raise ValueError(
+            f"fragment matrix dimension is {fragment_dimension}, but the selected "
+            f"atoms contain {offset} basis functions"
+        )
+    return pairs, full_size
+
+
+def _fragment_index_map(
+    fragment_atom_indices: Sequence[int],
+    full_atom_ranges: Sequence[tuple[int, int]],
+    fragment_dimension: int,
+    full_dimension: Optional[int],
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Return fragment and full basis indices in matching order."""
+
+    pairs, full_size = _fragment_axis_slices(
+        fragment_atom_indices,
+        full_atom_ranges,
+        fragment_dimension,
+        full_dimension,
+    )
+    fragment_indices = np.concatenate(
+        [np.arange(fragment_slice.start, fragment_slice.stop) for fragment_slice, _ in pairs]
+    )
+    full_indices = np.concatenate(
+        [np.arange(full_slice.start, full_slice.stop) for _, full_slice in pairs]
+    )
+    return fragment_indices, full_indices, full_size
+
+
+def embed_fragment_matrix(
+    matrix: np.ndarray,
+    fragment_atom_indices: Sequence[int],
+    full_atom_ranges: Sequence[tuple[int, int]],
+    *,
+    full_dimension: Optional[int] = None,
+) -> np.ndarray:
+    """Embed a fragment density-like matrix into the full NAO basis.
+
+    The fragment matrix is assumed to use the atom order in
+    ``fragment_atom_indices``.  That is the order produced by selecting a
+    subset from the full structure with :meth:`AbacusSTRU.create_subset`.
+
+    Args:
+        matrix: Square fragment matrix in the fragment NAO basis.
+        fragment_atom_indices: Zero-based atom indices in the full structure,
+            in the same order as the fragment basis.
+        full_atom_ranges: Half-open NAO basis range of every full atom.
+        full_dimension: Optional full basis size; inferred from the ranges.
+
+    Returns:
+        A dense matrix in the full NAO basis with zeros outside the fragment
+        blocks.
+
+    Raises:
+        ValueError: If the matrix, atom indices or ranges are inconsistent.
+    """
+
+    array = np.asarray(matrix)
+    if array.ndim != 2 or array.shape[0] != array.shape[1]:
+        raise ValueError("fragment matrix must be square")
+    if not np.all(np.isfinite(array)):
+        raise ValueError("fragment matrix contains non-finite values")
+    fragment_indices, full_indices, full_size = _fragment_index_map(
+        fragment_atom_indices,
+        full_atom_ranges,
+        int(array.shape[0]),
+        full_dimension,
+    )
+    result = np.zeros((full_size, full_size), dtype=array.dtype)
+    result[np.ix_(full_indices, full_indices)] = array[np.ix_(fragment_indices, fragment_indices)]
+    return result
+
+
+def embed_fragment_coefficients(
+    coefficients: np.ndarray,
+    fragment_atom_indices: Sequence[int],
+    full_atom_ranges: Sequence[tuple[int, int]],
+    *,
+    full_dimension: Optional[int] = None,
+) -> np.ndarray:
+    """Embed fragment orbital coefficients into the full NAO basis.
+
+    Rows follow the fragment NAO basis; columns are bands or other secondary
+    dimensions and are preserved unchanged.
+
+    Args:
+        coefficients: Fragment coefficient matrix with shape
+            ``(fragment_basis, n_columns)``.
+        fragment_atom_indices: Zero-based atom indices in the full structure,
+            in the same order as the fragment basis.
+        full_atom_ranges: Half-open NAO basis range of every full atom.
+        full_dimension: Optional full basis size; inferred from the ranges.
+
+    Returns:
+        A dense matrix with shape ``(full_basis, n_columns)``.
+
+    Raises:
+        ValueError: If the coefficients, atom indices or ranges are inconsistent.
+    """
+
+    array = np.asarray(coefficients)
+    if array.ndim != 2:
+        raise ValueError("fragment coefficients must be a two-dimensional matrix")
+    if not np.all(np.isfinite(array)):
+        raise ValueError("fragment coefficients contain non-finite values")
+    fragment_indices, full_indices, full_size = _fragment_index_map(
+        fragment_atom_indices,
+        full_atom_ranges,
+        int(array.shape[0]),
+        full_dimension,
+    )
+    result = np.zeros((full_size, array.shape[1]), dtype=array.dtype)
+    result[full_indices, :] = array[fragment_indices, :]
+    return result

@@ -5,6 +5,8 @@ import pytest
 
 from abacustools.data.lcao import (
     LCAODataError,
+    embed_fragment_coefficients,
+    embed_fragment_matrix,
     kpoint_density_to_real_space,
     load_lcao_kpoint_densities,
     real_space_density_to_kpoints,
@@ -180,3 +182,51 @@ def test_load_lcao_kpoint_densities_rejects_missing_input(tmp_path):
     job.mkdir()
     with pytest.raises(LCAODataError, match="INPUT"):
         load_lcao_kpoint_densities(job)
+
+
+def test_embed_fragment_matrix_maps_selected_atom_blocks():
+    full_ranges = [(0, 2), (2, 5), (5, 6)]
+    fragment = np.arange(9, dtype=float).reshape(3, 3)
+    embedded = embed_fragment_matrix(fragment, [0, 2], full_ranges)
+
+    assert embedded.shape == (6, 6)
+    np.testing.assert_allclose(embedded[0:2, 0:2], fragment[0:2, 0:2])
+    np.testing.assert_allclose(embedded[0:2, 5:6], fragment[0:2, 2:3])
+    np.testing.assert_allclose(embedded[5:6, 0:2], fragment[2:3, 0:2])
+    np.testing.assert_allclose(embedded[5:6, 5:6], fragment[2:3, 2:3])
+    np.testing.assert_allclose(embedded[2:5, :], 0.0)
+    np.testing.assert_allclose(embedded[:, 2:5], 0.0)
+
+
+def test_embed_fragment_coefficients_maps_rows_only():
+    full_ranges = [(0, 2), (2, 5), (5, 6)]
+    coefficients = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+    embedded = embed_fragment_coefficients(coefficients, [1], full_ranges)
+
+    assert embedded.shape == (6, 2)
+    np.testing.assert_allclose(embedded[2:5, :], coefficients)
+    np.testing.assert_allclose(embedded[0:2, :], 0.0)
+    np.testing.assert_allclose(embedded[5:6, :], 0.0)
+
+
+def test_embed_fragment_matrix_preserves_complex_dtype():
+    fragment = np.array([[1.0 + 0.5j, 0.0], [0.0, 2.0 - 0.25j]])
+    embedded = embed_fragment_matrix(fragment, [0], [(0, 2), (2, 3)])
+
+    assert np.iscomplexobj(embedded)
+    np.testing.assert_allclose(embedded[0:2, 0:2], fragment)
+
+
+def test_embed_fragment_matrix_rejects_duplicate_atoms():
+    with pytest.raises(ValueError, match="unique"):
+        embed_fragment_matrix(np.eye(2), [0, 0], [(0, 2)])
+
+
+def test_embed_fragment_matrix_rejects_out_of_range_atom():
+    with pytest.raises(ValueError, match="outside"):
+        embed_fragment_matrix(np.eye(2), [2], [(0, 2)])
+
+
+def test_embed_fragment_matrix_rejects_dimension_mismatch():
+    with pytest.raises(ValueError, match="dimension"):
+        embed_fragment_matrix(np.eye(3), [0], [(0, 2)])
