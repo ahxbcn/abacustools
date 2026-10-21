@@ -400,7 +400,7 @@ def electron_electron_cross_term(
     density_a: Charge,
     density_b: Charge,
     *,
-    neutral_tolerance: float = 1e-5,
+    neutral_tolerance: float = 1e-3,
 ) -> float:
     """Return the periodic electron-electron cross energy in eV.
 
@@ -449,7 +449,7 @@ def electron_nucleus_cross_term(
     nuclear_positions: np.ndarray,
     nuclear_charges: Sequence[float],
     *,
-    neutral_tolerance: float = 1e-5,
+    neutral_tolerance: float = 1e-3,
 ) -> float:
     """Return the periodic electron-nucleus cross energy in eV.
 
@@ -501,7 +501,7 @@ def electron_nucleus_cross_term(
     rho_g = np.fft.fftn(density.data) / density.data.size
     integrand = np.conj(rho_g) * structure_factor / squared
     integrand[0, 0, 0] = 0.0
-    energy = -float(np.real(np.sum(integrand))) * 4.0 * np.pi * volume * COULOMB_EV_ANGSTROM
+    energy = -float(np.real(np.sum(integrand))) * 4.0 * np.pi * COULOMB_EV_ANGSTROM
     if not np.isfinite(energy):
         raise ValueError("electron-nucleus cross term is not finite")
     return energy
@@ -654,14 +654,19 @@ def _validate_nuclear_cell(
     nuclei: FragmentNuclei,
     description: str,
 ) -> None:
-    """Reject nuclear positions and a density that use different cells."""
+    """Reject nuclear positions and a density that use different cells.
+
+    STRU and cube files reach Angstrom through slightly different Bohr
+    conversion constants, so a relative tolerance of ``1e-5`` is needed for a
+    valid round trip.  A genuinely different cell remains far outside it.
+    """
 
     density_cell = np.asarray(density.cell, dtype=float)
     nuclear_cell = np.asarray(nuclei.cell, dtype=float)
     if (
         density_cell.shape != (3, 3)
         or nuclear_cell.shape != (3, 3)
-        or not np.allclose(density_cell, nuclear_cell, rtol=0.0, atol=1e-6)
+        or not np.allclose(density_cell, nuclear_cell, rtol=1e-5, atol=1e-6)
     ):
         raise ValueError(f"{description} nuclear cell does not match its charge-density cell")
 
@@ -673,6 +678,7 @@ def electrostatic_cross_term_from_jobs(
     *,
     version: Optional[str] = None,
     require_converged: bool = False,
+    neutral_tolerance: float = 1e-3,
 ) -> ElectrostaticCrossTerms:
     """Assemble the pEDA fragment electrostatic cross term from three jobs.
 
@@ -687,6 +693,8 @@ def electrostatic_cross_term_from_jobs(
         fragment_b_job: ABACUS job of fragment B in the complex cell.
         version: Optional ABACUS version hint for logs.
         require_converged: Refuse fragment densities whose SCF did not converge.
+        neutral_tolerance: Accepted electron/ionic charge mismatch from cube
+            integration and FFT grid rounding.
 
     Returns:
         The four cross terms and their sum, all in eV.
@@ -714,16 +722,22 @@ def electrostatic_cross_term_from_jobs(
     _validate_nuclear_cell(density_a, nuclei_a, "fragment A")
     _validate_nuclear_cell(density_b, nuclei_b, "fragment B")
 
-    electron_electron = electron_electron_cross_term(density_a, density_b)
+    electron_electron = electron_electron_cross_term(
+        density_a,
+        density_b,
+        neutral_tolerance=neutral_tolerance,
+    )
     electron_nucleus_ab = electron_nucleus_cross_term(
         density_a,
         nuclei_b.positions,
         nuclei_b.charges,
+        neutral_tolerance=neutral_tolerance,
     )
     electron_nucleus_ba = electron_nucleus_cross_term(
         density_b,
         nuclei_a.positions,
         nuclei_a.charges,
+        neutral_tolerance=neutral_tolerance,
     )
     ion_ion = ion_ion_cross_term(
         read_abacus_ewald_energy(full_job, version=version),

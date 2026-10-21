@@ -614,6 +614,28 @@ def test_electron_nucleus_cross_term_allows_a_positive_cross_energy():
     assert energy == pytest.approx(COULOMB_EV_ANGSTROM / np.pi, rel=1e-6)
 
 
+def test_electron_nucleus_cross_term_scales_with_cell_volume():
+    length = 2.0
+    coordinates = np.arange(8) / 8
+    profile = 1.0 + np.cos(2.0 * np.pi * coordinates)
+    data = np.broadcast_to(profile[:, None, None], (8, 8, 8)).copy()
+    density = Charge(
+        data,
+        length * np.eye(3),
+        atom_positions=np.zeros((1, 3)),
+        atom_types=[1],
+        atom_charges=[length**3],
+    )
+
+    energy = electron_nucleus_cross_term(
+        density,
+        np.array([[0.0, 0.0, 0.0]]),
+        [length**3],
+    )
+
+    assert energy == pytest.approx(-COULOMB_EV_ANGSTROM * length**5 / np.pi, rel=1e-6)
+
+
 def test_electron_nucleus_cross_term_is_periodic():
     density = _cosine_density(1.0)
     origin = electron_nucleus_cross_term(
@@ -882,6 +904,27 @@ def test_electrostatic_cross_term_from_three_jobs(tmp_path):
     assert terms.ion_ion == pytest.approx(-1.0)
     assert terms.total == pytest.approx(expected_ee + expected_ab + expected_ba - 1.0)
     assert terms.unit == "eV"
+
+
+def test_electrostatic_cross_term_from_jobs_accepts_rounding_in_cell(tmp_path):
+    full_job = _write_ewald_job(tmp_path / "full", -10.0)
+    fragment_a_job = _write_density_fragment_job(
+        tmp_path / "fragment_a",
+        direct_position=(0.0, 0.0, 0.0),
+        amplitude=0.1,
+        density_cell=(1.0 + 6e-7) * np.eye(3),
+    )
+    fragment_b_job = _write_density_fragment_job(
+        tmp_path / "fragment_b",
+        direct_position=(0.5, 0.5, 0.5),
+        amplitude=0.2,
+    )
+    _write_ewald_job(fragment_a_job, -6.0)
+    _write_ewald_job(fragment_b_job, -3.0)
+
+    terms = electrostatic_cross_term_from_jobs(full_job, fragment_a_job, fragment_b_job)
+
+    assert np.isfinite(terms.total)
 
 
 def test_electrostatic_cross_term_from_jobs_rejects_density_cell_mismatch(tmp_path):
