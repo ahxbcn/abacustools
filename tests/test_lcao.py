@@ -6,6 +6,10 @@ import pytest
 from abacustools.data.lcao import (
     LCAODataError,
     embed_fragment_coefficients,
+    build_p0_lambda,
+    build_p0_nao,
+    build_transition_density,
+    density_matrix_in_basis,
     embed_fragment_matrix,
     orthogonalize_fragment_orbitals,
     kpoint_density_to_real_space,
@@ -292,3 +296,69 @@ def test_orthogonalize_fragment_orbitals_rejects_non_hermitian_overlap():
             np.array([[0.0], [1.0]]),
             np.array([[1.0, 0.5], [0.0, 1.0]]),
         )
+
+
+def test_build_p0_lambda_pads_virtual_zeros():
+    matrix = build_p0_lambda([1.0, 2.0], n_orbitals=4)
+
+    assert matrix.shape == (4, 4)
+    np.testing.assert_allclose(np.diag(matrix), [1.0, 2.0, 0.0, 0.0])
+
+
+def test_build_p0_nao_is_idempotent_for_unit_occupation():
+    occupied = np.array([[1.0], [0.0]])
+    density = build_p0_nao(occupied, [1.0])
+
+    np.testing.assert_allclose(density, density.conj().T)
+    np.testing.assert_allclose(density @ density, density)
+    assert np.trace(density) == pytest.approx(1.0)
+
+
+def test_build_p0_nao_closed_shell_density_has_double_idempotency():
+    occupied = np.array([[1.0], [0.0]])
+    density = build_p0_nao(occupied, [2.0])
+
+    np.testing.assert_allclose(density @ density, 2.0 * density)
+    assert np.trace(density) == pytest.approx(2.0)
+
+
+def test_density_matrix_in_basis_recovers_diagonal_p0():
+    overlap = np.array([[1.0, 0.5], [0.5, 1.0]])
+    basis = orthogonalize_fragment_orbitals(
+        np.array([[1.0], [0.0]]),
+        np.array([[0.0], [1.0]]),
+        overlap,
+    )
+    p0 = build_p0_nao(basis.occupied, [1.0])
+
+    transformed = density_matrix_in_basis(p0, overlap, basis.combined)
+
+    np.testing.assert_allclose(transformed, np.diag([1.0, 0.0]), atol=1e-12)
+
+
+def test_build_transition_density_is_half_sum_and_hermitian():
+    p0 = np.array([[1.0, 0.0], [0.0, 0.0]])
+    p_ab = np.array([[0.8, 0.2j], [-0.2j, 0.2]])
+    transition = build_transition_density(p_ab, p0)
+
+    np.testing.assert_allclose(transition, 0.5 * (p0 + p_ab))
+    np.testing.assert_allclose(transition, transition.conj().T)
+    assert np.trace(transition) == pytest.approx(1.0)
+
+
+def test_build_p0_lambda_rejects_invalid_occupation():
+    with pytest.raises(ValueError, match="between 0 and 2"):
+        build_p0_lambda([2.5])
+
+
+def test_build_transition_density_rejects_non_hermitian_p_ab():
+    with pytest.raises(ValueError, match="P_AB must be Hermitian"):
+        build_transition_density(
+            np.array([[1.0, 1.0], [0.0, 1.0]]),
+            np.eye(2),
+        )
+
+
+def test_build_transition_density_rejects_invalid_weight():
+    with pytest.raises(ValueError, match="weight"):
+        build_transition_density(np.eye(2), np.eye(2), weight=1.5)

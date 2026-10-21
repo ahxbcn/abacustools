@@ -709,3 +709,171 @@ def orthogonalize_fragment_orbitals(
         combined=combined,
         discarded_virtuals=discarded,
     )
+
+
+def density_matrix_in_basis(
+    density_nao: np.ndarray,
+    overlap: np.ndarray,
+    coefficients: np.ndarray,
+) -> np.ndarray:
+    """Transform a NAO density matrix into a coefficient basis.
+
+    For NAO coefficients ``C`` whose columns are the target orbitals, the
+    density matrix in that basis is::
+
+        P_basis = C† S P_NAO S C
+
+    Args:
+        density_nao: Density matrix in the NAO basis, shape ``(n, n)``.
+        overlap: NAO overlap matrix ``S``, shape ``(n, n)``.
+        coefficients: Target orbital coefficients, shape ``(n, m)``.
+
+    Returns:
+        The transformed density matrix with shape ``(m, m)``.
+
+    Raises:
+        ValueError: If shapes, Hermiticity or finiteness are inconsistent.
+    """
+
+    density = np.asarray(density_nao)
+    s = np.asarray(overlap)
+    c = np.asarray(coefficients)
+    if density.ndim != 2 or s.ndim != 2 or c.ndim != 2:
+        raise ValueError("density, overlap and coefficients must be two-dimensional")
+    n_basis = int(s.shape[0])
+    if s.shape != (n_basis, n_basis):
+        raise ValueError("overlap must be square")
+    if density.shape != (n_basis, n_basis):
+        raise ValueError("density must match the overlap dimension")
+    if c.shape[0] != n_basis:
+        raise ValueError("coefficients must have one row per NAO basis function")
+    if not np.all(np.isfinite(density)) or not np.all(np.isfinite(s)) or not np.all(np.isfinite(c)):
+        raise ValueError("density, overlap and coefficients must be finite")
+    if not np.allclose(s, s.conj().T, atol=1e-10, rtol=1e-10):
+        raise ValueError("overlap matrix must be Hermitian")
+    if not np.allclose(density, density.conj().T, atol=1e-8, rtol=1e-8):
+        raise ValueError("density matrix must be Hermitian")
+
+    transformed = c.conj().T @ s @ density @ s @ c
+    transformed = 0.5 * (transformed + transformed.conj().T)
+    if not np.all(np.isfinite(transformed)):
+        raise ValueError("transformed density matrix contains non-finite values")
+    return transformed
+
+
+def build_p0_lambda(
+    occupations: Sequence[float],
+    *,
+    n_orbitals: Optional[int] = None,
+) -> np.ndarray:
+    """Build the diagonal P0 matrix in the orthonormal fragment basis.
+
+    Args:
+        occupations: Occupations of the occupied fragment orbitals.  Values
+            are typically 1 for one spin channel or 2 for a closed-shell
+            spin-summed density.
+        n_orbitals: Total number of orbitals in the orthonormal fragment basis,
+            including virtual orbitals.  Defaults to ``len(occupations)``.
+
+    Returns:
+        A diagonal matrix with the occupations followed by zeros for the
+        virtual orbitals.
+
+    Raises:
+        ValueError: If occupations are invalid or exceed the target dimension.
+    """
+
+    values = np.asarray(occupations, dtype=float)
+    if values.ndim != 1 or values.size == 0:
+        raise ValueError("occupations must be a non-empty one-dimensional array")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("occupations must be finite")
+    if np.any(values < 0.0) or np.any(values > 2.0):
+        raise ValueError("occupations must lie between 0 and 2")
+    size = values.size if n_orbitals is None else int(n_orbitals)
+    if size < values.size:
+        raise ValueError("n_orbitals must not be smaller than the number of occupations")
+    diagonal = np.zeros(size, dtype=float)
+    diagonal[: values.size] = values
+    return np.diag(diagonal)
+
+
+def build_p0_nao(
+    occupied_lambda: np.ndarray,
+    occupations: Sequence[float],
+) -> np.ndarray:
+    """Build the P0 density matrix from orthonormal occupied orbitals.
+
+    Args:
+        occupied_lambda: Occupied orbitals in the orthonormal fragment basis,
+            shape ``(n_basis, n_occupied)``.
+        occupations: Occupations of those orbitals.
+
+    Returns:
+        The Hermitian NAO density matrix
+        ``sum_i occupation_i * lambda_i lambda_i†``.
+
+    Raises:
+        ValueError: If dimensions or occupations are inconsistent.
+    """
+
+    orbitals = np.asarray(occupied_lambda)
+    values = np.asarray(occupations, dtype=float)
+    if orbitals.ndim != 2:
+        raise ValueError("occupied_lambda must be a two-dimensional matrix")
+    if values.ndim != 1 or values.size != orbitals.shape[1]:
+        raise ValueError("occupations must match the number of occupied orbitals")
+    if not np.all(np.isfinite(orbitals)) or not np.all(np.isfinite(values)):
+        raise ValueError("occupied orbitals and occupations must be finite")
+    if np.any(values < 0.0) or np.any(values > 2.0):
+        raise ValueError("occupations must lie between 0 and 2")
+
+    density = (orbitals * values[np.newaxis, :]) @ orbitals.conj().T
+    density = 0.5 * (density + density.conj().T)
+    if not np.all(np.isfinite(density)):
+        raise ValueError("P0 density matrix contains non-finite values")
+    return density
+
+
+def build_transition_density(
+    p_ab: np.ndarray,
+    p0: np.ndarray,
+    *,
+    weight: float = 0.5,
+) -> np.ndarray:
+    """Build the transition density ``(1 - w) P0 + w P_AB``.
+
+    The ETS-NOCV transition density uses ``w = 0.5``:
+
+    ``P_TS = 0.5 * (P_AB + P0)``
+
+    Args:
+        p_ab: Fully relaxed density matrix.
+        p0: Orthogonalized-fragment density matrix.
+        weight: Mixing weight in the closed interval ``[0, 1]``.
+
+    Returns:
+        The Hermitian transition density matrix.
+
+    Raises:
+        ValueError: If shapes, Hermiticity, finiteness or weight are invalid.
+    """
+
+    first = np.asarray(p_ab)
+    second = np.asarray(p0)
+    if first.shape != second.shape or first.ndim != 2 or first.shape[0] != first.shape[1]:
+        raise ValueError("P_AB and P0 must be square matrices of the same shape")
+    if not np.isfinite(weight) or not 0.0 <= weight <= 1.0:
+        raise ValueError("weight must lie between 0 and 1")
+    if not np.all(np.isfinite(first)) or not np.all(np.isfinite(second)):
+        raise ValueError("P_AB and P0 must be finite")
+    if not np.allclose(first, first.conj().T, atol=1e-8, rtol=1e-8):
+        raise ValueError("P_AB must be Hermitian")
+    if not np.allclose(second, second.conj().T, atol=1e-8, rtol=1e-8):
+        raise ValueError("P0 must be Hermitian")
+
+    transition = (1.0 - weight) * second + weight * first
+    transition = 0.5 * (transition + transition.conj().T)
+    if not np.all(np.isfinite(transition)):
+        raise ValueError("transition density contains non-finite values")
+    return transition
