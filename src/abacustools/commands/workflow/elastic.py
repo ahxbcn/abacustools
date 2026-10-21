@@ -20,6 +20,7 @@ from abacustools.data.elastic import (
     independent_components,
     independent_strain_modes,
     point_group_operations,
+    pymatgen_elastic_properties,
     stress_voigt,
     symmetrize_elastic_tensor,
     symmetrization_residual,
@@ -158,6 +159,15 @@ def _register_postprocess_arguments(parser: argparse.ArgumentParser) -> None:
             "only the independent constants ('independent'). A job prepared "
             "with --strains independent always uses the independent fit, "
             "default: full."
+        ),
+    )
+    parser.add_argument(
+        "--pymatgen",
+        action="store_true",
+        help=(
+            "Also evaluate pymatgen ElasticTensor properties. The custom "
+            "postprocessing stays in the report; this adds an independent "
+            "pymatgen view for three-dimensional cells."
         ),
     )
 
@@ -571,6 +581,27 @@ def postprocess(args: argparse.Namespace) -> int:
         }
         result["moduli_unit"] = "N/m"
 
+    pymatgen_requested = bool(getattr(args, "pymatgen", False))
+    if pymatgen_requested:
+        if dimension.get("dimensionality") == "slab":
+            result["pymatgen"] = {
+                "available": False,
+                "error": (
+                    "pymatgen ElasticTensor properties need a three-dimensional "
+                    "periodic cell; use the custom two-dimensional block in "
+                    "this report for a slab"
+                ),
+            }
+        else:
+            pymatgen_result = pymatgen_elastic_properties(tensor, structure)
+            if method == "independent":
+                pymatgen_result["tensor_source"] = "independent fit"
+            else:
+                pymatgen_result["tensor_source"] = (
+                    "symmetrized" if args.symmetrize else "raw fit"
+                )
+            result["pymatgen"] = pymatgen_result
+
     output = Path(args.output)
     if not output.is_absolute():
         output = job / output
@@ -621,6 +652,31 @@ def postprocess(args: argparse.Namespace) -> int:
         cli_output(f"  {name}: {result[name]:.8f} GPa")
     # The Poisson ratio is dimensionless, so it carries no unit.
     cli_output(f"  poisson_ratio: {result['poisson_ratio']:.8f}")
+    if pymatgen_requested:
+        block = result["pymatgen"]
+        if not block.get("available"):
+            cli_output(f"  pymatgen ElasticTensor: unavailable ({block.get('error')})")
+        else:
+            props = block["properties"]
+            cli_output(
+                "  pymatgen moduli (GPa): "
+                f"K_V = {props['k_voigt']:.6f}, "
+                f"G_V = {props['g_voigt']:.6f}, "
+                f"K_VRH = {props['k_vrh']:.6f}, "
+                f"G_VRH = {props['g_vrh']:.6f}, "
+                f"E = {props['y_mod']:.6f}"
+            )
+            cli_output(
+                "  pymatgen anisotropy: "
+                f"{props['universal_anisotropy']:.6f}, "
+                f"homogeneous Poisson ratio: {props['homogeneous_poisson']:.6f}"
+            )
+            structure_properties = block["structure_properties"]
+            for name in ("trans_v", "long_v", "debye_temperature"):
+                value = structure_properties.get(name)
+                if value is not None:
+                    unit = block["units"][name]
+                    cli_output(f"  pymatgen {name}: {value:.6f} {unit}")
     cli_output(f"  results: {output}")
     return 0
 
