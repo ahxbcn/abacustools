@@ -596,6 +596,18 @@ def test_electron_nucleus_cross_term_against_analytic_cosine():
     assert energy == pytest.approx(-COULOMB_EV_ANGSTROM / np.pi, rel=1e-6)
 
 
+def test_electron_nucleus_cross_term_allows_a_positive_cross_energy():
+    density = _cosine_density(1.0)
+
+    energy = electron_nucleus_cross_term(
+        density,
+        np.array([[0.5, 0.0, 0.0]]),
+        [1.0],
+    )
+
+    assert energy == pytest.approx(COULOMB_EV_ANGSTROM / np.pi, rel=1e-6)
+
+
 def test_electron_nucleus_cross_term_is_periodic():
     density = _cosine_density(1.0)
     origin = electron_nucleus_cross_term(

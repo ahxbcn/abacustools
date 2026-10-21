@@ -431,9 +431,11 @@ def electron_nucleus_cross_term(
 ) -> float:
     """Return the periodic electron-nucleus cross energy in eV.
 
-    This is the attraction between the electrons on one fragment and the bare
-    nuclei of the other fragment.  Positions are Cartesian Angstrom coordinates
-    and charges are valence nuclear charges.
+    This is the electrostatic cross term between the electrons on one
+    fragment and the bare nuclei of the other fragment.  Positions are
+    Cartesian Angstrom coordinates and charges are valence nuclear charges.
+    The cross term can be positive or negative; only its sum with the other
+    electrostatic terms is constrained by the total energy.
 
     The reciprocal-space expression is::
 
@@ -447,11 +449,11 @@ def electron_nucleus_cross_term(
         neutral_tolerance: Maximum electron/ionic charge mismatch in electrons.
 
     Returns:
-        The attractive electron-nucleus cross energy in eV.
+        The electron-nucleus cross energy in eV.
 
     Raises:
         ValueError: If the fragment is charged, the positions/charges are
-            inconsistent, or the result is not attractive.
+            inconsistent, or the result is not finite.
     """
 
     _require_neutral_fragment(density, neutral_tolerance)
@@ -480,9 +482,7 @@ def electron_nucleus_cross_term(
     energy = -float(np.real(np.sum(integrand))) * 4.0 * np.pi * volume * COULOMB_EV_ANGSTROM
     if not np.isfinite(energy):
         raise ValueError("electron-nucleus cross term is not finite")
-    if energy > 1e-8:
-        raise ValueError("electron-nucleus cross term is positive; check the density convention")
-    return min(energy, 0.0)
+    return energy
 
 
 def ion_ion_cross_term(
