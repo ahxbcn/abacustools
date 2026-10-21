@@ -8,10 +8,14 @@ import pytest
 
 import abacustools.data.lcao as lcao
 from abacustools.commands.workflow.eda import prepare_gamma_state_job
+from abacustools.core.constant import COULOMB_EV_ANGSTROM
+from abacustools.data.charge import ChargeDensityError
 from abacustools.data.eda import (
     compute_peda_energy_terms,
+    electron_electron_cross_term,
     read_gamma_fixed_density_result,
 )
+from abacustools.data.grid import Charge
 from abacustools.data.mayer import read_csr_matrix_blocks
 from abacustools.io.abacus import ReadInput
 from abacustools.io.stru import AbacusATOM, AbacusSTRU
@@ -524,3 +528,52 @@ def test_compute_peda_energy_terms_rejects_non_finite_energy():
             e0=-80.0,
             delta_e_elstat=-15.0,
         )
+
+
+def _cosine_density(amplitude: float, *, shape: int = 8) -> Charge:
+    coordinates = np.arange(shape) / shape
+    profile = amplitude * np.cos(2.0 * np.pi * coordinates)
+    data = np.broadcast_to(profile[:, None, None], (shape, shape, shape)).copy()
+    return Charge(
+        data,
+        np.eye(3),
+        atom_positions=np.zeros((1, 3)),
+        atom_types=[0],
+        atom_charges=[0.0],
+    )
+
+
+def test_electron_electron_cross_term_against_analytic_cosine():
+    density_a = _cosine_density(1.0)
+    density_b = _cosine_density(2.0)
+
+    energy = electron_electron_cross_term(density_a, density_b)
+
+    expected = COULOMB_EV_ANGSTROM * (1.0 * 2.0) / (2.0 * np.pi)
+    assert energy == pytest.approx(expected, rel=1e-6)
+
+
+def test_electron_electron_cross_term_rejects_grid_mismatch():
+    with pytest.raises(ChargeDensityError, match="grid shape"):
+        electron_electron_cross_term(_cosine_density(1.0, shape=8), _cosine_density(1.0, shape=4))
+
+
+def test_electron_electron_cross_term_rejects_charged_fragment():
+    charged = Charge(
+        np.ones((4, 4, 4)),
+        np.eye(3),
+        atom_positions=np.zeros((1, 3)),
+        atom_types=[0],
+        atom_charges=[0.0],
+    )
+    neutral = _cosine_density(1.0, shape=4)
+
+    with pytest.raises(ValueError, match="neutral fragments"):
+        electron_electron_cross_term(charged, neutral)
+
+
+def test_electron_electron_cross_term_requires_atom_charges():
+    density = Charge(np.zeros((4, 4, 4)), np.eye(3))
+
+    with pytest.raises(ValueError, match="atom_charges"):
+        electron_electron_cross_term(density, density)
