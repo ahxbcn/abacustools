@@ -9,6 +9,7 @@ density-to-energy conversion.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence
@@ -16,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence
 import numpy as np
 
 from abacustools.core.constant import BOHR_TO_ANG
+from abacustools.data.mayer import read_wfc_nao_k_data
 from abacustools.io.abacus import ReadInput
 from abacustools.io.stru import AbacusSTRU
 
@@ -877,3 +879,191 @@ def build_transition_density(
     if not np.all(np.isfinite(transition)):
         raise ValueError("transition density contains non-finite values")
     return transition
+
+
+@dataclass(frozen=True)
+class KPointOrbitals:
+    """Wavefunction coefficients and occupations of one computed k-point.
+
+    Attributes:
+        index: One-based k-point index used in ABACUS file names.
+        direct: Direct k-point coordinate.
+        weight: Brillouin-zone weight.
+        overlap: Full-basis overlap matrix ``S(k)``.
+        coefficients: Spin channel to ``(n_basis, n_bands)`` coefficients.
+        energies: Spin channel to band energies in Ry.
+        occupations: Spin channel to band occupations.
+        data_files: Files used to assemble this k-point.
+    """
+
+    index: int
+    direct: tuple[float, float, float]
+    weight: float
+    overlap: np.ndarray
+    coefficients: dict[int, np.ndarray]
+    energies: dict[int, np.ndarray]
+    occupations: dict[int, np.ndarray]
+    data_files: tuple[str, ...]
+
+
+_DEVELOP_WFC_FILE = re.compile(
+    r"^wf(?:k(?P<ik>\d+))?(?:s(?P<is>\d+))?(?:g(?P<step>\d+))?_nao\.txt$",
+    re.IGNORECASE,
+)
+_LTS_GAMMA_WFC_FILE = re.compile(
+    r"^WFC_NAO_GAMMA(?P<is>\d+)(?:_ION(?P<step>\d+))?\.TXT$",
+    re.IGNORECASE,
+)
+_LTS_K_WFC_FILE = re.compile(
+    r"^WFC_NAO_K(?P<ik>\d+)(?:_ION(?P<step>\d+))?\.TXT$",
+    re.IGNORECASE,
+)
+
+
+def _discover_wfc_channels(
+    output: Path,
+    nspin: int,
+    gamma_only: bool,
+    n_kpoints: int,
+) -> dict[tuple[int, int], Path]:
+    """Return ``(k_index, spin) -> WFC file`` for the final output set."""
+
+    candidates: dict[tuple[int, int], tuple[int, int, Path]] = {}
+
+    def keep(key: tuple[int, int], priority: int, step: int, path: Path) -> None:
+        previous = candidates.get(key)
+        if previous is None or (priority, -step) < (previous[0], -previous[1]):
+            candidates[key] = (priority, step, path)
+
+    lts_k: dict[int, tuple[int, Path]] = {}
+    for path in output.iterdir():
+        if not path.is_file():
+            continue
+        name = path.name
+        match = _DEVELOP_WFC_FILE.match(name)
+        if match is not None:
+            ik = int(match.group("ik")) if match.group("ik") else 1
+            spin = int(match.group("is")) if match.group("is") else 1
+            step = int(match.group("step")) if match.group("step") else 0
+            keep((ik, spin), 0, step, path)
+            continue
+
+        match = _LTS_GAMMA_WFC_FILE.match(name)
+        if match is not None and gamma_only:
+            spin = int(match.group("is"))
+            step = int(match.group("step")) if match.group("step") else 0
+            keep((1, spin), 1, step, path)
+            continue
+
+        match = _LTS_K_WFC_FILE.match(name)
+        if match is not None and not gamma_only:
+            ik = int(match.group("ik"))
+            step = int(match.group("step")) if match.group("step") else 0
+            previous = lts_k.get(ik)
+            if previous is None or step > previous[0]:
+                lts_k[ik] = (step, path)
+
+    ordered_lts = [lts_k[index][1] for index in sorted(lts_k)]
+    if nspin == 1:
+        for ik, path in enumerate(ordered_lts, start=1):
+            keep((ik, 1), 1, 0, path)
+    else:
+        if len(ordered_lts) != 2 * n_kpoints:
+            raise LCAODataError(
+                f"found {len(ordered_lts)} LTS wavefunction files for {n_kpoints} "
+                "k-points and nspin=2; expected twice as many"
+            )
+        for ik, path in enumerate(ordered_lts[:n_kpoints], start=1):
+            keep((ik, 1), 1, 0, path)
+        for ik, path in enumerate(ordered_lts[n_kpoints:], start=1):
+            keep((ik, 2), 1, 0, path)
+
+    return {key: value[2] for key, value in candidates.items()}
+
+
+def load_lcao_kpoint_orbitals(
+    job: str | Path,
+    *,
+    inputs: Any = None,
+    nspin: Optional[int] = None,
+    gamma_only: Optional[bool] = None,
+) -> list[KPointOrbitals]:
+    """Load LCAO wavefunction coefficients, energies and occupations.
+
+    This complements :func:`load_lcao_kpoint_densities`; it reuses the same
+    k-point table, weights and overlap matrices, then attaches the develop or
+    LTS wavefunction files for every spin channel.
+
+    Args:
+        job: ABACUS job directory.
+        inputs: Parsed ``INPUT`` mapping, read from ``job`` when omitted.
+        nspin: Override the spin channel count; otherwise read from ``INPUT``.
+        gamma_only: Override the Gamma-only flag; otherwise read from
+            ``INPUT``.
+
+    Returns:
+        One :class:`KPointOrbitals` per computed k-point.
+
+    Raises:
+        LCAODataError: If the density/overlap data or a required WFC file cannot
+            be read consistently.
+    """
+
+    job_path = Path(job).resolve()
+    kpoints = load_lcao_kpoint_densities(
+        job_path,
+        inputs=inputs,
+        nspin=nspin,
+        gamma_only=gamma_only,
+    )
+    if inputs is None:
+        input_path = job_path / "INPUT"
+        if not input_path.is_file():
+            raise LCAODataError(f"INPUT file does not exist: {input_path}")
+        inputs = ReadInput(str(input_path))
+    actual_nspin = int(_scalar(inputs.get("nspin", 1))) if nspin is None else int(nspin)
+    if gamma_only is None:
+        actual_gamma = bool(int(_scalar(inputs.get("gamma_only", 0)) or 0))
+    else:
+        actual_gamma = bool(gamma_only)
+    suffix = str(_scalar(inputs.get("suffix", "ABACUS")))
+    output = job_path / f"OUT.{suffix}"
+    channels = _discover_wfc_channels(output, actual_nspin, actual_gamma, len(kpoints))
+
+    expected_spins = (1,) if actual_nspin == 1 else (1, 2)
+    result: list[KPointOrbitals] = []
+    for kpoint in kpoints:
+        coefficients: dict[int, np.ndarray] = {}
+        energies: dict[int, np.ndarray] = {}
+        occupations: dict[int, np.ndarray] = {}
+        files = list(kpoint.data_files)
+        for spin in expected_spins:
+            path = channels.get((kpoint.index, spin))
+            if path is None:
+                raise LCAODataError(
+                    f"wavefunction file is missing for k-point {kpoint.index}, spin {spin}"
+                )
+            coeff, band_energies, band_occupations = read_wfc_nao_k_data(path)
+            if coeff.shape[0] != kpoint.overlap.shape[0]:
+                raise LCAODataError(f"{path}: coefficient rows do not match the overlap dimension")
+            if band_energies.shape != (coeff.shape[1],) or band_occupations.shape != (
+                coeff.shape[1],
+            ):
+                raise LCAODataError(f"{path}: band energies or occupations are inconsistent")
+            coefficients[spin] = coeff
+            energies[spin] = band_energies
+            occupations[spin] = band_occupations
+            files.append(str(path))
+        result.append(
+            KPointOrbitals(
+                index=kpoint.index,
+                direct=kpoint.direct,
+                weight=kpoint.weight,
+                overlap=kpoint.overlap,
+                coefficients=coefficients,
+                energies=energies,
+                occupations=occupations,
+                data_files=tuple(dict.fromkeys(files)),
+            )
+        )
+    return result

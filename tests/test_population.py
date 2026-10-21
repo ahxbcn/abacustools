@@ -7,7 +7,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from abacustools.data.lcao import load_lcao_kpoint_densities
+from abacustools.data.lcao import (
+    load_lcao_kpoint_densities,
+    load_lcao_kpoint_orbitals,
+)
 from abacustools.data.population import (
     PopulationAnalysisError,
     _expand_atom_values,
@@ -492,3 +495,47 @@ def test_public_lcao_loader_matches_multik_population_loader(tmp_path):
     private = _load_density_data(root / "OUT.ABACUS", 1, False)
 
     _assert_same_kpoint_densities(public, private)
+
+
+def test_public_orbital_loader_reads_develop_gamma_wfc(tmp_path):
+    root = _gamma_job(tmp_path)
+    coefficients = np.eye(2, dtype=complex)
+    _write_wfc(root / "OUT.ABACUS" / "wfs1_nao.txt", coefficients, [1.0, 1.0])
+
+    orbitals = load_lcao_kpoint_orbitals(root)
+
+    assert len(orbitals) == 1
+    assert orbitals[0].index == 1
+    assert set(orbitals[0].coefficients) == {1}
+    np.testing.assert_allclose(orbitals[0].coefficients[1], coefficients)
+    np.testing.assert_allclose(orbitals[0].occupations[1], [1.0, 1.0])
+
+
+def test_public_orbital_loader_reads_develop_multik_wfc(tmp_path):
+    root = _multik_job(tmp_path, weighted=False)
+    coefficients = np.eye(2, dtype=complex)
+    for index in (1, 2):
+        _write_wfc(
+            root / "OUT.ABACUS" / f"wfk{index}_nao.txt",
+            coefficients,
+            [1.0, 1.0],
+        )
+
+    orbitals = load_lcao_kpoint_orbitals(root)
+
+    assert [orbital.index for orbital in orbitals] == [1, 2]
+    assert [orbital.direct for orbital in orbitals] == [(0.0, 0.0, 0.0), (0.5, 0.0, 0.0)]
+    for orbital in orbitals:
+        np.testing.assert_allclose(orbital.coefficients[1], coefficients)
+
+
+def test_public_orbital_loader_reads_lts_nspin2_channels(tmp_path):
+    root = _lts_nspin2_job(tmp_path)
+
+    orbitals = load_lcao_kpoint_orbitals(root)
+
+    assert len(orbitals) == 2
+    for orbital in orbitals:
+        assert set(orbital.coefficients) == {1, 2}
+        np.testing.assert_allclose(orbital.occupations[1], [0.5, 0.5])
+        np.testing.assert_allclose(orbital.occupations[2], [0.5, 0.5])
