@@ -85,17 +85,143 @@ _PDOS_NAO_FILE_RE = re.compile(r"^pdoss(\d+)(?:g(\d+))?_\w+\.txt$", re.IGNORECAS
 _IONIC_STEP_HEADER_RE = re.compile(r"^\s*(\d+)\s*#\s*ionic step", re.IGNORECASE)
 
 
+_FLOAT_RE = re.compile(_FLOAT)
+_NEVER_MATCH = re.compile(r"(?!)")
+_GLOBAL_FLAG_RE = re.compile(r"\(\?[aiLmsux]+\)")
+
+
 def _as_float(value: str) -> float:
-    return float(value.replace("D", "E").replace("d", "e"))
+    try:
+        return float(value)
+    except ValueError:
+        return float(value.replace("D", "E").replace("d", "e"))
 
 
 def _numbers(line: str) -> List[float]:
-    return [_as_float(value) for value in re.findall(_FLOAT, line)]
+    return [_as_float(value) for value in _FLOAT_RE.findall(line)]
+
+
+@lru_cache(maxsize=None)
+def _lowered(keywords: tuple[str, ...]) -> tuple[str, ...]:
+    """Return the keywords lowercased once for case-insensitive ``in`` tests."""
+    return tuple(keyword.lower() for keyword in keywords)
 
 
 def _contains_any(line: str, keywords: Sequence[str]) -> bool:
     """Return whether a lowercased log line contains one of the keywords."""
-    return any(keyword.lower() in line for keyword in keywords)
+    return any(keyword in line for keyword in _lowered(tuple(keywords)))
+
+
+def _normalize_pattern(pattern: str) -> tuple[str, bool]:
+    """Lowercase the literal parts of a regex for a lowercased log line.
+
+    A gate is matched against ``line.lower()``, which lets it stay
+    case-sensitive and fast.  Literal uppercase letters in a pattern therefore
+    have to be lowercased too.  Escapes such as ``\\S`` and character classes
+    that only list uppercase letters (``[A-Z]``) change meaning when
+    lowercased, so they are left alone; the caller wraps such a pattern in a
+    scoped ``(?i:...)`` group instead.
+
+    Returns:
+        The normalized pattern and whether it still needs case-insensitive
+        matching.
+    """
+    if "(?P" in pattern or "\\N" in pattern:
+        # Named groups and Unicode names are case-sensitive; do not touch them.
+        return pattern, True
+
+    normalized: List[str] = []
+    needs_ignorecase = False
+    index = 0
+    length = len(pattern)
+    while index < length:
+        char = pattern[index]
+        if char == "\\":
+            normalized.append(pattern[index : index + 2])
+            index += 2
+            continue
+        if char == "[":
+            # Copy the whole class unchanged; only lower it when every
+            # uppercase letter it lists has a lowercase counterpart.
+            end = index + 1
+            if end < length and pattern[end] == "^":
+                end += 1
+            if end < length and pattern[end] == "]":
+                end += 1
+            while end < length and pattern[end] != "]":
+                if pattern[end] == "\\":
+                    end += 1
+                end += 1
+            end = min(end + 1, length)
+            content = pattern[index:end]
+            if any(
+                letter.isupper() and letter.lower() not in content
+                for letter in content
+                if letter.isalpha()
+            ):
+                needs_ignorecase = True
+            normalized.append(content)
+            index = end
+            continue
+        normalized.append(char.lower() if char.isupper() else char)
+        index += 1
+    return "".join(normalized), needs_ignorecase
+
+
+def _strip_global_flags(pattern: str) -> str:
+    """Move a leading ``(?flags)`` group into a scoped group.
+
+    Python only accepts global inline flags at the start of a whole pattern,
+    so a pattern that is one alternative of a gate has to spell them as a
+    scoped ``(?flags:...)`` group.  ``i`` is dropped because the fallback gate
+    is compiled case-insensitively anyway.
+    """
+    match = re.match(r"^\(\?([aiLmsux]+)\)", pattern)
+    if match is None:
+        return pattern
+    scoped = "".join(flag for flag in match.group(1) if flag in "msx")
+    body = pattern[match.end() :]
+    return f"(?{scoped}:{body})" if scoped else body
+
+
+@lru_cache(maxsize=None)
+def _gate(
+    literals: tuple[str, ...] = (),
+    patterns: tuple[str, ...] = (),
+) -> re.Pattern[str]:
+    """Compile one marker gate for a lowercased log line.
+
+    Log readers test many marker families against every line.  One
+    alternation is much cheaper than a Python loop over every keyword.  The
+    gate is matched against ``line.lower()``: keywords and the literal parts
+    of the patterns are lowercased here, and only a pattern that cannot be
+    lowercased safely keeps a scoped ``(?i:...)`` group.
+
+    Args:
+        literals: Plain keywords.
+        patterns: Regular expressions that expose their captured value as the
+            first group; they only decide whether a line may carry a marker.
+
+    Returns:
+        A compiled pattern that matches when any marker may be present.
+    """
+    literals = _lowered(tuple(literals))
+    if any(_GLOBAL_FLAG_RE.search(pattern) for pattern in patterns):
+        # A global inline flag cannot move into a scoped group, so fall back
+        # to one case-insensitive gate.  Configured profiles are the only
+        # source of such patterns, so the slower path stays rare.
+        parts = [re.escape(keyword) for keyword in literals]
+        parts.extend(f"(?:{_strip_global_flags(pattern)})" for pattern in patterns)
+        return re.compile("|".join(parts), re.IGNORECASE) if parts else _NEVER_MATCH
+
+    parts = [re.escape(keyword) for keyword in literals]
+    for pattern in patterns:
+        normalized, needs_ignorecase = _normalize_pattern(pattern)
+        if needs_ignorecase:
+            parts.append(f"(?i:{normalized})")
+        else:
+            parts.append(f"(?:{normalized})")
+    return re.compile("|".join(parts)) if parts else _NEVER_MATCH
 
 
 @lru_cache(maxsize=None)
@@ -104,27 +230,57 @@ def _compiled(patterns: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
     return tuple(re.compile(pattern, re.IGNORECASE) for pattern in patterns)
 
 
-def _first_match(patterns: tuple[str, ...], line: str) -> Optional[float]:
-    """Return the value captured by the first matching pattern, if any."""
-    for pattern in _compiled(patterns):
+def _first_compiled(
+    patterns: Sequence[re.Pattern[str]], line: str
+) -> Optional[float]:
+    """Return the value captured by the first matching compiled pattern."""
+    for pattern in patterns:
         match = pattern.search(line)
         if match is not None:
             return _as_float(match.group(1))
     return None
 
 
+def _first_match(patterns: tuple[str, ...], line: str) -> Optional[float]:
+    """Return the value captured by the first matching pattern, if any."""
+    return _first_compiled(_compiled(patterns), line)
+
+
+def _lines_after(lines: Sequence[str], start: int):
+    """Yield the lines after ``start`` without copying the remaining list."""
+    for index in range(start + 1, len(lines)):
+        yield lines[index]
+
+
+def _step_patterns(profile: Any, text: str) -> tuple[str, ...]:
+    """Select the ionic-step dialect that a log actually uses.
+
+    ABACUS branches number the ionic steps with ``STEP OF RELAXATION`` or with
+    the ``ION=`` field of the electronic loop.  One ``re.search`` over the log
+    text is enough to choose; without it every reader scans the whole log once
+    more before parsing.
+    """
+    patterns = profile.relax_step_patterns
+    if not patterns:
+        return profile.ion_step_patterns
+    gate = re.compile(
+        "|".join(f"(?:{pattern})" for pattern in patterns),
+        re.IGNORECASE | re.MULTILINE,
+    )
+    return patterns if gate.search(text) else profile.ion_step_patterns
+
+
 def _force_extremes(
     block: List[List[float]],
 ) -> Optional[tuple[float, int, str]]:
     """Return the magnitude, one-based atom index and component of the largest force."""
-    best: Optional[tuple[float, int, str]] = None
-    for index, values in enumerate(block, start=1):
-        vector = np.asarray(values, dtype=float)
-        magnitude = float(np.linalg.norm(vector))
-        if best is None or magnitude > best[0]:
-            axis = int(np.argmax(np.abs(vector)))
-            best = (magnitude, index, "xyz"[axis])
-    return best
+    if not block:
+        return None
+    vectors = np.asarray(block, dtype=float)
+    magnitudes = np.sqrt((vectors * vectors).sum(axis=1))
+    index = int(magnitudes.argmax())
+    axis = int(np.abs(vectors[index]).argmax())
+    return float(magnitudes[index]), index + 1, "xyz"[axis]
 
 
 def _atom_label(labels: List[str], atom: int) -> Optional[str]:
@@ -182,19 +338,23 @@ def read_relaxation_history(
             displacement metrics are omitted.
     """
     path = Path(log_file)
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    text = path.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
     profile = resolve_version(version, job_dir=path.parent, text="\n".join(lines[:128]))
+    step_patterns = _step_patterns(profile, text)
+    del text
     records, force_blocks, stress_blocks = _collect_ionic_steps(
-        lines, profile, profile.relax_step_patterns
+        lines, profile, step_patterns
     )
-    if not records:
-        # Some branches advance the ionic step without a relaxation marker and
-        # only number it in the ``ION=`` field of the electronic loop.
-        records, force_blocks, stress_blocks = _collect_ionic_steps(
-            lines, profile, profile.ion_step_patterns
-        )
 
-    initial_positions, positions = _collect_coordinate_steps(lines, profile)
+    # Coordinates only feed the periodic displacement metrics; without a
+    # lattice the blocks are never used, so do not pay for parsing them.
+    initial_positions: Optional[List[List[float]]] = None
+    positions: Dict[int, List[List[float]]] = {}
+    if lattice is not None:
+        initial_positions, positions = _collect_coordinate_steps(
+            lines, profile, step_patterns
+        )
     previous_positions = initial_positions
     for item in [records[step] for step in sorted(records)]:
         current_positions = positions.get(item["step"])
@@ -245,15 +405,16 @@ def read_relaxation_history(
 
 def _lattice_constant_angstrom(lines: Sequence[str]) -> Optional[float]:
     """Return the lattice constant in Angstrom when the log prints it."""
+    bohr_value: Optional[float] = None
     for line in lines:
         match = _LATTICE_CONSTANT_ANGSTROM_RE.search(line)
         if match is not None:
             return _as_float(match.group(1))
-    for line in lines:
-        match = _LATTICE_CONSTANT_BOHR_RE.search(line)
-        if match is not None:
-            return _as_float(match.group(1)) * BOHR_TO_ANG
-    return None
+        if bohr_value is None:
+            match = _LATTICE_CONSTANT_BOHR_RE.search(line)
+            if match is not None:
+                bohr_value = _as_float(match.group(1))
+    return None if bohr_value is None else bohr_value * BOHR_TO_ANG
 
 
 def _parse_matrix_block(
@@ -276,7 +437,7 @@ def _parse_coordinate_rows(
     labels: List[Optional[str]] = []
     positions: List[List[float]] = []
     started = False
-    for line in lines[start + 1 :]:
+    for line in _lines_after(lines, start):
         parts = line.split()
         values: Optional[List[float]] = None
         label: Optional[str] = None
@@ -347,15 +508,22 @@ def read_relax_structures(
         does not provide it.
     """
     path = Path(log_file)
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    text = path.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
     profile = resolve_version(
         version, job_dir=path.parent, text="\n".join(lines[:128])
     )
-    has_relax_marker = any(
-        _first_match(profile.relax_step_patterns, line) is not None for line in lines
-    )
-    step_patterns = (
-        profile.relax_step_patterns if has_relax_marker else profile.ion_step_patterns
+    step_patterns = _step_patterns(profile, text)
+    del text
+    step_res = _compiled(step_patterns)
+    gate = _gate(
+        (),
+        step_patterns
+        + (
+            _COORDINATE_HEADER_RE.pattern,
+            _DIRECT_COORDINATE_HEADER_RE.pattern,
+            _LATTICE_VECTOR_HEADER_RE.pattern,
+        ),
     )
     lat0 = _lattice_constant_angstrom(lines)
 
@@ -363,7 +531,9 @@ def read_relax_structures(
     coordinates: List[tuple[int, str, List[Optional[str]], List[List[float]]]] = []
     lattices: List[tuple[int, List[List[float]]]] = []
     for index, line in enumerate(lines):
-        step = _first_match(step_patterns, line)
+        if gate.search(line.lower()) is None:
+            continue
+        step = _first_compiled(step_res, line)
         if step is not None:
             markers.append((index, int(step)))
             continue
@@ -481,8 +651,28 @@ def _collect_ionic_steps(
             },
         )
 
+    step_res = _compiled(step_patterns)
+    energy_res = _compiled(profile.relax_energy_patterns)
+    force_res = _compiled(profile.relax_force_patterns)
+    stress_res = _compiled(profile.relax_stress_patterns)
+    diff_res = _compiled((_RELAX_ENERGY_DIFF_RE.pattern,))
+    gate = _gate(
+        profile.energy_keywords
+        + profile.relax_converged_keywords
+        + profile.force_header_keywords
+        + profile.stress_header_keywords,
+        step_patterns
+        + profile.relax_energy_patterns
+        + profile.relax_force_patterns
+        + profile.relax_stress_patterns
+        + (_RELAX_ENERGY_DIFF_RE.pattern,),
+    )
+
     for index, line in enumerate(lines):
-        step = _first_match(step_patterns, line)
+        low = line.lower()
+        if gate.search(low) is None:
+            continue
+        step = _first_compiled(step_res, line)
         if step is not None:
             current_step = int(step)
             record(current_step)
@@ -490,31 +680,31 @@ def _collect_ionic_steps(
         if current_step is None:
             continue
         item = record(current_step)
-        if _contains_any(line.lower(), profile.energy_keywords):
+        if _contains_any(low, profile.energy_keywords):
             values = _numbers(line)
             if values:
                 scf_energies[current_step] = values[-1]
-        energy = _first_match(profile.relax_energy_patterns, line)
+        energy = _first_compiled(energy_res, line)
         if energy is not None:
             item["energy"] = energy
-        energy_diff_match = _RELAX_ENERGY_DIFF_RE.search(line)
-        if energy_diff_match:
-            item["energy_change"] = _as_float(energy_diff_match.group(1))
-        force = _first_match(profile.relax_force_patterns, line)
+        energy_change = _first_compiled(diff_res, line)
+        if energy_change is not None:
+            item["energy_change"] = energy_change
+        force = _first_compiled(force_res, line)
         if force is not None:
             item["max_force"] = force
-        stress = _first_match(profile.relax_stress_patterns, line)
+        stress = _first_compiled(stress_res, line)
         if stress is not None:
             item["max_stress"] = stress
-        if _contains_any(line.lower(), profile.force_header_keywords):
+        if _contains_any(low, profile.force_header_keywords):
             labels, block = _parse_force_block(lines, index)
             if block:
                 force_blocks[current_step] = (labels, block)
-        elif _contains_any(line.lower(), profile.stress_header_keywords):
+        elif _contains_any(low, profile.stress_header_keywords):
             tensor = _parse_stress_block(lines, index)
             if tensor:
                 stress_blocks[current_step] = tensor
-        if _contains_any(line.lower(), profile.relax_converged_keywords):
+        if _contains_any(low, profile.relax_converged_keywords):
             item["converged"] = True
 
     # The ``final etot is`` report line is rounded, while the Kohn-Sham energy
@@ -531,7 +721,7 @@ def _parse_coordinate_block(
     """Read Cartesian coordinates following one log coordinate header."""
     coordinates: List[List[float]] = []
     started = False
-    for line in lines[start + 1 :]:
+    for line in _lines_after(lines, start):
         parts = line.split()
         values: Optional[List[float]] = None
         if len(parts) >= 4:
@@ -554,21 +744,24 @@ def _parse_coordinate_block(
 
 
 def _collect_coordinate_steps(
-    lines: List[str], profile: Any
+    lines: List[str],
+    profile: Any,
+    step_patterns: tuple[str, ...],
 ) -> tuple[Optional[List[List[float]]], Dict[int, List[List[float]]]]:
     """Collect the initial and per-step Cartesian structures from a log."""
-    has_relax_marker = any(
-        _first_match(profile.relax_step_patterns, line) is not None for line in lines
-    )
-    step_patterns = (
-        profile.relax_step_patterns if has_relax_marker else profile.ion_step_patterns
+    step_res = _compiled(step_patterns)
+    gate = _gate(
+        (),
+        step_patterns + (_COORDINATE_HEADER_RE.pattern,),
     )
     current_step: Optional[int] = None
     initial_positions: Optional[List[List[float]]] = None
     positions: Dict[int, List[List[float]]] = {}
 
     for index, line in enumerate(lines):
-        step = _first_match(step_patterns, line)
+        if gate.search(line.lower()) is None:
+            continue
+        step = _first_compiled(step_res, line)
         if step is not None:
             current_step = int(step)
             continue
@@ -663,8 +856,16 @@ def read_scf_history(
             {"step": step, "energy": None, "energy_change": None, "drho": None},
         )
 
+    step_res = _compiled(profile.scf_step_patterns)
+    gate = _gate(
+        profile.energy_keywords + profile.density_error_keywords,
+        profile.scf_step_patterns,
+    )
     for line in lines:
-        step = _first_match(profile.scf_step_patterns, line)
+        lower_line = line.lower()
+        if gate.search(lower_line) is None:
+            continue
+        step = _first_compiled(step_res, line)
         if step is not None:
             current_step = int(step)
             record(current_step)
@@ -672,7 +873,6 @@ def read_scf_history(
         if current_step is None:
             continue
         item = record(current_step)
-        lower_line = line.lower()
         if _contains_any(lower_line, profile.energy_keywords):
             values = _numbers(line)
             if values:
@@ -726,25 +926,32 @@ def read_md_history(
             },
         )
 
+    step_res = _compiled(profile.md_step_patterns)
+    gate = _gate(
+        ("total-pressure", "temperature"),
+        profile.md_step_patterns,
+    )
     for index, line in enumerate(lines):
-        step = _first_match(profile.md_step_patterns, line)
+        lower_line = line.lower()
+        if gate.search(lower_line) is None:
+            continue
+        step = _first_compiled(step_res, line)
         if step is not None:
             current_step = int(step)
             record(current_step)
             continue
         if current_step is None:
             continue
-        if "total-pressure" in line.lower():
+        if "total-pressure" in lower_line:
             values = _numbers(line)
             if values:
                 record(current_step)["pressure"] = values[-1]
             continue
         if not _is_md_table_header(line):
             continue
-        lower_line = line.lower()
         energy_factor = RY_TO_EV if "(ry)" in lower_line else 1.0
         has_pressure = "pressure" in lower_line
-        for following in lines[index + 1 :]:
+        for following in _lines_after(lines, index):
             values = _numbers(following)
             if not values:
                 continue
@@ -782,17 +989,39 @@ def read_convergence_thresholds(
     path = Path(log_file)
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     profile = resolve_version(version, job_dir=path.parent, text="\n".join(lines[:128]))
+    force_res = _compiled(profile.relax_force_threshold_patterns)
+    stress_res = _compiled(profile.relax_stress_threshold_patterns)
+    gate = _gate(
+        (),
+        profile.relax_force_threshold_patterns + profile.relax_stress_threshold_patterns,
+    )
     thresholds: Dict[str, float] = {}
     for line in lines:
+        if gate.search(line.lower()) is None:
+            continue
         if "force_thr_ev" not in thresholds:
-            value = _first_match(profile.relax_force_threshold_patterns, line)
+            value = _first_compiled(force_res, line)
             if value is not None:
                 thresholds["force_thr_ev"] = value
         if "stress_thr" not in thresholds:
-            value = _first_match(profile.relax_stress_threshold_patterns, line)
+            value = _first_compiled(stress_res, line)
             if value is not None:
                 thresholds["stress_thr"] = value
+        if len(thresholds) == 2:
+            break
     return thresholds
+
+
+def _read_tail_lines(
+    path: Path, *, max_bytes: int = 262144, max_lines: int = 80
+) -> List[str]:
+    """Read the last lines of a log without loading the whole file."""
+    with path.open("rb") as handle:
+        handle.seek(0, 2)
+        size = handle.tell()
+        handle.seek(max(0, size - max_bytes))
+        data = handle.read()
+    return data.decode("utf-8", errors="replace").splitlines()[-max_lines:]
 
 
 def read_normal_end(
@@ -801,18 +1030,20 @@ def read_normal_end(
 ) -> bool:
     """Return whether a running log reached the normal-ending footer."""
     path = Path(log_file)
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    profile = resolve_version(version, job_dir=path.parent, text="\n".join(lines[:128]))
+    lines = _read_tail_lines(path)
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        head = handle.read(8192)
+    profile = resolve_version(version, job_dir=path.parent, text=head)
     return any(
         _contains_any(line.lower(), profile.normal_end_keywords)
-        for line in lines[-80:]
+        for line in lines
     )
 
 
 def _is_separator(line: str) -> bool:
     """Return whether a log line is made only of separator characters."""
     stripped = line.strip()
-    return bool(stripped) and set(stripped) == {"-"}
+    return bool(stripped) and not stripped.strip("-")
 
 
 def _job_input(job_path: Path) -> Dict[str, Any]:
@@ -1257,7 +1488,7 @@ def _parse_force_block(
     """Read the atom labels and force vectors of one ``TOTAL-FORCE`` block."""
     labels: List[str] = []
     force: List[List[float]] = []
-    for line in lines[start + 1 :]:
+    for line in _lines_after(lines, start):
         if _is_separator(line):
             if force:
                 return labels, force
@@ -1276,7 +1507,7 @@ def _parse_force_block(
 
 def _parse_stress_block(lines: List[str], start: int) -> List[List[float]]:
     stress: List[List[float]] = []
-    for line in lines[start + 1 :]:
+    for line in _lines_after(lines, start):
         if _is_separator(line):
             if stress:
                 break
@@ -1317,6 +1548,34 @@ def collect_scf_results(
         else _contains_any(last_line.lower(), profile.normal_end_keywords)
     )
 
+    requested = set(param_groups["scf_results"])
+    want_energy = bool({"energy", "denergy", "scf_steps"} & requested)
+    want_final = "energy" in requested
+    want_drho = "drho" in requested
+    want_efermi = "efermi" in requested
+    want_converged = "converged" in requested
+    want_force = "force" in requested
+    want_stress = "stress" in requested
+
+    # Only the marker families a caller asked for take part in the scan; a
+    # status update, for example, must not pay for the force and stress tables.
+    literals: tuple[str, ...] = ()
+    if want_energy:
+        literals += profile.energy_keywords
+    if want_final:
+        literals += profile.final_energy_keywords
+    if want_drho:
+        literals += profile.density_error_keywords
+    if want_efermi:
+        literals += profile.fermi_keywords
+    if want_converged:
+        literals += profile.scf_converged_keywords
+    if want_force:
+        literals += profile.force_header_keywords
+    if want_stress:
+        literals += profile.stress_header_keywords
+    gate = _gate(literals)
+
     energies: List[float] = []
     drhos: List[float] = []
     efermis: List[float] = []
@@ -1327,34 +1586,38 @@ def collect_scf_results(
 
     for line_number, line in enumerate(lines):
         lower_line = line.lower()
-        if _contains_any(lower_line, profile.energy_keywords):
+        if gate.search(lower_line) is None:
+            continue
+        if want_energy and _contains_any(lower_line, profile.energy_keywords):
             values = _numbers(line)
             if values:
                 energies.append(values[-1])
-        elif _contains_any(lower_line, profile.density_error_keywords):
+        elif want_drho and _contains_any(lower_line, profile.density_error_keywords):
             values = _numbers(line)
             if values:
                 drhos.append(values[-1])
-        elif _contains_any(lower_line, profile.final_energy_keywords):
+        elif want_final and _contains_any(lower_line, profile.final_energy_keywords):
             values = _numbers(line)
             if values:
                 final_energies.append(values[-1])
-        elif _contains_any(lower_line, profile.fermi_keywords):
+        elif want_efermi and _contains_any(lower_line, profile.fermi_keywords):
             values = _numbers(line)
             if values:
                 efermis.append(values[-1])
-        elif _contains_any(lower_line, profile.scf_converged_keywords):
+        elif want_converged and _contains_any(
+            lower_line, profile.scf_converged_keywords
+        ):
             converged = True
-        elif _contains_any(lower_line, profile.force_header_keywords):
+        elif want_force and _contains_any(lower_line, profile.force_header_keywords):
             _, force = _parse_force_block(lines, line_number)
             if force:
                 forces.append(force)
-        elif _contains_any(lower_line, profile.stress_header_keywords):
+        elif want_stress and _contains_any(lower_line, profile.stress_header_keywords):
             stress = _parse_stress_block(lines, line_number)
             if stress:
                 stresses.append(stress)
 
-    energy_values = final_energies or energies
+    energy_values = (final_energies or energies) if want_final else energies
     available = {
         "energy": energy_values[-1] if energy_values else None,
         "drho": drhos[-1] if drhos else None,
@@ -1362,7 +1625,11 @@ def collect_scf_results(
         "scf_steps": len(energies),
         "converged": converged,
         "normal_end": normal_end,
-        "efermi": _machine_efermi(job_path, efermis[-1] if efermis else None),
+        "efermi": (
+            _machine_efermi(job_path, efermis[-1] if efermis else None)
+            if want_efermi
+            else None
+        ),
         "force": forces[-1] if forces else None,
         "stress": stresses[-1] if stresses else None,
     }
@@ -1389,9 +1656,13 @@ def collect_vdw_results(
         return _empty_results(param_groups["vdw_results"])
 
     profile = resolve_version(version, job_dir=job_path)
+    gate = _gate(profile.vdw_keywords)
     vdw_energies: List[float] = []
     for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
-        if _contains_any(line.lower(), profile.vdw_keywords):
+        lower_line = line.lower()
+        if gate.search(lower_line) is None:
+            continue
+        if _contains_any(lower_line, profile.vdw_keywords):
             values = _numbers(line)
             if values:
                 # ABACUS prints the dispersion energy in Rydberg and eV.
@@ -1481,11 +1752,15 @@ def read_orbital_magnetization(
         ``None`` when the log holds no such block.
     """
     blocks: List[List[List[float]]] = []
+    gate = _gate(tuple(header_keywords))
     for index, line in enumerate(lines):
-        if not _contains_any(line.lower(), header_keywords):
+        lower_line = line.lower()
+        if gate.search(lower_line) is None:
+            continue
+        if not _contains_any(lower_line, header_keywords):
             continue
         block: List[List[float]] = []
-        for row in lines[index + 1 :]:
+        for row in _lines_after(lines, index):
             if _is_separator(row):
                 if block:
                     break
@@ -1530,16 +1805,29 @@ def collect_magnetic_results(
     profile = resolve_version(version, job_dir=job_path)
     lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
 
+    want_total = "total_mag" in requested
+    want_absolute = "absolute_mag" in requested
+    literals: tuple[str, ...] = ()
+    if want_total:
+        literals += profile.total_mag_keywords
+    if want_absolute:
+        literals += profile.absolute_mag_keywords
+    gate = _gate(literals)
+
     total_mags: List[Union[float, List[float]]] = []
     absolute_mags: List[float] = []
     for line in lines:
         lower_line = line.lower()
-        if _contains_any(lower_line, profile.total_mag_keywords):
+        if gate.search(lower_line) is None:
+            continue
+        if want_total and _contains_any(lower_line, profile.total_mag_keywords):
             values = _numbers(line)
             if values:
                 # Noncollinear runs print the three Cartesian components.
                 total_mags.append(values[-3:] if len(values) >= 3 else values[-1])
-        elif _contains_any(lower_line, profile.absolute_mag_keywords):
+        elif want_absolute and _contains_any(
+            lower_line, profile.absolute_mag_keywords
+        ):
             values = _numbers(line)
             if values:
                 absolute_mags.append(values[-1])
@@ -1583,17 +1871,37 @@ def collect_relax_results(
         return _empty_results(param_groups["relax_results"])
 
     profile = resolve_version(version, job_dir=job_path)
+    requested = set(param_groups["relax_results"])
+    want_force = bool({"largest_force", "relax_steps"} & requested)
+    want_stress = bool({"largest_stress", "relax_steps"} & requested)
+    want_converged = "relax_converged" in requested
+
+    force_res = _compiled(profile.relax_force_patterns) if want_force else ()
+    stress_res = _compiled(profile.relax_stress_patterns) if want_stress else ()
+    literals = profile.relax_converged_keywords if want_converged else ()
+    patterns: tuple[str, ...] = ()
+    if want_force:
+        patterns += profile.relax_force_patterns
+    if want_stress:
+        patterns += profile.relax_stress_patterns
+    gate = _gate(literals, patterns)
+
     largest_forces: List[float] = []
     largest_stresses: List[float] = []
     relax_converged = False
     for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
-        force = _first_match(profile.relax_force_patterns, line)
+        lower_line = line.lower()
+        if gate.search(lower_line) is None:
+            continue
+        force = _first_compiled(force_res, line)
         if force is not None:
             largest_forces.append(force)
-        stress = _first_match(profile.relax_stress_patterns, line)
+        stress = _first_compiled(stress_res, line)
         if stress is not None:
             largest_stresses.append(stress)
-        if _contains_any(line.lower(), profile.relax_converged_keywords):
+        if want_converged and _contains_any(
+            lower_line, profile.relax_converged_keywords
+        ):
             relax_converged = True
 
     available = {
