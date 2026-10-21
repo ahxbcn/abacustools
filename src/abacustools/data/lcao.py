@@ -10,7 +10,7 @@ density-to-energy conversion.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 
 import numpy as np
 
@@ -192,3 +192,137 @@ def write_csr_matrix_blocks(
             handle.write("\n # CSR row pointers\n")
             handle.write(" " + " ".join(str(value) for value in row_pointers) + "\n")
             handle.write("\n")
+
+
+def _validate_kpoint_weight_pairs(
+    kpoints: Sequence[tuple[Sequence[float], float]],
+) -> list[tuple[tuple[float, float, float], float]]:
+    """Validate and normalize k-point coordinates and weights."""
+
+    if not kpoints:
+        raise ValueError("at least one k-point is required")
+    normalized: list[tuple[tuple[float, float, float], float]] = []
+    total = 0.0
+    for point, weight in kpoints:
+        if len(point) != 3:
+            raise ValueError("each k-point must have three direct coordinates")
+        direct = tuple(float(value) for value in point)
+        if not np.all(np.isfinite(direct)):
+            raise ValueError("k-point coordinates must be finite")
+        value = float(weight)
+        if not np.isfinite(value) or value < 0.0:
+            raise ValueError("k-point weights must be finite and non-negative")
+        normalized.append((direct, value))
+        total += value
+    if total <= 0.0:
+        raise ValueError("k-point weights must sum to a positive value")
+    if abs(total - 1.0) > 1e-8:
+        raise ValueError("k-point weights must sum to one")
+    return normalized
+
+
+def kpoint_density_to_real_space(
+    kpoints: Sequence[tuple[Sequence[float], float, np.ndarray]],
+    r_blocks: Sequence[tuple[int, int, int]],
+) -> dict[tuple[int, int, int], np.ndarray]:
+    """Fourier transform k-resolved density matrices to R-space blocks.
+
+    ABACUS uses ``H(k) = sum_R H(R) exp(-i k R)`` for reciprocal-space
+    matrices.  The corresponding density-matrix convention used by
+    ``cal_dmr`` is the conjugate transform::
+
+        D(R) = sum_k w_k D(k) exp(+i k R)
+
+    Args:
+        kpoints: ``(direct_k, weight, density)`` entries.  Weights must sum
+            to one.  Every density matrix must have the same shape.
+        r_blocks: Bravais lattice vectors to keep.
+
+    Returns:
+        A mapping from ``(Rx, Ry, Rz)`` to dense density matrices.
+
+    Raises:
+        ValueError: If k-points, weights or matrix shapes are inconsistent.
+    """
+
+    entries = _validate_kpoint_weight_pairs([(point, weight) for point, weight, _ in kpoints])
+    if not r_blocks:
+        raise ValueError("at least one R block is required")
+    if len(entries) != len(kpoints):
+        raise AssertionError("k-point validation changed the number of entries")
+
+    dimension: int | None = None
+    for _point, _weight, density in kpoints:
+        matrix = np.asarray(density)
+        if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
+            raise ValueError("every density matrix must be square")
+        if dimension is None:
+            dimension = int(matrix.shape[0])
+        elif matrix.shape != (dimension, dimension):
+            raise ValueError("all density matrices must have the same shape")
+        if not np.all(np.isfinite(matrix)):
+            raise ValueError("density matrices must be finite")
+    assert dimension is not None
+
+    result: dict[tuple[int, int, int], np.ndarray] = {}
+    for r_block in r_blocks:
+        key = tuple(int(value) for value in r_block)
+        if len(key) != 3:
+            raise ValueError("each R block must have three integer components")
+        total = np.zeros((dimension, dimension), dtype=np.complex128)
+        for (direct, weight), (_point, _unused, density) in zip(entries, kpoints):
+            phase = np.exp(
+                2j * np.pi * (direct[0] * key[0] + direct[1] * key[1] + direct[2] * key[2])
+            )
+            total += weight * phase * np.asarray(density, dtype=np.complex128)
+        result[key] = total
+    return result
+
+
+def real_space_density_to_kpoints(
+    blocks: Mapping[tuple[int, int, int], np.ndarray],
+    kpoints: Sequence[tuple[Sequence[float], float]],
+) -> list[tuple[tuple[float, float, float], float, np.ndarray]]:
+    """Fourier transform R-space density matrices back to k-space.
+
+    This is the inverse of :func:`kpoint_density_to_real_space`::
+
+        D(k) = sum_R D(R) exp(-i k R)
+
+    Args:
+        blocks: Mapping from ``(Rx, Ry, Rz)`` to dense matrices.
+        kpoints: ``(direct_k, weight)`` entries.  Weights must sum to one.
+
+    Returns:
+        A list of ``(direct_k, weight, density)`` entries.
+
+    Raises:
+        ValueError: If the R blocks or k-points are inconsistent.
+    """
+
+    entries = _validate_kpoint_weight_pairs(kpoints)
+    if not blocks:
+        raise ValueError("at least one R block is required")
+    dimension: int | None = None
+    for key, matrix in blocks.items():
+        if len(key) != 3:
+            raise ValueError("each R block must have three components")
+        array = np.asarray(matrix)
+        if array.ndim != 2 or array.shape[0] != array.shape[1]:
+            raise ValueError(f"R block {key} must be square")
+        if dimension is None:
+            dimension = int(array.shape[0])
+        elif array.shape != (dimension, dimension):
+            raise ValueError("all R blocks must have the same shape")
+        if not np.all(np.isfinite(array)):
+            raise ValueError(f"R block {key} must be finite")
+    assert dimension is not None
+
+    result: list[tuple[tuple[float, float, float], float, np.ndarray]] = []
+    for direct, weight in entries:
+        total = np.zeros((dimension, dimension), dtype=np.complex128)
+        for (rx, ry, rz), matrix in blocks.items():
+            phase = np.exp(-2j * np.pi * (direct[0] * rx + direct[1] * ry + direct[2] * rz))
+            total += phase * np.asarray(matrix, dtype=np.complex128)
+        result.append((direct, weight, total))
+    return result

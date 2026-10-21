@@ -3,7 +3,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from abacustools.data.lcao import write_csr_matrix_blocks
+from abacustools.data.lcao import (
+    kpoint_density_to_real_space,
+    real_space_density_to_kpoints,
+    write_csr_matrix_blocks,
+)
 from abacustools.data.mayer import read_csr_matrix_blocks
 from abacustools.io.stru import AbacusATOM, AbacusSTRU
 
@@ -77,3 +81,88 @@ def test_write_csr_matrix_blocks_rejects_invalid_spin(tmp_path):
             nspin=1,
             spin=2,
         )
+
+
+def test_kpoint_density_fourier_transform_round_trip_1d():
+    d0 = np.array([[1.0, 0.25], [0.25, 2.0]], dtype=complex)
+    d1 = np.array([[0.5, -0.25j], [0.25j, 1.5]], dtype=complex)
+    kpoints = [
+        ((0.0, 0.0, 0.0), 0.5, d0),
+        ((0.5, 0.0, 0.0), 0.5, d1),
+    ]
+
+    blocks = kpoint_density_to_real_space(kpoints, [(0, 0, 0), (1, 0, 0)])
+    restored = real_space_density_to_kpoints(
+        blocks,
+        [((0.0, 0.0, 0.0), 0.5), ((0.5, 0.0, 0.0), 0.5)],
+    )
+
+    np.testing.assert_allclose(restored[0][2], d0, atol=1e-12)
+    np.testing.assert_allclose(restored[1][2], d1, atol=1e-12)
+
+
+def test_kpoint_density_fourier_transform_round_trip_3d():
+    rng = np.random.default_rng(7)
+    kpoints = []
+    for ix in (0, 1):
+        for iy in (0, 1):
+            for iz in (0, 1):
+                direct = (0.5 * ix, 0.5 * iy, 0.5 * iz)
+                matrix = rng.normal(size=(2, 2)) + 1j * rng.normal(size=(2, 2))
+                kpoints.append((direct, 0.125, matrix))
+    r_blocks = [(rx, ry, rz) for rx in (0, 1) for ry in (0, 1) for rz in (0, 1)]
+
+    blocks = kpoint_density_to_real_space(kpoints, r_blocks)
+    restored = real_space_density_to_kpoints(
+        blocks,
+        [(direct, weight) for direct, weight, _matrix in kpoints],
+    )
+
+    for (_direct, _weight, original), (_restored_direct, _restored_weight, recovered) in zip(
+        kpoints, restored
+    ):
+        np.testing.assert_allclose(recovered, original, atol=1e-12)
+
+
+def test_kpoint_density_fourier_transform_gamma_is_identity():
+    matrix = np.array([[1.0, 0.0], [0.0, 2.0]])
+    blocks = kpoint_density_to_real_space(
+        [((0.0, 0.0, 0.0), 1.0, matrix)],
+        [(0, 0, 0)],
+    )
+    restored = real_space_density_to_kpoints(
+        blocks,
+        [((0.0, 0.0, 0.0), 1.0)],
+    )
+
+    np.testing.assert_allclose(restored[0][2], matrix, atol=1e-12)
+
+
+def test_kpoint_density_fourier_transform_rejects_bad_weights():
+    with pytest.raises(ValueError, match="sum to one"):
+        kpoint_density_to_real_space(
+            [((0.0, 0.0, 0.0), 0.4, np.eye(2))],
+            [(0, 0, 0)],
+        )
+
+
+def test_kpoint_density_fourier_transform_rejects_shape_mismatch():
+    with pytest.raises(ValueError, match="same shape"):
+        kpoint_density_to_real_space(
+            [
+                ((0.0, 0.0, 0.0), 0.5, np.eye(2)),
+                ((0.5, 0.0, 0.0), 0.5, np.eye(3)),
+            ],
+            [(0, 0, 0)],
+        )
+
+
+def test_real_space_density_to_kpoints_uses_abacus_minus_phase():
+    zero = np.array([[1.0, 0.0], [0.0, 1.0]])
+    one = np.array([[0.75, 0.0], [0.0, 0.25]])
+    result = real_space_density_to_kpoints(
+        {(0, 0, 0): zero, (1, 0, 0): one},
+        [((0.5, 0.0, 0.0), 1.0)],
+    )
+
+    np.testing.assert_allclose(result[0][2], zero - one, atol=1e-12)
