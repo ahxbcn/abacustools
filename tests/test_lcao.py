@@ -7,6 +7,7 @@ from abacustools.data.lcao import (
     LCAODataError,
     embed_fragment_coefficients,
     embed_fragment_matrix,
+    orthogonalize_fragment_orbitals,
     kpoint_density_to_real_space,
     load_lcao_kpoint_densities,
     real_space_density_to_kpoints,
@@ -230,3 +231,64 @@ def test_embed_fragment_matrix_rejects_out_of_range_atom():
 def test_embed_fragment_matrix_rejects_dimension_mismatch():
     with pytest.raises(ValueError, match="dimension"):
         embed_fragment_matrix(np.eye(3), [0], [(0, 2)])
+
+
+def test_orthogonalize_fragment_orbitals_basic():
+    overlap = np.array([[1.0, 0.5], [0.5, 1.0]])
+    occupied = np.array([[1.0], [0.0]])
+    virtual = np.array([[0.0], [1.0]])
+
+    basis = orthogonalize_fragment_orbitals(occupied, virtual, overlap)
+
+    assert basis.occupied.shape == (2, 1)
+    assert basis.virtual.shape == (2, 1)
+    assert basis.combined.shape == (2, 2)
+    assert basis.discarded_virtuals == 0
+    np.testing.assert_allclose(basis.occupied.conj().T @ overlap @ basis.occupied, np.eye(1))
+    np.testing.assert_allclose(basis.virtual.conj().T @ overlap @ basis.virtual, np.eye(1))
+    np.testing.assert_allclose(
+        basis.occupied.conj().T @ overlap @ basis.virtual,
+        np.zeros((1, 1)),
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(basis.combined.conj().T @ overlap @ basis.combined, np.eye(2))
+
+
+def test_orthogonalize_fragment_orbitals_discards_redundant_virtuals():
+    overlap = np.eye(2)
+    occupied = np.array([[1.0], [0.0]])
+    virtual = np.array([[0.0, 0.0], [1.0, 1.0]])
+
+    basis = orthogonalize_fragment_orbitals(occupied, virtual, overlap)
+
+    assert basis.virtual.shape == (2, 1)
+    assert basis.discarded_virtuals == 1
+    np.testing.assert_allclose(basis.combined.conj().T @ overlap @ basis.combined, np.eye(2))
+
+
+def test_orthogonalize_fragment_orbitals_handles_complex_overlap():
+    overlap = np.array([[1.0, 0.2j], [-0.2j, 1.0]])
+    occupied = np.array([[1.0], [0.0]], dtype=complex)
+    virtual = np.array([[0.0], [1.0]], dtype=complex)
+
+    basis = orthogonalize_fragment_orbitals(occupied, virtual, overlap)
+
+    np.testing.assert_allclose(basis.combined.conj().T @ overlap @ basis.combined, np.eye(2))
+
+
+def test_orthogonalize_fragment_orbitals_rejects_dependent_occupied_orbitals():
+    with pytest.raises(ValueError, match="positive definite"):
+        orthogonalize_fragment_orbitals(
+            np.array([[1.0, 1.0], [0.0, 0.0]]),
+            np.array([[0.0], [1.0]]),
+            np.eye(2),
+        )
+
+
+def test_orthogonalize_fragment_orbitals_rejects_non_hermitian_overlap():
+    with pytest.raises(ValueError, match="Hermitian"):
+        orthogonalize_fragment_orbitals(
+            np.array([[1.0], [0.0]]),
+            np.array([[0.0], [1.0]]),
+            np.array([[1.0, 0.5], [0.0, 1.0]]),
+        )

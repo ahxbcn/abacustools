@@ -9,6 +9,7 @@ density-to-energy conversion.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence
 
@@ -579,3 +580,132 @@ def embed_fragment_coefficients(
     result = np.zeros((full_size, array.shape[1]), dtype=array.dtype)
     result[full_indices, :] = array[fragment_indices, :]
     return result
+
+
+@dataclass(frozen=True)
+class OrthogonalizedFragmentBasis:
+    """Orthonormalized occupied and virtual fragment orbitals.
+
+    Attributes:
+        occupied: Löwdin-orthonormalized occupied orbitals.
+        virtual: Gram-Schmidt plus Löwdin orthonormalized virtual orbitals.
+        combined: ``[occupied, virtual]`` in one coefficient matrix.
+        discarded_virtuals: Number of virtual columns removed because they
+            were linearly dependent on the occupied or other virtual orbitals.
+    """
+
+    occupied: np.ndarray
+    virtual: np.ndarray
+    combined: np.ndarray
+    discarded_virtuals: int
+
+
+def _hermitian_inverse_sqrt(
+    matrix: np.ndarray,
+    *,
+    threshold: float,
+    context: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return the inverse square root and eigensystem of a Hermitian matrix."""
+
+    hermitian = 0.5 * (matrix + matrix.conj().T)
+    eigenvalues, eigenvectors = np.linalg.eigh(hermitian)
+    if not np.all(np.isfinite(eigenvalues)):
+        raise ValueError(f"{context} has non-finite eigenvalues")
+    if np.any(eigenvalues <= threshold):
+        raise ValueError(f"{context} is not positive definite above threshold {threshold:g}")
+    inverse_sqrt = (eigenvectors / np.sqrt(eigenvalues)) @ eigenvectors.conj().T
+    return inverse_sqrt, eigenvalues, eigenvectors
+
+
+def orthogonalize_fragment_orbitals(
+    occupied: np.ndarray,
+    virtual: np.ndarray,
+    overlap: np.ndarray,
+    *,
+    threshold: float = 1e-8,
+) -> OrthogonalizedFragmentBasis:
+    """Orthonormalize occupied and virtual fragment orbitals in a NAO basis.
+
+    The procedure follows pEDA:
+
+    1. Löwdin-orthogonalize the occupied fragment orbitals;
+    2. project the virtual fragment orbitals onto the orthogonal complement of
+       the occupied space (Gram-Schmidt step);
+    3. Löwdin-orthogonalize the projected virtual orbitals and discard
+       linearly dependent directions.
+
+    Args:
+        occupied: Occupied fragment coefficients with shape
+            ``(n_basis, n_occupied)``.
+        virtual: Virtual fragment coefficients with shape
+            ``(n_basis, n_virtual)``.  The virtual set may contain redundant
+            columns from multiple fragments; they are removed by the final
+            Löwdin step.
+        overlap: Full-basis overlap matrix ``S``.
+        threshold: Positive eigenvalue threshold for the occupied and virtual
+            metric matrices.
+
+    Returns:
+        An :class:`OrthogonalizedFragmentBasis` whose columns satisfy
+        ``C.T @ S @ C = I``.
+
+    Raises:
+        ValueError: If the matrices are inconsistent, the overlap is not
+            Hermitian, the occupied orbitals are linearly dependent, or no
+            virtual direction survives.
+    """
+
+    occ = np.asarray(occupied)
+    vir = np.asarray(virtual)
+    s = np.asarray(overlap)
+    if occ.ndim != 2 or vir.ndim != 2 or s.ndim != 2:
+        raise ValueError("occupied, virtual and overlap must be two-dimensional")
+    n_basis = int(s.shape[0])
+    if s.shape != (n_basis, n_basis):
+        raise ValueError("overlap must be square")
+    if occ.shape[0] != n_basis or vir.shape[0] != n_basis:
+        raise ValueError("occupied and virtual coefficients must match the overlap dimension")
+    if occ.shape[1] <= 0:
+        raise ValueError("at least one occupied fragment orbital is required")
+    if not np.all(np.isfinite(occ)) or not np.all(np.isfinite(vir)) or not np.all(np.isfinite(s)):
+        raise ValueError("fragment orbitals and overlap must be finite")
+    if threshold < 0.0 or not np.isfinite(threshold):
+        raise ValueError("threshold must be a finite non-negative number")
+    if not np.allclose(s, s.conj().T, atol=1e-10, rtol=1e-10):
+        raise ValueError("overlap matrix must be Hermitian")
+
+    occupied_metric = occ.conj().T @ s @ occ
+    occupied_inverse_sqrt, _values, _vectors = _hermitian_inverse_sqrt(
+        occupied_metric,
+        threshold=threshold,
+        context="occupied fragment overlap",
+    )
+    occupied_orth = occ @ occupied_inverse_sqrt
+
+    virtual_projected = vir - occupied_orth @ (occupied_orth.conj().T @ s @ vir)
+    virtual_metric = virtual_projected.conj().T @ s @ virtual_projected
+    virtual_metric = 0.5 * (virtual_metric + virtual_metric.conj().T)
+    eigenvalues, eigenvectors = np.linalg.eigh(virtual_metric)
+    if not np.all(np.isfinite(eigenvalues)):
+        raise ValueError("virtual fragment overlap has non-finite eigenvalues")
+    keep = eigenvalues > threshold
+    discarded = int(np.count_nonzero(~keep))
+    if not np.any(keep):
+        raise ValueError("no linearly independent virtual fragment orbital remains")
+    virtual_orth = (
+        virtual_projected @ eigenvectors[:, keep] @ np.diag(1.0 / np.sqrt(eigenvalues[keep]))
+    )
+
+    combined = np.hstack((occupied_orth, virtual_orth))
+    metric = combined.conj().T @ s @ combined
+    identity = np.eye(metric.shape[0], dtype=metric.dtype)
+    if not np.allclose(metric, identity, atol=1e-7, rtol=1e-7):
+        raise ValueError("fragment orbital orthogonalization did not produce an orthonormal basis")
+
+    return OrthogonalizedFragmentBasis(
+        occupied=occupied_orth,
+        virtual=virtual_orth,
+        combined=combined,
+        discarded_virtuals=discarded,
+    )
