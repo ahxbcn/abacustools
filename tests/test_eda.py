@@ -8,6 +8,7 @@ import pytest
 
 import abacustools.data.lcao as lcao
 from abacustools.commands.workflow.eda import prepare_gamma_state_job
+from abacustools.data.eda import read_gamma_fixed_density_result
 from abacustools.data.mayer import read_csr_matrix_blocks
 from abacustools.io.abacus import ReadInput
 from abacustools.io.stru import AbacusATOM, AbacusSTRU
@@ -357,3 +358,96 @@ def test_prepare_gamma_state_job_rejects_non_gamma_state(tmp_path):
 
     with pytest.raises(ValueError, match="Gamma"):
         prepare_gamma_state_job(job, [state], tmp_path / "state")
+
+
+def _write_develop_matrix(path: Path, matrix: np.ndarray) -> None:
+    lines = [f"# rows {matrix.shape[0]}", f"# columns {matrix.shape[1]}"]
+    for row in range(matrix.shape[0]):
+        values = " ".join(
+            f"({matrix[row, column].real:.12f},{matrix[row, column].imag:.12f})"
+            for column in range(row, matrix.shape[1])
+        )
+        lines.append(f"Row {row + 1}")
+        lines.append(values)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _fixed_density_job(
+    tmp_path: Path,
+    *,
+    nspin: int = 1,
+    energy: float = -10.0,
+    vdw: float = -0.5,
+) -> tuple[Path, dict[int, np.ndarray]]:
+    job = tmp_path / "state"
+    output = job / "OUT.ABACUS"
+    output.mkdir(parents=True)
+    (job / "INPUT").write_text(
+        "INPUT_PARAMETERS\n"
+        "calculation scf\n"
+        "basis_type lcao\n"
+        "gamma_only 1\n"
+        f"nspin {nspin}\n"
+        "suffix ABACUS\n",
+        encoding="utf-8",
+    )
+    (output / "running_scf.log").write_text(
+        f"E_KohnSham = {energy:.8f} eV\n"
+        f"E_vdwD3 = {vdw:.8f} eV\n"
+        "charge density convergence is achieved\n"
+        f"final etot is {energy:.8f} eV\n",
+        encoding="utf-8",
+    )
+    matrices = {}
+    for spin in range(1, nspin + 1):
+        matrix = np.array([[1.0 + spin, 0.25j], [-0.25j, 2.0 + spin]])
+        matrices[spin] = matrix
+        name = "hk_nao.txt" if nspin == 1 else f"hks{spin}_nao.txt"
+        _write_develop_matrix(output / name, matrix)
+    return job, matrices
+
+
+def test_read_gamma_fixed_density_result_single_spin(tmp_path):
+    job, matrices = _fixed_density_job(tmp_path)
+
+    result = read_gamma_fixed_density_result(job)
+
+    assert result.energy_ev == pytest.approx(-10.0)
+    assert result.vdw_energy_ev == pytest.approx(-0.5)
+    assert result.electronic_energy_ev == pytest.approx(-9.5)
+    assert result.nspin == 1
+    np.testing.assert_allclose(result.hamiltonians[1], matrices[1])
+
+
+def test_read_gamma_fixed_density_result_two_spins(tmp_path):
+    job, matrices = _fixed_density_job(tmp_path, nspin=2)
+
+    result = read_gamma_fixed_density_result(job)
+
+    assert set(result.hamiltonians) == {1, 2}
+    np.testing.assert_allclose(result.hamiltonians[1], matrices[1])
+    np.testing.assert_allclose(result.hamiltonians[2], matrices[2])
+
+
+def test_read_gamma_fixed_density_result_rejects_non_gamma(tmp_path):
+    job, _matrices = _fixed_density_job(tmp_path)
+    (job / "INPUT").write_text(
+        "INPUT_PARAMETERS\n"
+        "calculation scf\n"
+        "basis_type lcao\n"
+        "gamma_only 0\n"
+        "nspin 1\n"
+        "suffix ABACUS\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="gamma_only"):
+        read_gamma_fixed_density_result(job)
+
+
+def test_read_gamma_fixed_density_result_requires_hamiltonian(tmp_path):
+    job, _matrices = _fixed_density_job(tmp_path)
+    (job / "OUT.ABACUS" / "hk_nao.txt").unlink()
+
+    with pytest.raises(FileNotFoundError, match="Hamiltonian"):
+        read_gamma_fixed_density_result(job)
