@@ -41,6 +41,7 @@ from .common import (
     write_abacus_job,
     write_manifest,
 )
+from abacustools.core.render import cli_output
 
 
 _TASK_PREFIX = "disp-"
@@ -353,10 +354,10 @@ def prepare_phonon_jobs(
     if supercell_structure.natoms != len(displaced_structures[0]):
         raise RuntimeError("Phonopy and ABACUS generated supercells have different atom counts")
 
-    print(f"  job: {job}")
-    print(f"  supercell: {' '.join(str(value) for value in supercell)}")
-    print(f"  displacement step: {displacement_stepsize} Angstrom")
-    print(f"  generated displacements: {len(displaced_structures)}")
+    cli_output(f"  job: {job}")
+    cli_output(f"  supercell: {' '.join(str(value) for value in supercell)}")
+    cli_output(f"  displacement step: {displacement_stepsize} Angstrom")
+    cli_output(f"  generated displacements: {len(displaced_structures)}")
     for entry, displaced in zip(entries, displaced_structures):
         name = entry["task"]
         displaced_structure = deepcopy(supercell_structure)
@@ -370,7 +371,7 @@ def prepare_phonon_jobs(
             stru_filename=stru_filename,
             kpoint=kpoint_file,
         )
-        print(f"  prepared {name}")
+        cli_output(f"  prepared {name}")
 
     write_manifest(
         job,
@@ -1057,7 +1058,7 @@ def postprocess(args: argparse.Namespace) -> int:
             # not support the fit, and then fails to draw the marker it adds
             # to the DOS plot, so drop the value from the object as well.
             phonon.total_dos._freq_Debye = None
-            print(
+            cli_output(
                 "  warning: the Debye frequency did not converge for this DOS "
                 "and is left out of the report"
             )
@@ -1160,17 +1161,17 @@ def postprocess(args: argparse.Namespace) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 
-    print(f"  job: {job}")
+    cli_output(f"  job: {job}")
     # The thermal properties are reported in eV and eV/K per cell.
-    print(
+    cli_output(
         f"  max frequency: {max_frequency:.8f} THz "
         f"({result['max_frequency_K']:.4f} K)"
     )
-    print(f"  entropy: {result['entropy']:.8f} eV/K")
-    print(f"  free energy: {result['free_energy']:.8f} eV")
-    print(f"  heat capacity: {result['heat_capacity']:.8f} eV/K")
+    cli_output(f"  entropy: {result['entropy']:.8f} eV/K")
+    cli_output(f"  free energy: {result['free_energy']:.8f} eV")
+    cli_output(f"  heat capacity: {result['heat_capacity']:.8f} eV/K")
     if debye_frequency is not None:
-        print(
+        cli_output(
             f"  Debye frequency: {result['debye']['frequency_thz']:.8f} THz "
             f"({result['debye']['temperature_K']:.4f} K)"
         )
@@ -1178,17 +1179,17 @@ def postprocess(args: argparse.Namespace) -> int:
         labels = ", ".join(
             f"{mode['band']}:{mode.get('irrep', '?')}" for mode in gamma_modes
         )
-        print(f"  Gamma modes: {labels}")
+        cli_output(f"  Gamma modes: {labels}")
     if nac is not None:
         for mode in gamma_modes:
             if mode.get("character") == "LO":
-                print(
+                cli_output(
                     f"  Gamma longitudinal mode: {mode['frequency_thz']:.8f} THz"
                 )
     if projected is not None:
-        print(f"  projected DOS: {result['projected_dos']['plot']}")
-    print(f"  plot: {plot_path}")
-    print(f"  results: {output}")
+        cli_output(f"  projected DOS: {result['projected_dos']['plot']}")
+    cli_output(f"  plot: {plot_path}")
+    cli_output(f"  results: {output}")
     return 0
 
 

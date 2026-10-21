@@ -11,6 +11,7 @@ from rich.table import Table
 
 from abacustools.data.bader import BaderAnalysis, BaderError, analyze_bader
 from abacustools.integrations.baderkit import DEFAULT_METHOD, METHODS, analyze_baderkit
+from abacustools.core.render import cli_output
 
 
 def _job_directory(value: str) -> Path:
@@ -108,7 +109,7 @@ def run(args: argparse.Namespace) -> int:
         else:
             analysis = analyze_bader(job, exe=args.bader_exe, **common)
     except (BaderError, ImportError) as error:
-        print(f"Bader analysis failed: {error}")
+        cli_output(f"Bader analysis failed: {error}")
         return 1
 
     report = analysis.to_dict()
@@ -117,10 +118,10 @@ def run(args: argparse.Namespace) -> int:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(report, indent=2), encoding="utf-8")
         if not args.json:
-            print(f"Wrote Bader report: {output}")
+            cli_output(f"Wrote Bader report: {output}")
 
     if args.json:
-        print(json.dumps(report, indent=2))
+        cli_output(json.dumps(report, indent=2))
         return 0
 
     _print_table(analysis)

@@ -851,11 +851,13 @@ abacustools postprocess dos -j JOB --emin -20 --emax 10
 abacustools postprocess dos -j JOB --pdos species
 ```
 
-The command reads `DOS*_smearing.dat`, shifts the energy axis by the Fermi
-energy, and writes `DOS.png` and `DOS.dat`. Use `--pdos species-shell`,
-`--pdos species-orbital`, or `--pdos atoms --atom-index 1 2` for projected DOS
-plots. Output paths can be changed with `-o` and `--data-output`; use
-`--efermi` when the Fermi energy cannot be read from the ABACUS output.
+The command reads `DOS*_smearing.dat` (ABACUS LTS) or the `doss<spin>...txt`
+and `pdoss<spin>...txt` text files of ABACUS develop, shifts the energy axis
+by the Fermi energy, and writes `DOS.png` and `DOS.dat`. Use `--pdos
+species-shell`, `--pdos species-orbital`, or `--pdos atoms --atom-index 1 2`
+for projected DOS plots. Output paths can be changed with `-o` and
+`--data-output`; use `--efermi` when the Fermi energy cannot be read from the
+ABACUS output.
 
 Use `--combined` to overlay the total DOS with the species-projected DOS
 (`DOS_PDOS.png`/`DOS_PDOS.dat`), `--pdos atom-shell` or `--pdos atom-orbital`
@@ -1017,7 +1019,15 @@ fallback through `out_mat_hs2=1` or `out_hsr=1`:
 ```text
 abacustools postprocess mayer -j JOB --cutoff 3.0
 abacustools postprocess mayer -j JOB --pairs 1-2,1-3 --json -o mayer.json
+abacustools postprocess mayer -j JOB --pairs 1-2 --shells
 ```
+
+With `--shells` every bond order is decomposed into the contributions of the
+s/p/d/f shells of the two atoms, for example `s-p 0.0512  p-p 0.9031`. The
+same breakdown is always part of the JSON report as `shell_bond_orders`
+(shell of the first atom, shell of the second atom, contribution). The
+contributions of radial functions with the same angular momentum are summed,
+and all values add up to the pair bond order.
 
 The analyzer reads numerical orbitals, overlap matrices, density matrices or
 NAO wavefunctions, validates their dimensions, and reports atom indices,
@@ -1281,6 +1291,25 @@ independent constants (GPa): C11 = <...>, C12 = <...>, C44 = <...>
 Use `--no-symmetrize` to keep the raw fit; `--symprec` sets the tolerance of
 the symmetry analysis, which defaults to 0.01 Angstrom so that a relaxed cell
 is still recognised as symmetric.
+
+Add `--pymatgen` to evaluate the same final tensor through pymatgen's
+`ElasticTensor` API without replacing the custom fit. The JSON report then
+gains a `pymatgen` block with the Voigt, Reuss and Voigt-Reuss-Hill moduli, the
+universal anisotropy, the homogeneous Poisson ratio, longitudinal and
+transverse sound velocities, Debye temperature, and the Snyder, Clarke, Cahill
+and Agne thermal-conductivity estimates. The custom tensor, symmetrisation,
+independent constants and moduli remain in place; the pymatgen block is a
+second, independently implemented view of the same elastic tensor:
+
+```text
+abacustools workflow elastic postprocess -j JOB --pymatgen
+```
+
+The structure-dependent pymatgen properties are offered for three-dimensional
+cells only. A slab, wire or molecule cell is reported as unavailable, because
+pymatgen computes its velocities and Debye temperature per cell volume, and
+that volume contains the vacuum. A slab keeps the custom in-plane block in N/m
+instead.
 
 A two dimensional material is recognised automatically: when the reference
 cell has vacuum along one direction, only the strain components of the two

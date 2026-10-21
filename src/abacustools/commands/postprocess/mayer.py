@@ -8,6 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from abacustools.data.mayer import MayerAnalysis, analyze_mayer_bond_order
+from abacustools.core.render import cli_output
 
 
 def _job_directory(value: str) -> Path:
@@ -29,6 +30,7 @@ def _register_arguments(parser: argparse.ArgumentParser) -> None:
     selector.add_argument("-p", "--pairs", help="One-based atom pairs, for example 1-2,1-3.")
     selector.add_argument("--pairs-file", help="File containing one-based atom pairs, one pair per line.")
     parser.add_argument("-t", "--threshold", type=float, default=0.2, help="Only print bond orders >= threshold (default: 0.2).")
+    parser.add_argument("--shells", action="store_true", help="Print the s/p/d/f shell decomposition of every bond order.")
     parser.add_argument("-o", "--output", default=None, help="Write a JSON report, relative to JOB by default.")
     parser.add_argument("--json", action="store_true", help="Print the complete JSON report to stdout.")
 
@@ -50,14 +52,22 @@ def run(args: argparse.Namespace) -> int:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(_report(analysis, None), indent=2), encoding="utf-8")
         if not args.json:
-            print(f"Wrote Mayer bond-order report: {output}")
+            cli_output(f"Wrote Mayer bond-order report: {output}")
     if args.json:
-        print(json.dumps(_report(analysis, None), indent=2))
+        cli_output(json.dumps(_report(analysis, None), indent=2))
         return 0
-    print(f"Mayer bond order: {analysis.job} ({'gamma-only' if analysis.gamma_only else 'multi-k'}, nspin={analysis.nspin})")
-    print(f"Task: calculation={analysis.calculation}, basis functions={analysis.basis_functions}, pairs={len(analysis.pairs)}")
+    cli_output(f"Mayer bond order: {analysis.job} ({'gamma-only' if analysis.gamma_only else 'multi-k'}, nspin={analysis.nspin})")
+    cli_output(f"Task: calculation={analysis.calculation}, basis functions={analysis.basis_functions}, pairs={len(analysis.pairs)}")
     for pair in report["pairs"]:
-        print(f"  {pair['atom1']}({pair['element1']}) - {pair['atom2']}({pair['element2']}): {pair['bond_order']:.6f}  distance={pair['distance']:.6f} A")
+        cli_output(f"  {pair['atom1']}({pair['element1']}) - {pair['atom2']}({pair['element2']}): {pair['bond_order']:.6f}  distance={pair['distance']:.6f} A")
+        if args.shells:
+            breakdown = "  ".join(
+                f"{first}-{second} {value:.6f}"
+                for first, second, value in pair.get("shell_bond_orders", ())
+                if abs(value) > 1e-8
+            )
+            if breakdown:
+                cli_output(f"      shells: {breakdown}")
     return 0
 
 

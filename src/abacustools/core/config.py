@@ -1,8 +1,10 @@
 """Manage default settings for abacustools."""
+from __future__ import annotations
 
 from copy import deepcopy
 from typing import Any
 from pathlib import Path
+from abacustools.core.render import cli_output
 
 def read_config_file(config_file: Path) -> dict[str, Any]:
     """
@@ -35,9 +37,9 @@ def generate_default_config(override: bool=False):
     config_dir = Path.home() / ".abacustools"
     config_file = config_dir / "config.yaml"
     if config_file.exists() and not override:
-        print("Found existing config file. Skipping generation.")
+        cli_output("Found existing config file. Skipping generation.")
     else:
-        print(f"Generating default config file at {config_file}")
+        cli_output(f"Generating default config file at {config_file}")
         config_dir.mkdir(parents=True, exist_ok=True)
         with open(config_file, "w") as f:
             yaml.dump(default_config, f)

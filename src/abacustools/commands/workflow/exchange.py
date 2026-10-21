@@ -43,6 +43,7 @@ from .common import (
     write_abacus_job,
     write_manifest,
 )
+from abacustools.core.render import cli_output
 
 
 _ROOT = "magj"
@@ -291,7 +292,7 @@ def _collect_pairs(structure, requested) -> list[dict[str, Any]]:
             )
         key = (min(atom1, atom2), max(atom1, atom2))
         if key in seen:
-            print(
+            cli_output(
                 f"  skipping duplicate pair {label1} {ordinal1} - "
                 f"{label2} {ordinal2} (atoms {key[0] + 1} and {key[1] + 1})"
             )
@@ -382,7 +383,7 @@ def prepare(args: argparse.Namespace) -> int:
     scf_inputs = _scf_inputs(inputs)
     requested_threshold = inputs.get("scf_thr")
     if "scf_thr" in scf_inputs and scf_inputs["scf_thr"] != requested_threshold:
-        print(
+        cli_output(
             "  scf_thr tightened to "
             f"{scf_inputs['scf_thr']:g} because the four-state fit compares energies"
         )
@@ -395,7 +396,7 @@ def prepare(args: argparse.Namespace) -> int:
         stru_filename=stru_filename,
         kpoint=kpoint,
     )
-    print(f"  prepared {_ORIGINAL_TASK}")
+    cli_output(f"  prepared {_ORIGINAL_TASK}")
 
     for case in cases:
         tilted = deepcopy(structure)
@@ -409,7 +410,7 @@ def prepare(args: argparse.Namespace) -> int:
             stru_filename=stru_filename,
             kpoint=kpoint,
         )
-    print(f"  prepared {len(cases)} four-state calculations")
+    cli_output(f"  prepared {len(cases)} four-state calculations")
 
     submission = generate_workflow_submission(
         job,
@@ -420,8 +421,8 @@ def prepare(args: argparse.Namespace) -> int:
         abacus_command=getattr(args, "abacus_command", None),
     )
     if submission is not None:
-        print(f"  submission type: {submission['type']}")
-        print(f"  workflow script: {submission['workflow_script']}")
+        cli_output(f"  submission type: {submission['type']}")
+        cli_output(f"  workflow script: {submission['workflow_script']}")
 
     manifest = {
         "tasks": names,
@@ -435,20 +436,20 @@ def prepare(args: argparse.Namespace) -> int:
         manifest["submission"] = submission
     write_manifest(job, _ROOT, **manifest)
 
-    print(f"  job: {job}")
+    cli_output(f"  job: {job}")
     tilts = ", ".join(_format_angle(index * args.step) for index in range(1, args.number + 1))
     for pair in pairs:
-        print(
+        cli_output(
             f"  pair {pair['name']} (atoms {pair['atom1']} and {pair['atom2']}): "
             f"reference angle {pair['reference_angle']:.2f} deg"
         )
         if pair["reference_angle"] + args.number * args.step > 180.0:
-            print(
+            cli_output(
                 "  warning: the largest tilt passes a pair angle of 180 degrees; "
                 "consider a smaller step or number"
             )
-    print(f"  tilt angles: {tilts} deg")
-    print(f"  generated calculations: {len(names)}")
+    cli_output(f"  tilt angles: {tilts} deg")
+    cli_output(f"  generated calculations: {len(names)}")
     return 0
 
 
@@ -624,7 +625,7 @@ def postprocess(args: argparse.Namespace) -> int:
             f"{', '.join(unconverged)}; pass --allow-unconverged to fit them anyway"
         )
     if unconverged:
-        print(f"  warning: unconverged SCF calculations: {', '.join(unconverged)}")
+        cli_output(f"  warning: unconverged SCF calculations: {', '.join(unconverged)}")
     original_energy = original_state["energy"]
 
     reports = []
@@ -682,17 +683,17 @@ def postprocess(args: argparse.Namespace) -> int:
 
     for item in reports:
         coupling = item["coupling"]
-        print(
+        cli_output(
             f"  {item['name']} (atoms {item['atom1']} and {item['atom2']}): "
             f"reference angle {item['reference_angle']:.2f} deg"
         )
-        print(
+        cli_output(
             f"    J = {coupling['j_mev']:.4f} meV, R^2 = {coupling['r_squared']:.6f}, "
             f"rms residual = {coupling['rms_residual_ev']:.3e} eV, "
             f"points = {coupling['points']}"
         )
-    print(f"  results: {output}")
-    print(f"  plot: {plot}")
+    cli_output(f"  results: {output}")
+    cli_output(f"  plot: {plot}")
     return 0
 
 

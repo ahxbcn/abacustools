@@ -40,6 +40,7 @@ from abacustools.data.weak import (
 )
 from abacustools.io.abacus import ReadInput
 from abacustools.io.stru import AbacusSTRU
+from abacustools.core.render import cli_output
 
 
 _AUTO_PLOT = "auto"
@@ -695,19 +696,19 @@ def _profile_report(
 
 def _print_report(report: Dict[str, Any]) -> None:
     """Print the summary of the charge-density analysis."""
-    print(f"  job: {report['job']}")
-    print(f"  density source: {report['source']}")
-    print(f"  spin channels: {report['nspin']}")
-    print(f"  spin selection: {report['spin']}")
-    print(f"  analysed quantity: {report['quantity']}")
+    cli_output(f"  job: {report['job']}")
+    cli_output(f"  density source: {report['source']}")
+    cli_output(f"  spin channels: {report['nspin']}")
+    cli_output(f"  spin selection: {report['spin']}")
+    cli_output(f"  analysed quantity: {report['quantity']}")
     if report["difference_of"]:
-        print(f"  difference of: {report['difference_of']}")
+        cli_output(f"  difference of: {report['difference_of']}")
     if report["magnetization"] is not None:
-        print(f"  magnetization: {report['magnetization']:.6f} Bohr magneton")
+        cli_output(f"  magnetization: {report['magnetization']:.6f} Bohr magneton")
     grid = " x ".join(str(size) for size in report["grid"])
-    print(f"  grid: {grid}, cell volume {report['volume_angstrom3']:.6f} Angstrom^3")
+    cli_output(f"  grid: {grid}, cell volume {report['volume_angstrom3']:.6f} Angstrom^3")
     field = report["field"]
-    print(f"  field: {field['minimum']:.6g} .. {field['maximum']:.6g} (mean {field['mean']:.6g})")
+    cli_output(f"  field: {field['minimum']:.6g} .. {field['maximum']:.6g} (mean {field['mean']:.6g})")
     if "electrons" in report:
         electrons = f"  electrons: {report['electrons']:.6f} e"
         if report["valence_electrons"] is not None:
@@ -715,21 +716,21 @@ def _print_report(report: Dict[str, Any]) -> None:
                 f" (valence electrons {report['valence_electrons']:.6f} e, "
                 f"deviation {report['deviation']:+.6f} e)"
             )
-        print(electrons)
+        cli_output(electrons)
     if report.get("cube_output"):
-        print(f"  cube: {report['cube_output']}")
+        cli_output(f"  cube: {report['cube_output']}")
     profile = report.get("profile")
     if profile:
-        print(
+        cli_output(
             f"  profile: {profile['data_output']} "
             f"({profile['points']} points, {profile['minimum']:.6g} .. "
             f"{profile['maximum']:.6g} {profile['unit']})"
         )
         if profile["plot"]:
-            print(f"  plot: {profile['plot']}")
+            cli_output(f"  plot: {profile['plot']}")
     slice_report = report.get("slice")
     if slice_report:
-        print(
+        cli_output(
             f"  slice: {slice_report['data_output']} ({slice_report['axis']} axis, "
             f"index {slice_report['index']}, {slice_report['distance']:.6f} Angstrom, "
             f"{slice_report['points']} points, {slice_report['minimum']:.6g} .. "
@@ -737,22 +738,22 @@ def _print_report(report: Dict[str, Any]) -> None:
         )
         if slice_report["plot"]:
             labels = ", ".join(atom["label"] for atom in slice_report["atoms"]) or "none"
-            print(f"  slice plot: {slice_report['plot']} (atoms in the plane: {labels})")
+            cli_output(f"  slice plot: {slice_report['plot']} (atoms in the plane: {labels})")
     nci = report.get("nci")
     if nci:
-        print(
+        cli_output(
             f"  nci plot: {nci['plot']} ({nci['points']} points with "
             f"rho <= {nci['rho_max']:g} e/Bohr^3)"
         )
     igm = report.get("igm")
     if igm:
-        print(f"  igm plot: {igm['plot']} ({igm['points']} points)")
+        cli_output(f"  igm plot: {igm['plot']} ({igm['points']} points)")
     igmh = report.get("igmh")
     if igmh:
-        print(f"  igmh plot ({igmh['method']}): {igmh['plot']} ({igmh['points']} points)")
+        cli_output(f"  igmh plot ({igmh['method']}): {igmh['plot']} ({igmh['points']} points)")
     promolecular = report.get("promolecular")
     if promolecular:
-        print(f"  promolecular nci plot: {promolecular['plot']} ({promolecular['points']} points)")
+        cli_output(f"  promolecular nci plot: {promolecular['plot']} ({promolecular['points']} points)")
 
 
 def _analyse(args: argparse.Namespace, job: Path) -> Dict[str, Any]:
@@ -980,11 +981,11 @@ def run(args: argparse.Namespace) -> int:
     try:
         report = _analyse(args, job)
     except ChargeDensityError as error:
-        print(f"Charge-density analysis failed: {error}")
+        cli_output(f"Charge-density analysis failed: {error}")
         return 1
 
     if args.json:
-        print(json.dumps(report, indent=2))
+        cli_output(json.dumps(report, indent=2))
         return 0
     _print_report(report)
     return 0

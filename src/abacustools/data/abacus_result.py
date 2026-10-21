@@ -7,11 +7,12 @@ import xml.etree.ElementTree as ET
 from functools import lru_cache
 from io import StringIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
 from abacustools.core.constant import BOHR_TO_ANG, RY_TO_EV
+from abacustools.data.abacus_json import latest_ionic_output, read_abacus_json
 from abacustools.data.versions import resolve_version
 from abacustools.io.abacus import ReadInput
 
@@ -73,19 +74,154 @@ _STRESS_COMPONENTS = (
     ("xy", "yy", "yz"),
     ("xz", "yz", "zz"),
 )
+# Develop-branch output files: the LTS ``DOS<n>_smearing.dat`` files are
+# renamed to ``doss<spin>[g<step>]_nao.txt`` (LCAO) or ``doss<spin>.txt`` /
+# ``dos.txt`` (PW), and the XML ``PDOS`` file is replaced by text files
+# ``pdoss<spin>[g<step>]_<basis>.txt``. ``g<step>`` appears when the writer
+# names one file per ionic step; without it all ionic steps are appended to
+# one file as repeated blocks.
+_DOS_NAO_FILE_RE = re.compile(r"^dos(?:s(\d+))?(?:g(\d+))?(?:_nao)?\.txt$", re.IGNORECASE)
+_PDOS_NAO_FILE_RE = re.compile(r"^pdoss(\d+)(?:g(\d+))?_\w+\.txt$", re.IGNORECASE)
+_IONIC_STEP_HEADER_RE = re.compile(r"^\s*(\d+)\s*#\s*ionic step", re.IGNORECASE)
+
+
+_FLOAT_RE = re.compile(_FLOAT)
+_NEVER_MATCH = re.compile(r"(?!)")
+_GLOBAL_FLAG_RE = re.compile(r"\(\?[aiLmsux]+\)")
 
 
 def _as_float(value: str) -> float:
-    return float(value.replace("D", "E").replace("d", "e"))
+    try:
+        return float(value)
+    except ValueError:
+        return float(value.replace("D", "E").replace("d", "e"))
 
 
 def _numbers(line: str) -> List[float]:
-    return [_as_float(value) for value in re.findall(_FLOAT, line)]
+    return [_as_float(value) for value in _FLOAT_RE.findall(line)]
+
+
+@lru_cache(maxsize=None)
+def _lowered(keywords: tuple[str, ...]) -> tuple[str, ...]:
+    """Return the keywords lowercased once for case-insensitive ``in`` tests."""
+    return tuple(keyword.lower() for keyword in keywords)
 
 
 def _contains_any(line: str, keywords: Sequence[str]) -> bool:
     """Return whether a lowercased log line contains one of the keywords."""
-    return any(keyword.lower() in line for keyword in keywords)
+    return any(keyword in line for keyword in _lowered(tuple(keywords)))
+
+
+def _normalize_pattern(pattern: str) -> tuple[str, bool]:
+    """Lowercase the literal parts of a regex for a lowercased log line.
+
+    A gate is matched against ``line.lower()``, which lets it stay
+    case-sensitive and fast.  Literal uppercase letters in a pattern therefore
+    have to be lowercased too.  Escapes such as ``\\S`` and character classes
+    that only list uppercase letters (``[A-Z]``) change meaning when
+    lowercased, so they are left alone; the caller wraps such a pattern in a
+    scoped ``(?i:...)`` group instead.
+
+    Returns:
+        The normalized pattern and whether it still needs case-insensitive
+        matching.
+    """
+    if "(?P" in pattern or "\\N" in pattern:
+        # Named groups and Unicode names are case-sensitive; do not touch them.
+        return pattern, True
+
+    normalized: List[str] = []
+    needs_ignorecase = False
+    index = 0
+    length = len(pattern)
+    while index < length:
+        char = pattern[index]
+        if char == "\\":
+            normalized.append(pattern[index : index + 2])
+            index += 2
+            continue
+        if char == "[":
+            # Copy the whole class unchanged; only lower it when every
+            # uppercase letter it lists has a lowercase counterpart.
+            end = index + 1
+            if end < length and pattern[end] == "^":
+                end += 1
+            if end < length and pattern[end] == "]":
+                end += 1
+            while end < length and pattern[end] != "]":
+                if pattern[end] == "\\":
+                    end += 1
+                end += 1
+            end = min(end + 1, length)
+            content = pattern[index:end]
+            if any(
+                letter.isupper() and letter.lower() not in content
+                for letter in content
+                if letter.isalpha()
+            ):
+                needs_ignorecase = True
+            normalized.append(content)
+            index = end
+            continue
+        normalized.append(char.lower() if char.isupper() else char)
+        index += 1
+    return "".join(normalized), needs_ignorecase
+
+
+def _strip_global_flags(pattern: str) -> str:
+    """Move a leading ``(?flags)`` group into a scoped group.
+
+    Python only accepts global inline flags at the start of a whole pattern,
+    so a pattern that is one alternative of a gate has to spell them as a
+    scoped ``(?flags:...)`` group.  ``i`` is dropped because the fallback gate
+    is compiled case-insensitively anyway.
+    """
+    match = re.match(r"^\(\?([aiLmsux]+)\)", pattern)
+    if match is None:
+        return pattern
+    scoped = "".join(flag for flag in match.group(1) if flag in "msx")
+    body = pattern[match.end() :]
+    return f"(?{scoped}:{body})" if scoped else body
+
+
+@lru_cache(maxsize=None)
+def _gate(
+    literals: tuple[str, ...] = (),
+    patterns: tuple[str, ...] = (),
+) -> re.Pattern[str]:
+    """Compile one marker gate for a lowercased log line.
+
+    Log readers test many marker families against every line.  One
+    alternation is much cheaper than a Python loop over every keyword.  The
+    gate is matched against ``line.lower()``: keywords and the literal parts
+    of the patterns are lowercased here, and only a pattern that cannot be
+    lowercased safely keeps a scoped ``(?i:...)`` group.
+
+    Args:
+        literals: Plain keywords.
+        patterns: Regular expressions that expose their captured value as the
+            first group; they only decide whether a line may carry a marker.
+
+    Returns:
+        A compiled pattern that matches when any marker may be present.
+    """
+    literals = _lowered(tuple(literals))
+    if any(_GLOBAL_FLAG_RE.search(pattern) for pattern in patterns):
+        # A global inline flag cannot move into a scoped group, so fall back
+        # to one case-insensitive gate.  Configured profiles are the only
+        # source of such patterns, so the slower path stays rare.
+        parts = [re.escape(keyword) for keyword in literals]
+        parts.extend(f"(?:{_strip_global_flags(pattern)})" for pattern in patterns)
+        return re.compile("|".join(parts), re.IGNORECASE) if parts else _NEVER_MATCH
+
+    parts = [re.escape(keyword) for keyword in literals]
+    for pattern in patterns:
+        normalized, needs_ignorecase = _normalize_pattern(pattern)
+        if needs_ignorecase:
+            parts.append(f"(?i:{normalized})")
+        else:
+            parts.append(f"(?:{normalized})")
+    return re.compile("|".join(parts)) if parts else _NEVER_MATCH
 
 
 @lru_cache(maxsize=None)
@@ -94,27 +230,57 @@ def _compiled(patterns: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
     return tuple(re.compile(pattern, re.IGNORECASE) for pattern in patterns)
 
 
-def _first_match(patterns: tuple[str, ...], line: str) -> Optional[float]:
-    """Return the value captured by the first matching pattern, if any."""
-    for pattern in _compiled(patterns):
+def _first_compiled(
+    patterns: Sequence[re.Pattern[str]], line: str
+) -> Optional[float]:
+    """Return the value captured by the first matching compiled pattern."""
+    for pattern in patterns:
         match = pattern.search(line)
         if match is not None:
             return _as_float(match.group(1))
     return None
 
 
+def _first_match(patterns: tuple[str, ...], line: str) -> Optional[float]:
+    """Return the value captured by the first matching pattern, if any."""
+    return _first_compiled(_compiled(patterns), line)
+
+
+def _lines_after(lines: Sequence[str], start: int):
+    """Yield the lines after ``start`` without copying the remaining list."""
+    for index in range(start + 1, len(lines)):
+        yield lines[index]
+
+
+def _step_patterns(profile: Any, text: str) -> tuple[str, ...]:
+    """Select the ionic-step dialect that a log actually uses.
+
+    ABACUS branches number the ionic steps with ``STEP OF RELAXATION`` or with
+    the ``ION=`` field of the electronic loop.  One ``re.search`` over the log
+    text is enough to choose; without it every reader scans the whole log once
+    more before parsing.
+    """
+    patterns = profile.relax_step_patterns
+    if not patterns:
+        return profile.ion_step_patterns
+    gate = re.compile(
+        "|".join(f"(?:{pattern})" for pattern in patterns),
+        re.IGNORECASE | re.MULTILINE,
+    )
+    return patterns if gate.search(text) else profile.ion_step_patterns
+
+
 def _force_extremes(
     block: List[List[float]],
 ) -> Optional[tuple[float, int, str]]:
     """Return the magnitude, one-based atom index and component of the largest force."""
-    best: Optional[tuple[float, int, str]] = None
-    for index, values in enumerate(block, start=1):
-        vector = np.asarray(values, dtype=float)
-        magnitude = float(np.linalg.norm(vector))
-        if best is None or magnitude > best[0]:
-            axis = int(np.argmax(np.abs(vector)))
-            best = (magnitude, index, "xyz"[axis])
-    return best
+    if not block:
+        return None
+    vectors = np.asarray(block, dtype=float)
+    magnitudes = np.sqrt((vectors * vectors).sum(axis=1))
+    index = int(magnitudes.argmax())
+    axis = int(np.abs(vectors[index]).argmax())
+    return float(magnitudes[index]), index + 1, "xyz"[axis]
 
 
 def _atom_label(labels: List[str], atom: int) -> Optional[str]:
@@ -172,19 +338,23 @@ def read_relaxation_history(
             displacement metrics are omitted.
     """
     path = Path(log_file)
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    text = path.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
     profile = resolve_version(version, job_dir=path.parent, text="\n".join(lines[:128]))
+    step_patterns = _step_patterns(profile, text)
+    del text
     records, force_blocks, stress_blocks = _collect_ionic_steps(
-        lines, profile, profile.relax_step_patterns
+        lines, profile, step_patterns
     )
-    if not records:
-        # Some branches advance the ionic step without a relaxation marker and
-        # only number it in the ``ION=`` field of the electronic loop.
-        records, force_blocks, stress_blocks = _collect_ionic_steps(
-            lines, profile, profile.ion_step_patterns
-        )
 
-    initial_positions, positions = _collect_coordinate_steps(lines, profile)
+    # Coordinates only feed the periodic displacement metrics; without a
+    # lattice the blocks are never used, so do not pay for parsing them.
+    initial_positions: Optional[List[List[float]]] = None
+    positions: Dict[int, List[List[float]]] = {}
+    if lattice is not None:
+        initial_positions, positions = _collect_coordinate_steps(
+            lines, profile, step_patterns
+        )
     previous_positions = initial_positions
     for item in [records[step] for step in sorted(records)]:
         current_positions = positions.get(item["step"])
@@ -235,15 +405,16 @@ def read_relaxation_history(
 
 def _lattice_constant_angstrom(lines: Sequence[str]) -> Optional[float]:
     """Return the lattice constant in Angstrom when the log prints it."""
+    bohr_value: Optional[float] = None
     for line in lines:
         match = _LATTICE_CONSTANT_ANGSTROM_RE.search(line)
         if match is not None:
             return _as_float(match.group(1))
-    for line in lines:
-        match = _LATTICE_CONSTANT_BOHR_RE.search(line)
-        if match is not None:
-            return _as_float(match.group(1)) * BOHR_TO_ANG
-    return None
+        if bohr_value is None:
+            match = _LATTICE_CONSTANT_BOHR_RE.search(line)
+            if match is not None:
+                bohr_value = _as_float(match.group(1))
+    return None if bohr_value is None else bohr_value * BOHR_TO_ANG
 
 
 def _parse_matrix_block(
@@ -266,7 +437,7 @@ def _parse_coordinate_rows(
     labels: List[Optional[str]] = []
     positions: List[List[float]] = []
     started = False
-    for line in lines[start + 1 :]:
+    for line in _lines_after(lines, start):
         parts = line.split()
         values: Optional[List[float]] = None
         label: Optional[str] = None
@@ -337,15 +508,22 @@ def read_relax_structures(
         does not provide it.
     """
     path = Path(log_file)
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    text = path.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
     profile = resolve_version(
         version, job_dir=path.parent, text="\n".join(lines[:128])
     )
-    has_relax_marker = any(
-        _first_match(profile.relax_step_patterns, line) is not None for line in lines
-    )
-    step_patterns = (
-        profile.relax_step_patterns if has_relax_marker else profile.ion_step_patterns
+    step_patterns = _step_patterns(profile, text)
+    del text
+    step_res = _compiled(step_patterns)
+    gate = _gate(
+        (),
+        step_patterns
+        + (
+            _COORDINATE_HEADER_RE.pattern,
+            _DIRECT_COORDINATE_HEADER_RE.pattern,
+            _LATTICE_VECTOR_HEADER_RE.pattern,
+        ),
     )
     lat0 = _lattice_constant_angstrom(lines)
 
@@ -353,7 +531,9 @@ def read_relax_structures(
     coordinates: List[tuple[int, str, List[Optional[str]], List[List[float]]]] = []
     lattices: List[tuple[int, List[List[float]]]] = []
     for index, line in enumerate(lines):
-        step = _first_match(step_patterns, line)
+        if gate.search(line.lower()) is None:
+            continue
+        step = _first_compiled(step_res, line)
         if step is not None:
             markers.append((index, int(step)))
             continue
@@ -471,8 +651,28 @@ def _collect_ionic_steps(
             },
         )
 
+    step_res = _compiled(step_patterns)
+    energy_res = _compiled(profile.relax_energy_patterns)
+    force_res = _compiled(profile.relax_force_patterns)
+    stress_res = _compiled(profile.relax_stress_patterns)
+    diff_res = _compiled((_RELAX_ENERGY_DIFF_RE.pattern,))
+    gate = _gate(
+        profile.energy_keywords
+        + profile.relax_converged_keywords
+        + profile.force_header_keywords
+        + profile.stress_header_keywords,
+        step_patterns
+        + profile.relax_energy_patterns
+        + profile.relax_force_patterns
+        + profile.relax_stress_patterns
+        + (_RELAX_ENERGY_DIFF_RE.pattern,),
+    )
+
     for index, line in enumerate(lines):
-        step = _first_match(step_patterns, line)
+        low = line.lower()
+        if gate.search(low) is None:
+            continue
+        step = _first_compiled(step_res, line)
         if step is not None:
             current_step = int(step)
             record(current_step)
@@ -480,31 +680,31 @@ def _collect_ionic_steps(
         if current_step is None:
             continue
         item = record(current_step)
-        if _contains_any(line.lower(), profile.energy_keywords):
+        if _contains_any(low, profile.energy_keywords):
             values = _numbers(line)
             if values:
                 scf_energies[current_step] = values[-1]
-        energy = _first_match(profile.relax_energy_patterns, line)
+        energy = _first_compiled(energy_res, line)
         if energy is not None:
             item["energy"] = energy
-        energy_diff_match = _RELAX_ENERGY_DIFF_RE.search(line)
-        if energy_diff_match:
-            item["energy_change"] = _as_float(energy_diff_match.group(1))
-        force = _first_match(profile.relax_force_patterns, line)
+        energy_change = _first_compiled(diff_res, line)
+        if energy_change is not None:
+            item["energy_change"] = energy_change
+        force = _first_compiled(force_res, line)
         if force is not None:
             item["max_force"] = force
-        stress = _first_match(profile.relax_stress_patterns, line)
+        stress = _first_compiled(stress_res, line)
         if stress is not None:
             item["max_stress"] = stress
-        if _contains_any(line.lower(), profile.force_header_keywords):
+        if _contains_any(low, profile.force_header_keywords):
             labels, block = _parse_force_block(lines, index)
             if block:
                 force_blocks[current_step] = (labels, block)
-        elif _contains_any(line.lower(), profile.stress_header_keywords):
+        elif _contains_any(low, profile.stress_header_keywords):
             tensor = _parse_stress_block(lines, index)
             if tensor:
                 stress_blocks[current_step] = tensor
-        if _contains_any(line.lower(), profile.relax_converged_keywords):
+        if _contains_any(low, profile.relax_converged_keywords):
             item["converged"] = True
 
     # The ``final etot is`` report line is rounded, while the Kohn-Sham energy
@@ -521,7 +721,7 @@ def _parse_coordinate_block(
     """Read Cartesian coordinates following one log coordinate header."""
     coordinates: List[List[float]] = []
     started = False
-    for line in lines[start + 1 :]:
+    for line in _lines_after(lines, start):
         parts = line.split()
         values: Optional[List[float]] = None
         if len(parts) >= 4:
@@ -544,21 +744,24 @@ def _parse_coordinate_block(
 
 
 def _collect_coordinate_steps(
-    lines: List[str], profile: Any
+    lines: List[str],
+    profile: Any,
+    step_patterns: tuple[str, ...],
 ) -> tuple[Optional[List[List[float]]], Dict[int, List[List[float]]]]:
     """Collect the initial and per-step Cartesian structures from a log."""
-    has_relax_marker = any(
-        _first_match(profile.relax_step_patterns, line) is not None for line in lines
-    )
-    step_patterns = (
-        profile.relax_step_patterns if has_relax_marker else profile.ion_step_patterns
+    step_res = _compiled(step_patterns)
+    gate = _gate(
+        (),
+        step_patterns + (_COORDINATE_HEADER_RE.pattern,),
     )
     current_step: Optional[int] = None
     initial_positions: Optional[List[List[float]]] = None
     positions: Dict[int, List[List[float]]] = {}
 
     for index, line in enumerate(lines):
-        step = _first_match(step_patterns, line)
+        if gate.search(line.lower()) is None:
+            continue
+        step = _first_compiled(step_res, line)
         if step is not None:
             current_step = int(step)
             continue
@@ -653,8 +856,16 @@ def read_scf_history(
             {"step": step, "energy": None, "energy_change": None, "drho": None},
         )
 
+    step_res = _compiled(profile.scf_step_patterns)
+    gate = _gate(
+        profile.energy_keywords + profile.density_error_keywords,
+        profile.scf_step_patterns,
+    )
     for line in lines:
-        step = _first_match(profile.scf_step_patterns, line)
+        lower_line = line.lower()
+        if gate.search(lower_line) is None:
+            continue
+        step = _first_compiled(step_res, line)
         if step is not None:
             current_step = int(step)
             record(current_step)
@@ -662,7 +873,6 @@ def read_scf_history(
         if current_step is None:
             continue
         item = record(current_step)
-        lower_line = line.lower()
         if _contains_any(lower_line, profile.energy_keywords):
             values = _numbers(line)
             if values:
@@ -716,25 +926,32 @@ def read_md_history(
             },
         )
 
+    step_res = _compiled(profile.md_step_patterns)
+    gate = _gate(
+        ("total-pressure", "temperature"),
+        profile.md_step_patterns,
+    )
     for index, line in enumerate(lines):
-        step = _first_match(profile.md_step_patterns, line)
+        lower_line = line.lower()
+        if gate.search(lower_line) is None:
+            continue
+        step = _first_compiled(step_res, line)
         if step is not None:
             current_step = int(step)
             record(current_step)
             continue
         if current_step is None:
             continue
-        if "total-pressure" in line.lower():
+        if "total-pressure" in lower_line:
             values = _numbers(line)
             if values:
                 record(current_step)["pressure"] = values[-1]
             continue
         if not _is_md_table_header(line):
             continue
-        lower_line = line.lower()
         energy_factor = RY_TO_EV if "(ry)" in lower_line else 1.0
         has_pressure = "pressure" in lower_line
-        for following in lines[index + 1 :]:
+        for following in _lines_after(lines, index):
             values = _numbers(following)
             if not values:
                 continue
@@ -772,17 +989,39 @@ def read_convergence_thresholds(
     path = Path(log_file)
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     profile = resolve_version(version, job_dir=path.parent, text="\n".join(lines[:128]))
+    force_res = _compiled(profile.relax_force_threshold_patterns)
+    stress_res = _compiled(profile.relax_stress_threshold_patterns)
+    gate = _gate(
+        (),
+        profile.relax_force_threshold_patterns + profile.relax_stress_threshold_patterns,
+    )
     thresholds: Dict[str, float] = {}
     for line in lines:
+        if gate.search(line.lower()) is None:
+            continue
         if "force_thr_ev" not in thresholds:
-            value = _first_match(profile.relax_force_threshold_patterns, line)
+            value = _first_compiled(force_res, line)
             if value is not None:
                 thresholds["force_thr_ev"] = value
         if "stress_thr" not in thresholds:
-            value = _first_match(profile.relax_stress_threshold_patterns, line)
+            value = _first_compiled(stress_res, line)
             if value is not None:
                 thresholds["stress_thr"] = value
+        if len(thresholds) == 2:
+            break
     return thresholds
+
+
+def _read_tail_lines(
+    path: Path, *, max_bytes: int = 262144, max_lines: int = 80
+) -> List[str]:
+    """Read the last lines of a log without loading the whole file."""
+    with path.open("rb") as handle:
+        handle.seek(0, 2)
+        size = handle.tell()
+        handle.seek(max(0, size - max_bytes))
+        data = handle.read()
+    return data.decode("utf-8", errors="replace").splitlines()[-max_lines:]
 
 
 def read_normal_end(
@@ -791,18 +1030,20 @@ def read_normal_end(
 ) -> bool:
     """Return whether a running log reached the normal-ending footer."""
     path = Path(log_file)
-    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    profile = resolve_version(version, job_dir=path.parent, text="\n".join(lines[:128]))
+    lines = _read_tail_lines(path)
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        head = handle.read(8192)
+    profile = resolve_version(version, job_dir=path.parent, text=head)
     return any(
         _contains_any(line.lower(), profile.normal_end_keywords)
-        for line in lines[-80:]
+        for line in lines
     )
 
 
 def _is_separator(line: str) -> bool:
     """Return whether a log line is made only of separator characters."""
     stripped = line.strip()
-    return bool(stripped) and set(stripped) == {"-"}
+    return bool(stripped) and not stripped.strip("-")
 
 
 def _job_input(job_path: Path) -> Dict[str, Any]:
@@ -833,18 +1074,37 @@ def _output_directory(job_path: Path, inputs: Dict[str, Any]) -> Path:
 
 
 def read_dos_from_job(job_dir: Union[str, Path]) -> Dict[str, Any]:
-    """Read total DOS data from an ABACUS job output."""
+    """Read total DOS data from an ABACUS job output.
+
+    Reads the ``DOS<n>_smearing.dat`` files of the LTS branches and, when
+    they are absent, the ``doss<spin>[g<step>][_nao].txt`` files of the
+    develop branch. For a geometry run that writes one file per ionic
+    step, the data of the last ionic step is returned.
+
+    Args:
+        job_dir: ABACUS job directory containing ``INPUT`` and ``OUT.*``.
+
+    Returns:
+        The shared energy grid in eV and the DOS of every spin channel as
+        columns of one array, shape ``(nenergy, nspin)``.
+    """
     job_path = Path(job_dir)
     inputs = _job_input(job_path)
     output_path = _output_directory(job_path, inputs)
     dos_files = sorted(output_path.glob("DOS*_smearing.dat"))
     if not dos_files:
-        raise FileNotFoundError(f"Could not find DOS files in {output_path}")
+        return _read_dos_nao_files(output_path)
+    return _read_dos_smearing_files(dos_files)
 
+
+def _read_dos_grid(
+    files: List[Path], read_one: Callable[[Path], np.ndarray]
+) -> Dict[str, Any]:
+    """Stack the ``dos`` column of every spin-channel file on one grid."""
     energy = None
     dos_channels = []
-    for dos_file in dos_files:
-        data = np.loadtxt(dos_file, ndmin=2)
+    for dos_file in files:
+        data = read_one(dos_file)
         if data.shape[1] < 2:
             raise ValueError(f"DOS file has fewer than two columns: {dos_file}")
         file_energy = data[:, 0]
@@ -858,6 +1118,66 @@ def read_dos_from_job(job_dir: Union[str, Path]) -> Dict[str, Any]:
         "energy": energy,
         "data": np.column_stack(dos_channels),
     }
+
+
+def _read_dos_smearing_files(dos_files: List[Path]) -> Dict[str, Any]:
+    """Read the LTS-branch ``DOS<n>_smearing.dat`` files."""
+    return _read_dos_grid(dos_files, lambda dos_file: np.loadtxt(dos_file, ndmin=2))
+
+
+def _select_latest_spin_files(output_path: Path, pattern: re.Pattern) -> Dict[int, Path]:
+    """Pick the newest ionic-step file of every spin channel."""
+    spin_files: Dict[int, tuple[int, Path]] = {}
+    for path in sorted(output_path.iterdir()):
+        match = pattern.match(path.name)
+        if match is None or not path.is_file():
+            continue
+        spin = int(match.group(1) or 1)
+        step = int(match.group(2) or 0)
+        if spin not in spin_files or step >= spin_files[spin][0]:
+            spin_files[spin] = (step, path)
+    return spin_files
+
+
+def _read_dos_nao_file(dos_file: Path) -> np.ndarray:
+    """Read the last ionic-step block of one develop-branch DOS file.
+
+    A file starts with ``<istep> # ionic step``, a point count and a
+    column header, and holds the rows ``(energy, dos, dos_int,
+    dos_smear, dos_smear_int)``; a run with ``out_app_flag 1`` appends
+    one such block per ionic step, so the last block is the latest one.
+    """
+    blocks: Dict[int, List[List[float]]] = {}
+    step: Optional[int] = None
+    for line in dos_file.read_text(encoding="utf-8", errors="replace").splitlines():
+        step_match = _IONIC_STEP_HEADER_RE.match(line)
+        if step_match is not None:
+            step = int(step_match.group(1))
+            continue
+        if step is None or line.lstrip().startswith("#"):
+            continue
+        try:
+            values = [_as_float(field) for field in line.split()]
+        except ValueError:
+            continue
+        blocks.setdefault(step, []).append(values)
+    if not blocks:
+        raise ValueError(f"DOS file has no data rows: {dos_file}")
+    data = np.asarray(blocks[max(blocks)], dtype=float)
+    if data.ndim != 2 or data.shape[1] < 2:
+        raise ValueError(f"DOS file has fewer than two columns: {dos_file}")
+    return data
+
+
+def _read_dos_nao_files(output_path: Path) -> Dict[str, Any]:
+    """Read the develop-branch ``doss<spin>...txt`` total-DOS files."""
+    spin_files = _select_latest_spin_files(output_path, _DOS_NAO_FILE_RE)
+    if not spin_files:
+        raise FileNotFoundError(f"Could not find DOS files in {output_path}")
+    return _read_dos_grid(
+        [spin_files[spin][1] for spin in sorted(spin_files)],
+        _read_dos_nao_file,
+    )
 
 
 def read_orbital_xml(xml_file: Union[str, Path]) -> Dict[str, Any]:
@@ -895,35 +1215,190 @@ def read_orbital_xml(xml_file: Union[str, Path]) -> Dict[str, Any]:
     return {"energy": energy, "orbitals": orbitals}
 
 
+def _pdos_nao_channels(ncolumns: int) -> List[Tuple[int, int]]:
+    """Return the ``(l, m)`` of every PDOS text column of one atom.
+
+    ABACUS writes one column per ``(l, m)`` of the basis, shells in the
+    order s, p, d, f and ``m`` as 0, +1, -1, +2, -2 within a shell, each
+    column summed over the zeta radii; ``m`` therefore follows the same
+    convention as the ``m`` attribute of the XML PDOS file.
+    """
+    channels: List[Tuple[int, int]] = []
+    remaining = ncolumns
+    shell = 0
+    while remaining > 0:
+        width = 2 * shell + 1
+        if remaining < width:
+            raise ValueError(
+                f"PDOS column count {ncolumns} does not fill complete shells"
+            )
+        channels.extend((shell, m) for m in range(width))
+        remaining -= width
+        shell += 1
+    return channels
+
+
+def _read_pdos_nao_file(pdos_file: Path) -> Dict[str, Any]:
+    """Read one develop-branch ``pdoss<spin>...txt`` projected-DOS file.
+
+    After three comment lines, the file holds one row
+    ``(energy, atom, species, pdos columns...)`` per atom and energy
+    point; every atom occupies ``npoints`` consecutive rows and carries
+    its own number of PDOS columns.
+    """
+    energy: List[float] = []
+    atom_order: List[int] = []
+    species_by_atom: Dict[int, str] = {}
+    values_by_atom: Dict[int, List[List[float]]] = {}
+    for line in pdos_file.read_text(encoding="utf-8", errors="replace").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        fields = stripped.split()
+        if len(fields) < 4:
+            continue
+        try:
+            row_energy = _as_float(fields[0])
+            atom_index = int(fields[1])
+            values = [_as_float(field) for field in fields[3:]]
+        except ValueError:
+            continue
+        if atom_index not in values_by_atom:
+            values_by_atom[atom_index] = []
+            species_by_atom[atom_index] = fields[2]
+            atom_order.append(atom_index)
+        if atom_index == atom_order[0]:
+            energy.append(row_energy)
+        values_by_atom[atom_index].append(values)
+    if not atom_order:
+        raise ValueError(f"PDOS file has no data rows: {pdos_file}")
+    return {
+        "energy": np.asarray(energy, dtype=float),
+        "atom_order": atom_order,
+        "species": species_by_atom,
+        "values": {
+            atom_index: np.asarray(rows, dtype=float)
+            for atom_index, rows in values_by_atom.items()
+        },
+    }
+
+
+def _read_pdos_nao_files(output_path: Path) -> Dict[str, Any]:
+    """Read the develop-branch ``pdoss<spin>...txt`` projected-DOS files.
+
+    The ``nspin 2`` spin channels are written as two files; their columns
+    are combined into one up/down column pair per ``(l, m)`` orbital, as
+    the XML PDOS file of the LTS branches reports it.
+    """
+    spin_files = _select_latest_spin_files(output_path, _PDOS_NAO_FILE_RE)
+    if not spin_files:
+        raise FileNotFoundError(f"Could not find PDOS files in {output_path}")
+
+    parsed = {spin: _read_pdos_nao_file(spin_files[spin][1]) for spin in spin_files}
+    first = parsed[min(parsed)]
+    for spin in sorted(parsed)[1:]:
+        other = parsed[spin]
+        other_file = spin_files[spin][1]
+        if other["atom_order"] != first["atom_order"]:
+            raise ValueError(f"PDOS spin files list different atoms: {other_file}")
+        if other["energy"].shape != first["energy"].shape or not np.allclose(
+            other["energy"], first["energy"]
+        ):
+            raise ValueError(f"PDOS energy grids do not match: {other_file}")
+
+    orbitals: List[Dict[str, Any]] = []
+    for atom_index in first["atom_order"]:
+        atom_columns = [parsed[spin]["values"][atom_index] for spin in sorted(parsed)]
+        species = first["species"][atom_index]
+        for column, (l, m) in enumerate(_pdos_nao_channels(atom_columns[0].shape[1])):
+            orbitals.append(
+                {
+                    "index": len(orbitals) + 1,
+                    "atom_index": atom_index,
+                    "species": species,
+                    "l": l,
+                    "m": m,
+                    "z": 1,  # the text columns are summed over the zeta radii
+                    "data": np.stack(
+                        [column_data[:, column] for column_data in atom_columns],
+                        axis=1,
+                    ),
+                }
+            )
+    return {"energy": first["energy"], "orbitals": orbitals}
+
+
 def read_pdos_from_job(job_dir: Union[str, Path]) -> Dict[str, Any]:
-    """Read projected DOS data from an ABACUS PDOS XML file."""
+    """Read projected DOS data from an ABACUS job output.
+
+    Reads the XML ``PDOS`` file of the LTS branches and, when it is
+    absent, the ``pdoss<spin>[g<step>]_<basis>.txt`` text files of the
+    develop branch; for a geometry run that writes one file per ionic
+    step, the data of the last ionic step is returned.
+
+    Args:
+        job_dir: ABACUS job directory containing ``INPUT`` and ``OUT.*``.
+
+    Returns:
+        The shared energy grid in eV and one record per ``(l, m)`` orbital
+        holding its atom, species and the PDOS of every spin channel.
+    """
     job_path = Path(job_dir)
     inputs = _job_input(job_path)
     output_path = _output_directory(job_path, inputs)
     pdos_file = output_path / "PDOS"
-    if not pdos_file.is_file():
-        raise FileNotFoundError(f"Could not find PDOS file: {pdos_file}")
+    if pdos_file.is_file():
+        result = read_orbital_xml(pdos_file)
+    else:
+        result = _read_pdos_nao_files(output_path)
 
-    result = read_orbital_xml(pdos_file)
     energy = result["energy"]
     if energy is None:
-        raise ValueError(f"PDOS file has no energy grid: {pdos_file}")
+        raise ValueError("PDOS data has no energy grid")
 
     for orbital in result["orbitals"]:
         data = orbital["data"]
         if data.shape[0] != energy.shape[0]:
-            raise ValueError(f"PDOS energy and data lengths do not match: {pdos_file}")
+            raise ValueError(
+                f"PDOS energy and data lengths do not match for orbital "
+                f"{orbital.get('index')} of job {job_path}"
+            )
 
     return result
 
 
 def _calculation(inputs: Dict[str, Any], output_path: Path) -> str:
-    """Get calculation type, preferring the output INPUT when available."""
-    output_input = output_path / "INPUT"
-    if output_input.is_file():
-        output_inputs = ReadInput(output_input)
-        inputs = {**inputs, **output_inputs}
+    """Get calculation type, preferring the effective INPUT when available.
+
+    The effective-input copy is read in both spellings: ``INPUT`` on the
+    LTS release and ``INPUT.info`` on develop.
+    """
+    for name in ("INPUT", "INPUT.info"):
+        output_input = output_path / name
+        if output_input.is_file():
+            inputs = {**inputs, **ReadInput(output_input)}
+            break
     return str(inputs.get("calculation", "scf")).lower()
+
+
+def _machine_efermi(job_path: Path, log_value: Optional[float]) -> Optional[float]:
+    """Prefer the machine-readable ``e_fermi`` of ``abacus.json``.
+
+    Args:
+        job_path: Job directory holding (or not) ``abacus.json``.
+        log_value: The value parsed from the ``E_Fermi`` log keywords.
+
+    Returns:
+        The Fermi energy of the latest ionic step when the job summary
+        provides one, else the log-parsed value.
+    """
+    summary = read_abacus_json(job_path)
+    if summary is None:
+        return log_value
+    entry = latest_ionic_output(summary)
+    if isinstance(entry, dict) and isinstance(entry.get("e_fermi"), (int, float)):
+        return float(entry["e_fermi"])
+    return log_value
 
 
 def _log_file(
@@ -1013,7 +1488,7 @@ def _parse_force_block(
     """Read the atom labels and force vectors of one ``TOTAL-FORCE`` block."""
     labels: List[str] = []
     force: List[List[float]] = []
-    for line in lines[start + 1 :]:
+    for line in _lines_after(lines, start):
         if _is_separator(line):
             if force:
                 return labels, force
@@ -1032,7 +1507,7 @@ def _parse_force_block(
 
 def _parse_stress_block(lines: List[str], start: int) -> List[List[float]]:
     stress: List[List[float]] = []
-    for line in lines[start + 1 :]:
+    for line in _lines_after(lines, start):
         if _is_separator(line):
             if stress:
                 break
@@ -1073,6 +1548,34 @@ def collect_scf_results(
         else _contains_any(last_line.lower(), profile.normal_end_keywords)
     )
 
+    requested = set(param_groups["scf_results"])
+    want_energy = bool({"energy", "denergy", "scf_steps"} & requested)
+    want_final = "energy" in requested
+    want_drho = "drho" in requested
+    want_efermi = "efermi" in requested
+    want_converged = "converged" in requested
+    want_force = "force" in requested
+    want_stress = "stress" in requested
+
+    # Only the marker families a caller asked for take part in the scan; a
+    # status update, for example, must not pay for the force and stress tables.
+    literals: tuple[str, ...] = ()
+    if want_energy:
+        literals += profile.energy_keywords
+    if want_final:
+        literals += profile.final_energy_keywords
+    if want_drho:
+        literals += profile.density_error_keywords
+    if want_efermi:
+        literals += profile.fermi_keywords
+    if want_converged:
+        literals += profile.scf_converged_keywords
+    if want_force:
+        literals += profile.force_header_keywords
+    if want_stress:
+        literals += profile.stress_header_keywords
+    gate = _gate(literals)
+
     energies: List[float] = []
     drhos: List[float] = []
     efermis: List[float] = []
@@ -1083,34 +1586,38 @@ def collect_scf_results(
 
     for line_number, line in enumerate(lines):
         lower_line = line.lower()
-        if _contains_any(lower_line, profile.energy_keywords):
+        if gate.search(lower_line) is None:
+            continue
+        if want_energy and _contains_any(lower_line, profile.energy_keywords):
             values = _numbers(line)
             if values:
                 energies.append(values[-1])
-        elif _contains_any(lower_line, profile.density_error_keywords):
+        elif want_drho and _contains_any(lower_line, profile.density_error_keywords):
             values = _numbers(line)
             if values:
                 drhos.append(values[-1])
-        elif _contains_any(lower_line, profile.final_energy_keywords):
+        elif want_final and _contains_any(lower_line, profile.final_energy_keywords):
             values = _numbers(line)
             if values:
                 final_energies.append(values[-1])
-        elif _contains_any(lower_line, profile.fermi_keywords):
+        elif want_efermi and _contains_any(lower_line, profile.fermi_keywords):
             values = _numbers(line)
             if values:
                 efermis.append(values[-1])
-        elif _contains_any(lower_line, profile.scf_converged_keywords):
+        elif want_converged and _contains_any(
+            lower_line, profile.scf_converged_keywords
+        ):
             converged = True
-        elif _contains_any(lower_line, profile.force_header_keywords):
+        elif want_force and _contains_any(lower_line, profile.force_header_keywords):
             _, force = _parse_force_block(lines, line_number)
             if force:
                 forces.append(force)
-        elif _contains_any(lower_line, profile.stress_header_keywords):
+        elif want_stress and _contains_any(lower_line, profile.stress_header_keywords):
             stress = _parse_stress_block(lines, line_number)
             if stress:
                 stresses.append(stress)
 
-    energy_values = final_energies or energies
+    energy_values = (final_energies or energies) if want_final else energies
     available = {
         "energy": energy_values[-1] if energy_values else None,
         "drho": drhos[-1] if drhos else None,
@@ -1118,7 +1625,11 @@ def collect_scf_results(
         "scf_steps": len(energies),
         "converged": converged,
         "normal_end": normal_end,
-        "efermi": efermis[-1] if efermis else None,
+        "efermi": (
+            _machine_efermi(job_path, efermis[-1] if efermis else None)
+            if want_efermi
+            else None
+        ),
         "force": forces[-1] if forces else None,
         "stress": stresses[-1] if stresses else None,
     }
@@ -1145,9 +1656,13 @@ def collect_vdw_results(
         return _empty_results(param_groups["vdw_results"])
 
     profile = resolve_version(version, job_dir=job_path)
+    gate = _gate(profile.vdw_keywords)
     vdw_energies: List[float] = []
     for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
-        if _contains_any(line.lower(), profile.vdw_keywords):
+        lower_line = line.lower()
+        if gate.search(lower_line) is None:
+            continue
+        if _contains_any(lower_line, profile.vdw_keywords):
             values = _numbers(line)
             if values:
                 # ABACUS prints the dispersion energy in Rydberg and eV.
@@ -1237,11 +1752,15 @@ def read_orbital_magnetization(
         ``None`` when the log holds no such block.
     """
     blocks: List[List[List[float]]] = []
+    gate = _gate(tuple(header_keywords))
     for index, line in enumerate(lines):
-        if not _contains_any(line.lower(), header_keywords):
+        lower_line = line.lower()
+        if gate.search(lower_line) is None:
+            continue
+        if not _contains_any(lower_line, header_keywords):
             continue
         block: List[List[float]] = []
-        for row in lines[index + 1 :]:
+        for row in _lines_after(lines, index):
             if _is_separator(row):
                 if block:
                     break
@@ -1286,16 +1805,29 @@ def collect_magnetic_results(
     profile = resolve_version(version, job_dir=job_path)
     lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
 
+    want_total = "total_mag" in requested
+    want_absolute = "absolute_mag" in requested
+    literals: tuple[str, ...] = ()
+    if want_total:
+        literals += profile.total_mag_keywords
+    if want_absolute:
+        literals += profile.absolute_mag_keywords
+    gate = _gate(literals)
+
     total_mags: List[Union[float, List[float]]] = []
     absolute_mags: List[float] = []
     for line in lines:
         lower_line = line.lower()
-        if _contains_any(lower_line, profile.total_mag_keywords):
+        if gate.search(lower_line) is None:
+            continue
+        if want_total and _contains_any(lower_line, profile.total_mag_keywords):
             values = _numbers(line)
             if values:
                 # Noncollinear runs print the three Cartesian components.
                 total_mags.append(values[-3:] if len(values) >= 3 else values[-1])
-        elif _contains_any(lower_line, profile.absolute_mag_keywords):
+        elif want_absolute and _contains_any(
+            lower_line, profile.absolute_mag_keywords
+        ):
             values = _numbers(line)
             if values:
                 absolute_mags.append(values[-1])
@@ -1339,17 +1871,37 @@ def collect_relax_results(
         return _empty_results(param_groups["relax_results"])
 
     profile = resolve_version(version, job_dir=job_path)
+    requested = set(param_groups["relax_results"])
+    want_force = bool({"largest_force", "relax_steps"} & requested)
+    want_stress = bool({"largest_stress", "relax_steps"} & requested)
+    want_converged = "relax_converged" in requested
+
+    force_res = _compiled(profile.relax_force_patterns) if want_force else ()
+    stress_res = _compiled(profile.relax_stress_patterns) if want_stress else ()
+    literals = profile.relax_converged_keywords if want_converged else ()
+    patterns: tuple[str, ...] = ()
+    if want_force:
+        patterns += profile.relax_force_patterns
+    if want_stress:
+        patterns += profile.relax_stress_patterns
+    gate = _gate(literals, patterns)
+
     largest_forces: List[float] = []
     largest_stresses: List[float] = []
     relax_converged = False
     for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
-        force = _first_match(profile.relax_force_patterns, line)
+        lower_line = line.lower()
+        if gate.search(lower_line) is None:
+            continue
+        force = _first_compiled(force_res, line)
         if force is not None:
             largest_forces.append(force)
-        stress = _first_match(profile.relax_stress_patterns, line)
+        stress = _first_compiled(stress_res, line)
         if stress is not None:
             largest_stresses.append(stress)
-        if _contains_any(line.lower(), profile.relax_converged_keywords):
+        if want_converged and _contains_any(
+            lower_line, profile.relax_converged_keywords
+        ):
             relax_converged = True
 
     available = {

@@ -1,4 +1,5 @@
 """The ``abacustools database`` command family."""
+from __future__ import annotations
 
 from . import download as download_command
 from . import fields as fields_command

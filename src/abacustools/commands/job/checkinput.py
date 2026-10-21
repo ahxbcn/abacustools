@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from abacustools.core.job import as_json, check_input
+from abacustools.core.render import cli_output
 
 
 def _job_directory(value: str) -> Path:
@@ -30,26 +31,26 @@ def _print_summary(summary: dict) -> None:
         "smearing_sigma",
     ):
         if name in summary:
-            print(f"{name}: {summary[name]}")
+            cli_output(f"{name}: {summary[name]}")
 
     kpoints = summary.get("kpoints")
     if kpoints:
         details = ", ".join(f"{key}={value}" for key, value in kpoints.items())
-        print(f"kpoints: {details}")
+        cli_output(f"kpoints: {details}")
 
     structure = summary.get("structure")
     if structure:
         species = ", ".join(f"{name}:{count}" for name, count in structure["species"].items())
         parameters = " ".join(f"{value:.6g}" for value in structure["cell_parameters_ang_deg"])
-        print(f"structure: natoms={structure['natoms']}, species={species}")
-        print(f"cell (Angstrom/degrees): {parameters}")
-        print(f"cell volume (Angstrom^3): {structure['cell_volume_ang3']:.6g}")
+        cli_output(f"structure: natoms={structure['natoms']}, species={species}")
+        cli_output(f"cell (Angstrom/degrees): {parameters}")
+        cli_output(f"cell volume (Angstrom^3): {structure['cell_volume_ang3']:.6g}")
 
     resources = summary.get("resources", {})
     if resources:
-        print("resources:")
+        cli_output("resources:")
         for name, values in resources.items():
-            print(f"  {name}: {', '.join(values)}")
+            cli_output(f"  {name}: {', '.join(values)}")
 
 
 def register_parser(subparsers) -> None:
@@ -68,13 +69,13 @@ def run(args: argparse.Namespace) -> int:
     """Check only input files, without reading ABACUS output files."""
     report = check_input(args.job, strict=args.strict)
     if args.json:
-        print(json.dumps(as_json(report), indent=2, sort_keys=True))
+        cli_output(json.dumps(as_json(report), indent=2, sort_keys=True))
         return 0 if report.valid else 1
 
-    print(f"job: {Path(args.job).absolute()}")
-    print("input check:")
+    cli_output(f"job: {Path(args.job).absolute()}")
+    cli_output("input check:")
     _print_summary(report.summary)
-    print(f"valid: {'yes' if report.valid else 'no'}")
+    cli_output(f"valid: {'yes' if report.valid else 'no'}")
     for issue in report.issues:
-        print(f"{issue.level}: {issue.code}: {issue.message}")
+        cli_output(f"{issue.level}: {issue.code}: {issue.message}")
     return 0 if report.valid else 1

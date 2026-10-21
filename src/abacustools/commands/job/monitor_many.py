@@ -19,6 +19,7 @@ from .monitor import (
     _print_table,
     _structure_lattice,
 )
+from abacustools.core.render import cli_output
 
 
 def register_parser(subparsers) -> None:
@@ -135,7 +136,7 @@ def _print_jobs(items: list[dict[str, Any]]) -> None:
 
 def _print_items(items: list[dict[str, Any]], as_json: bool) -> None:
     if as_json:
-        print(json.dumps({"jobs": items}, indent=2, sort_keys=True))
+        cli_output(json.dumps({"jobs": items}, indent=2, sort_keys=True))
     else:
         _print_jobs(items)
 

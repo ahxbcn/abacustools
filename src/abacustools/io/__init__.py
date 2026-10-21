@@ -1,4 +1,5 @@
 """Input/output utilities for ABACUS files."""
+from __future__ import annotations
 
 from abacustools.io.abacus import ReadInput, WriteInput
 from abacustools.io.stru import (

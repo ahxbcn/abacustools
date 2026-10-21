@@ -27,6 +27,7 @@ from .common import (
     write_abacus_job,
     write_manifest,
 )
+from abacustools.core.render import cli_output
 
 
 SCF_DIRECTORY = "band_scf"
@@ -180,15 +181,15 @@ def prepare(args: argparse.Namespace) -> int:
         periodic_directions=path.periodic_directions,
     )
 
-    print(f"  job: {job}")
-    print(f"  atoms: {structure.natoms}")
-    print(f"  scf mesh: {' '.join(str(int(value)) for value in mesh_values[:3])} ({mesh_model})")
-    print(f"  dimensionality: {path.label}, {path.method}")
-    print(f"  path: {' -> '.join(labels)}")
-    print(f"  points per segment: {args.npoints}")
-    print(f"  prepared: {job / SCF_DIRECTORY} (scf)")
-    print(f"  prepared: {job / NSCF_DIRECTORY} (nscf, out_band=1)")
-    print("  run the scf job first, then the nscf job that reads its OUT." + SCF_SUFFIX)
+    cli_output(f"  job: {job}")
+    cli_output(f"  atoms: {structure.natoms}")
+    cli_output(f"  scf mesh: {' '.join(str(int(value)) for value in mesh_values[:3])} ({mesh_model})")
+    cli_output(f"  dimensionality: {path.label}, {path.method}")
+    cli_output(f"  path: {' -> '.join(labels)}")
+    cli_output(f"  points per segment: {args.npoints}")
+    cli_output(f"  prepared: {job / SCF_DIRECTORY} (scf)")
+    cli_output(f"  prepared: {job / NSCF_DIRECTORY} (nscf, out_band=1)")
+    cli_output("  run the scf job first, then the nscf job that reads its OUT." + SCF_SUFFIX)
     return 0
 
 
@@ -220,24 +221,24 @@ def _label_text(edge: dict[str, Any]) -> str:
 def _print_report(report: dict[str, Any]) -> None:
     """Print the band gap report of one workflow."""
     gap = report["band_gap"]
-    print(f"  band: {report['job']}")
-    print(f"  nscf: {report['directory']}")
+    cli_output(f"  band: {report['job']}")
+    cli_output(f"  nscf: {report['directory']}")
     if report.get("dimensionality_label"):
-        print(f"  dimensionality: {report['dimensionality_label']}, {report.get('path_method')}")
-    print(
+        cli_output(f"  dimensionality: {report['dimensionality_label']}, {report.get('path_method')}")
+    cli_output(
         f"  k-points: {report['nkpts']}, bands: {report['nbands']}, "
         f"nspin: {report['nspin']}, efermi: {report['efermi']:.6f} eV"
     )
     if gap["is_metal"]:
-        print("  band gap: metallic (no gap)")
+        cli_output("  band gap: metallic (no gap)")
     else:
         kind = "direct" if gap["direct"] else "indirect"
-        print(f"  band gap: {gap['band_gap']:.6f} eV ({kind})")
-        print(f"  vbm: {gap['vbm']['energy']:.6f} eV at {_label_text(gap['vbm'])}")
-        print(f"  cbm: {gap['cbm']['energy']:.6f} eV at {_label_text(gap['cbm'])}")
-    print(f"  results: {report['results']}")
+        cli_output(f"  band gap: {gap['band_gap']:.6f} eV ({kind})")
+        cli_output(f"  vbm: {gap['vbm']['energy']:.6f} eV at {_label_text(gap['vbm'])}")
+        cli_output(f"  cbm: {gap['cbm']['energy']:.6f} eV at {_label_text(gap['cbm'])}")
+    cli_output(f"  results: {report['results']}")
     if report.get("plot"):
-        print(f"  plot: {report['plot']}")
+        cli_output(f"  plot: {report['plot']}")
 
 
 def postprocess(args: argparse.Namespace) -> int:
@@ -289,7 +290,7 @@ def postprocess(args: argparse.Namespace) -> int:
     output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     if args.json:
-        print(json.dumps(report, indent=2, sort_keys=True))
+        cli_output(json.dumps(report, indent=2, sort_keys=True))
     else:
         _print_report(report)
     return 0

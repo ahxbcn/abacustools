@@ -35,6 +35,7 @@ dependencies = [
     "matplotlib",
     "ase",
     "pydantic",
+    "pyyaml",
     "spglib",
 ]
 

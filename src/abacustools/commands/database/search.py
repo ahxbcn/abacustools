@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 
 from rich.console import Console
@@ -17,6 +16,7 @@ from .common import (
     split_columns,
     summary_table,
 )
+from abacustools.core.render import cli_output
 
 
 def register_parser(subparsers, *, default_database=None) -> None:
@@ -145,7 +145,7 @@ def run(args: argparse.Namespace) -> int:
         options = provider_options(args, database)
         summaries = database.search(query, api_key=args.api_key, **options)
     except DATABASE_ERRORS as error:
-        print(f"error: {error}", file=sys.stderr)
+        cli_output(f"error: {error}", stderr=True)
         return 1
 
     records = [summary.to_dict() for summary in summaries]
@@ -155,9 +155,9 @@ def run(args: argparse.Namespace) -> int:
             encoding="utf-8",
         )
     if args.json:
-        print(json.dumps(records, indent=2, sort_keys=True))
+        cli_output(json.dumps(records, indent=2, sort_keys=True))
     elif summaries:
         Console().print(summary_table(summaries, columns=split_columns(args.show) or ()))
     else:
-        print("no entries matched the query")
+        cli_output("no entries matched the query")
     return 0 if summaries else 1

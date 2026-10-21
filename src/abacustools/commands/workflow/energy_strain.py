@@ -30,6 +30,7 @@ from .common import (
     write_abacus_job,
     write_manifest,
 )
+from abacustools.core.render import cli_output
 
 
 #: Strain amplitudes of every pattern, as multiples of the largest one.
@@ -155,16 +156,16 @@ def prepare(args: argparse.Namespace) -> int:
             states.append(np.asarray(pattern, dtype=float) * amplitude * args.strain)
     task_names = ["org"] + [f"strained_{index:02d}" for index in range(len(states))]
     clear_generated_jobs(job, task_names, override=args.override)
-    print(f"  job: {job}")
-    print(f"  largest strain along a pattern: {args.strain}")
-    print(f"  calculation: {strained_inputs['calculation']}")
-    print(f"  strain patterns: {len(patterns)}")
-    print(
+    cli_output(f"  job: {job}")
+    cli_output(f"  largest strain along a pattern: {args.strain}")
+    cli_output(f"  calculation: {strained_inputs['calculation']}")
+    cli_output(f"  strain patterns: {len(patterns)}")
+    cli_output(
         f"  point group: {symmetry['point_group']} "
         f"({symmetry['space_group_symbol']}, "
         f"space group {symmetry['space_group_number']})"
     )
-    print(f"  independent elastic constants: {symmetry['independent_constants']}")
+    cli_output(f"  independent elastic constants: {symmetry['independent_constants']}")
 
     write_abacus_job(
         strained_inputs,
@@ -174,7 +175,7 @@ def prepare(args: argparse.Namespace) -> int:
         stru_filename=stru_filename,
         kpoint=kpoint_file,
     )
-    print("  prepared org")
+    cli_output("  prepared org")
 
     strain_metadata = []
     strained_paths = []
@@ -190,7 +191,7 @@ def prepare(args: argparse.Namespace) -> int:
         )
         strain_metadata.append([float(value) for value in strain])
         strained_paths.append(name)
-        print(f"  prepared {name}")
+        cli_output(f"  prepared {name}")
 
     write_manifest(
         job,
@@ -242,14 +243,14 @@ def postprocess(args: argparse.Namespace) -> int:
 
     require_relaxation = not bool(manifest.get("norelax", False))
     symmetry = _structure_symmetry_from_manifest(job, manifest, args.symprec)
-    print(f"  job: {job}")
-    print(
+    cli_output(f"  job: {job}")
+    cli_output(
         f"  point group: {symmetry['point_group']} "
         f"({symmetry.get('space_group_symbol')}, "
         f"space group {symmetry.get('space_group_number')})"
     )
-    print(f"  independent elastic constants: {symmetry['independent_constants']}")
-    print(f"  strained cells: {len(strains)}")
+    cli_output(f"  independent elastic constants: {symmetry['independent_constants']}")
+    cli_output(f"  strained cells: {len(strains)}")
 
     energies = [
         _read_energy(job / name, args.version, require_relaxation)
@@ -289,20 +290,20 @@ def postprocess(args: argparse.Namespace) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 
-    print("  elastic tensor (GPa):")
+    cli_output("  elastic tensor (GPa):")
     for row in tensor:
-        print("    " + " ".join(f"{value: .8f}" for value in row))
-    print(
+        cli_output("    " + " ".join(f"{value: .8f}" for value in row))
+    cli_output(
         "  independent constants (GPa): "
         + ", ".join(f"{name} = {value:.6f}" for name, value in components.items())
     )
-    print(f"  reference stress on the patterns (GPa): {np.round(pattern_stress, 5).tolist()}")
-    print(f"  energy residual: {residual:.3e} eV")
+    cli_output(f"  reference stress on the patterns (GPa): {np.round(pattern_stress, 5).tolist()}")
+    cli_output(f"  energy residual: {residual:.3e} eV")
     for name in ("bulk_modulus", "shear_modulus", "young_modulus"):
-        print(f"  {name}: {result[name]:.8f} GPa")
+        cli_output(f"  {name}: {result[name]:.8f} GPa")
     # The Poisson ratio is dimensionless, so it carries no unit.
-    print(f"  poisson_ratio: {result['poisson_ratio']:.8f}")
-    print(f"  results: {output}")
+    cli_output(f"  poisson_ratio: {result['poisson_ratio']:.8f}")
+    cli_output(f"  results: {output}")
     return 0
 
 

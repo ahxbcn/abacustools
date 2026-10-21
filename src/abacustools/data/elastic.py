@@ -838,6 +838,129 @@ def elastic_moduli(tensor: np.ndarray) -> Dict[str, float]:
     }
 
 
+def pymatgen_elastic_properties(
+    tensor: np.ndarray,
+    structure: AbacusSTRU,
+) -> Dict[str, Any]:
+    """Evaluate derived elastic properties with pymatgen's ElasticTensor API.
+
+    The tensor passed by the caller remains the one produced by the package's
+    own fitting and symmetry projection.  This helper only hands that tensor
+    to :class:`pymatgen.analysis.elasticity.elastic.ElasticTensor`, so the
+    custom postprocessing stays authoritative while pymatgen supplies its
+    independent Voigt-Reuss-Hill averages, sound velocities, Debye
+    temperature and thermal-conductivity estimates.
+
+    Structure-dependent properties are evaluated for the periodic reference
+    cell.  They are intended for three-dimensional crystals; a slab has to be
+    handled with the package's two-dimensional postprocessing instead, because
+    pymatgen evaluates the velocities and Debye temperature per cell volume,
+    which includes the vacuum.
+
+    Args:
+        tensor: Six-by-six stiffness matrix in GPa.
+        structure: Reference structure the tensor was fitted for.
+
+    Returns:
+        dict: A JSON-compatible mapping with pymatgen's tensor properties, the
+        structure-derived properties, their units and any per-property errors.
+
+    Raises:
+        ValueError: When the tensor is not a finite six-by-six matrix.
+    """
+    matrix = np.asarray(tensor, dtype=float)
+    if matrix.shape != (6, 6) or not np.all(np.isfinite(matrix)):
+        raise ValueError("an elastic tensor must be a finite 6x6 matrix")
+
+    from pymatgen.analysis.elasticity.elastic import ElasticTensor
+
+    elastic = ElasticTensor.from_voigt(matrix)
+    properties = {
+        "k_voigt": float(elastic.k_voigt),
+        "k_reuss": float(elastic.k_reuss),
+        "k_vrh": float(elastic.k_vrh),
+        "g_voigt": float(elastic.g_voigt),
+        "g_reuss": float(elastic.g_reuss),
+        "g_vrh": float(elastic.g_vrh),
+        # pymatgen reports Young's modulus in SI units, while the rest of this
+        # module uses GPa.
+        "y_mod": float(elastic.y_mod) / 1.0e9,
+        "universal_anisotropy": float(elastic.universal_anisotropy),
+        "homogeneous_poisson": float(elastic.homogeneous_poisson),
+    }
+    result: Dict[str, Any] = {
+        "available": True,
+        "error": None,
+        "engine": "pymatgen.analysis.elasticity.elastic.ElasticTensor",
+        "tensor_symmetry": {
+            "major": bool(np.allclose(matrix, matrix.T)),
+            "voigt": bool(elastic.is_voigt_symmetric()),
+        },
+        "properties": properties,
+        "units": {
+            "k_voigt": "GPa",
+            "k_reuss": "GPa",
+            "k_vrh": "GPa",
+            "g_voigt": "GPa",
+            "g_reuss": "GPa",
+            "g_vrh": "GPa",
+            "y_mod": "GPa",
+            "universal_anisotropy": "dimensionless",
+            "homogeneous_poisson": "dimensionless",
+        },
+        "structure_properties": {},
+        "structure_property_errors": {},
+    }
+
+    try:
+        pymatgen_structure = structure.to("pymatgen")
+    except Exception as error:
+        result["structure_property_errors"]["structure"] = str(error)
+        return result
+
+    structure_methods = {
+        "trans_v": "trans_v",
+        "long_v": "long_v",
+        "snyder_ac": "snyder_ac",
+        "snyder_opt": "snyder_opt",
+        "snyder_total": "snyder_total",
+        "clarke_thermalcond": "clarke_thermalcond",
+        "cahill_thermalcond": "cahill_thermalcond",
+        "agne_diffusive_thermalcond": "agne_diffusive_thermalcond",
+        "debye_temperature": "debye_temperature",
+    }
+    for name, method_name in structure_methods.items():
+        method = getattr(elastic, method_name, None)
+        if method is None:
+            result["structure_properties"][name] = None
+            result["structure_property_errors"][name] = (
+                f"the installed pymatgen has no {method_name} property"
+            )
+            continue
+        try:
+            value = float(method(pymatgen_structure))
+        except Exception as error:
+            result["structure_properties"][name] = None
+            result["structure_property_errors"][name] = str(error)
+            continue
+        result["structure_properties"][name] = value
+
+    result["units"].update(
+        {
+            "trans_v": "m/s",
+            "long_v": "m/s",
+            "snyder_ac": "W/(m K)",
+            "snyder_opt": "W/(m K)",
+            "snyder_total": "W/(m K)",
+            "clarke_thermalcond": "W/(m K)",
+            "cahill_thermalcond": "W/(m K)",
+            "agne_diffusive_thermalcond": "W/(m K)",
+            "debye_temperature": "K",
+        }
+    )
+    return result
+
+
 def in_plane_voigt_indices(aperiodic_axis: int) -> List[int]:
     """Return the Voigt indices of the periodic directions of a slab.
 

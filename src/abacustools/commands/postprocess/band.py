@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from abacustools.data.band import BandData, ProjBandData, band_gap_report
+from abacustools.core.render import cli_output
 
 
 _FAT_BAND_MODES = ("species", "species-shell", "species-orbital", "atoms")
@@ -147,29 +148,29 @@ def _effective_mass_report(band: BandData, args: argparse.Namespace) -> list[dic
 
 def _print_report(report: dict[str, Any], as_json: bool) -> None:
     if as_json:
-        print(json.dumps(report, indent=2, sort_keys=True))
+        cli_output(json.dumps(report, indent=2, sort_keys=True))
         return
 
     gap = report.get("band_gap")
     if gap is not None:
         if gap["is_metal"]:
-            print("Band gap: metallic (no gap)")
+            cli_output("Band gap: metallic (no gap)")
         else:
             kind = "direct" if gap["direct"] else "indirect"
-            print(f"Band gap: {gap['band_gap']:.6f} eV ({kind})")
-        print(
+            cli_output(f"Band gap: {gap['band_gap']:.6f} eV ({kind})")
+        cli_output(
             f"  VBM: {gap['vbm']['energy']:.6f} eV at k-point {gap['vbm']['kpoint_index']}"
         )
-        print(
+        cli_output(
             f"  CBM: {gap['cbm']['energy']:.6f} eV at k-point {gap['cbm']['kpoint_index']}"
         )
         if "spin_resolved_band_gap" in gap:
-            print(f"  spin-resolved gaps: {gap['spin_resolved_band_gap']}")
+            cli_output(f"  spin-resolved gaps: {gap['spin_resolved_band_gap']}")
 
     masses = report.get("effective_mass")
     if masses is not None:
         for item in masses:
-            print(
+            cli_output(
                 f"  band {item['band_index']}: m* = {item['effective_mass']:.6f} m_e"
             )
 
@@ -217,7 +218,7 @@ def run(args: argparse.Namespace) -> int:
         output = _output_path(job, args.output or "fatband.png")
         output.parent.mkdir(parents=True, exist_ok=True)
         _plot_fat_band(projected, args, output)
-        print(f"Wrote fat-band plot: {output}")
+        cli_output(f"Wrote fat-band plot: {output}")
         return 0
 
     band_data = BandData.ReadFromAbacusJob(str(job), efermi=args.efermi)
@@ -239,14 +240,14 @@ def run(args: argparse.Namespace) -> int:
     else:
         data_paths = [data_output]
 
-    print(
+    cli_output(
         f"Processed {job}: {band_data.nkpts} k-points, "
         f"{band_data.nbands} bands, nspin={band_data.nspin}, "
         f"efermi={band_data.efermi:.8f} eV"
     )
-    print(f"Wrote band plot: {output}")
-    print(f"Wrote band data: {', '.join(str(path) for path in data_paths)}")
-    print(f"Wrote k-path information: {kpath_output}")
+    cli_output(f"Wrote band plot: {output}")
+    cli_output(f"Wrote band data: {', '.join(str(path) for path in data_paths)}")
+    cli_output(f"Wrote k-path information: {kpath_output}")
     return 0
 
 
