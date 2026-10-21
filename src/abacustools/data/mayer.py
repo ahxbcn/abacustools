@@ -2100,7 +2100,7 @@ def atom_ranges(
 ) -> tuple[list[tuple[int, int]], int]:
     """Return the orbital index range of every atom and the basis size."""
 
-    return _atom_ranges(structure, nao_by_file)
+    return atom_orbital_ranges(structure, nao_by_file)
 
 
 def minimum_distance(
