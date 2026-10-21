@@ -23,6 +23,7 @@ from abacustools.data.eda import (
 )
 from abacustools.data.grid import Charge
 from abacustools.data.mayer import read_csr_matrix_blocks
+from abacustools.data.nocv import diagonalize_nocv
 from abacustools.io.abacus import ReadInput
 from abacustools.io.stru import AbacusATOM, AbacusSTRU
 from abacustools.data.lcao import (
@@ -111,6 +112,10 @@ def test_assemble_peda_kpoint_state_closed_shell():
     np.testing.assert_allclose(np.trace(channel.delta_p_lambda), 0.0, atol=1e-12)
     np.testing.assert_allclose(channel.p0_nao @ overlap @ channel.p0_nao, 2.0 * channel.p0_nao)
     assert np.linalg.norm(channel.delta_p_lambda) > 0.1
+
+    decomposition = diagonalize_nocv(channel.delta_p_lambda)
+    assert decomposition.trace == pytest.approx(0.0, abs=1e-10)
+    assert float(np.sum(decomposition.eigenvalues)) == pytest.approx(0.0, abs=1e-10)
 
 
 def test_assemble_peda_kpoint_state_two_spins():
