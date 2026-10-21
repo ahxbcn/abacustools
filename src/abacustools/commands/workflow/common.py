@@ -104,16 +104,11 @@ def clear_generated_jobs(
     override: bool,
 ) -> None:
     """Refuse or remove existing generated workflow directories."""
-    existing = [
-        job / name
-        for name in names
-        if (job / name).exists() or (job / name).is_symlink()
-    ]
+    existing = [job / name for name in names if (job / name).exists() or (job / name).is_symlink()]
     if existing and not override:
         paths = ", ".join(str(path) for path in existing)
         raise RuntimeError(
-            f"generated workflow directories already exist: {paths}; "
-            "use --override to replace them"
+            f"generated workflow directories already exist: {paths}; use --override to replace them"
         )
 
     for path in existing:
@@ -142,25 +137,55 @@ def _link_file(
     target.symlink_to(source.resolve())
 
 
+def _input_scalar(value: Any) -> Any:
+    """Return a scalar INPUT value without changing strings."""
+    if isinstance(value, (list, tuple)) and value:
+        return value[0]
+    return value
+
+
+def _resource_directory(
+    inputs: dict[str, Any],
+    key: str,
+    source_dir: Path,
+) -> Path:
+    """Resolve a pseudo/orbital directory relative to the source job."""
+    value = _input_scalar(inputs.get(key))
+    if value in (None, ""):
+        return source_dir
+    path = Path(str(value))
+    return path if path.is_absolute() else source_dir / path
+
+
 def copy_referenced_files(
     structure,
     source_dir: Path,
     destination_dir: Path,
     *,
+    inputs: Optional[dict[str, Any]] = None,
     kpoint: Optional[str] = None,
 ) -> None:
-    """Link all files referenced by a generated STRU and INPUT."""
+    """Link all files referenced by a generated STRU and INPUT.
+
+    ABACUS resolves pseudopotentials and numerical orbitals through
+    ``pseudo_dir`` and ``orbital_dir`` when those INPUT values are set.  The
+    generated job keeps the original INPUT values, so the links must come from
+    the same directories rather than from the job root.
+    """
+    values = {} if inputs is None else inputs
+    pseudo_dir = _resource_directory(values, "pseudo_dir", source_dir)
+    orbital_dir = _resource_directory(values, "orbital_dir", source_dir)
     files = [
-        *((filename, "pseudopotential") for filename in structure.pps),
-        *((filename, "orbital") for filename in structure.orbs),
-        *((filename, "PAW") for filename in structure.paws),
+        *((filename, "pseudopotential", pseudo_dir) for filename in structure.pps),
+        *((filename, "orbital", orbital_dir) for filename in structure.orbs),
+        *((filename, "PAW", pseudo_dir) for filename in structure.paws),
     ]
     copied = set()
-    for filename, file_type in files:
+    for filename, file_type, directory in files:
         if filename in copied:
             continue
         copied.add(filename)
-        _link_file(source_dir, destination_dir, filename, file_type)
+        _link_file(directory, destination_dir, filename, file_type)
 
     if kpoint:
         _link_file(source_dir, destination_dir, kpoint, "KPT")
@@ -186,6 +211,7 @@ def write_abacus_job(
         structure,
         source_dir,
         destination_dir,
+        inputs=inputs,
         kpoint=kpoint,
     )
 
@@ -212,8 +238,7 @@ def read_manifest(
         raise RuntimeError(f"invalid workflow manifest: {path}") from error
     if manifest.get("workflow") != workflow:
         raise RuntimeError(
-            f"workflow manifest is for {manifest.get('workflow')!r}, "
-            f"not {workflow!r}: {path}"
+            f"workflow manifest is for {manifest.get('workflow')!r}, not {workflow!r}: {path}"
         )
     actual_tasks = set(manifest.get("tasks", []))
     missing_tasks = set(required_tasks) - actual_tasks
