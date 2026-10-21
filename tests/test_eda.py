@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 import abacustools.data.lcao as lcao
+from abacustools.commands.workflow.eda import prepare_gamma_state_job
 from abacustools.data.mayer import read_csr_matrix_blocks
+from abacustools.io.abacus import ReadInput
 from abacustools.io.stru import AbacusATOM, AbacusSTRU
 from abacustools.data.lcao import (
     KPointOrbitals,
@@ -225,8 +228,8 @@ def _writer_structure() -> AbacusSTRU:
     return AbacusSTRU(
         cell=np.diag([4.0, 4.0, 4.0]),
         atoms=[
-            AbacusATOM(label="H", coord=(0.0, 0.0, 0.0)),
-            AbacusATOM(label="H", coord=(1.0, 0.0, 0.0)),
+            AbacusATOM(label="H", coord=(0.0, 0.0, 0.0), pp="H.upf", orb="H.orb"),
+            AbacusATOM(label="H", coord=(1.0, 0.0, 0.0), pp="H.upf", orb="H.orb"),
         ],
         metadata={"lattice_constant": 1.889726, "lattice_name": "test"},
     )
@@ -284,3 +287,73 @@ def test_write_peda_state_dmr_rejects_unknown_field(tmp_path):
 
     with pytest.raises(ValueError, match="unknown pEDA state field"):
         write_peda_state_dmr([state], _writer_structure(), tmp_path, field="bad")
+
+
+def _reference_gamma_job(tmp_path: Path) -> Path:
+    job = tmp_path / "job"
+    job.mkdir()
+    structure = _writer_structure()
+    assert structure.write(job / "STRU")
+    (job / "H.upf").write_text("", encoding="utf-8")
+    (job / "H.orb").write_text("", encoding="utf-8")
+    (job / "INPUT").write_text(
+        "INPUT_PARAMETERS\n"
+        "calculation scf\n"
+        "basis_type lcao\n"
+        "gamma_only 1\n"
+        "nspin 1\n"
+        "stru_file STRU\n"
+        "pseudo_dir .\n"
+        "orbital_dir .\n",
+        encoding="utf-8",
+    )
+    return job
+
+
+def test_prepare_gamma_state_job_writes_fixed_density_input(tmp_path):
+    job = _reference_gamma_job(tmp_path)
+    matrix = np.array([[1.0, 0.25], [0.25, 2.0]])
+    state = _state_with_densities(matrix, 0.5 * matrix, (1,))
+
+    output = prepare_gamma_state_job(
+        job,
+        [state],
+        "eda/states/rho0",
+        field="p0",
+    )
+
+    inputs = ReadInput(str(output / "INPUT"))
+    assert inputs.get("calculation") == "scf"
+    assert inputs.get("init_chg") == "dm"
+    assert inputs.get("read_file_dir") == "."
+    assert float(inputs.get("mixing_beta")) == 0.0
+    assert int(inputs.get("scf_nmax")) == 1
+    assert int(inputs.get("out_hsk")) == 1
+    assert (output / "STRU").is_file()
+    assert (output / "H.upf").is_file()
+    assert (output / "H.orb").is_file()
+    np.testing.assert_allclose(
+        read_csr_matrix_blocks(output / "dmrs1_nao.csr")[(0, 0, 0)],
+        matrix,
+    )
+
+
+def test_prepare_gamma_state_job_requires_override(tmp_path):
+    job = _reference_gamma_job(tmp_path)
+    state = _state_with_densities(np.eye(2), 0.5 * np.eye(2), (1,))
+    destination = "eda/states/rho0"
+
+    prepare_gamma_state_job(job, [state], destination)
+    with pytest.raises(RuntimeError, match="already exists"):
+        prepare_gamma_state_job(job, [state], destination)
+    output = prepare_gamma_state_job(job, [state], destination, override=True)
+    assert output.is_dir()
+
+
+def test_prepare_gamma_state_job_rejects_non_gamma_state(tmp_path):
+    job = _reference_gamma_job(tmp_path)
+    state = _state_with_densities(np.eye(2), 0.5 * np.eye(2), (1,))
+    state.direct = (0.5, 0.0, 0.0)
+
+    with pytest.raises(ValueError, match="Gamma"):
+        prepare_gamma_state_job(job, [state], tmp_path / "state")
