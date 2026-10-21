@@ -156,3 +156,126 @@ def read_gamma_fixed_density_result(
         hamiltonians=hamiltonians,
         data_files=tuple(str(path) for _spin, path in sorted(files.items())),
     )
+
+
+@dataclass(frozen=True)
+class PEDAEnergyTerms:
+    """Energy terms of one pEDA analysis, all in eV."""
+
+    preparation: float
+    electrostatic: float
+    pauli: float
+    orbital: float
+    dispersion: float
+    interaction_electronic: float
+    interaction: float
+    bond: float
+    electrostatic_fraction: Optional[float]
+    orbital_fraction: Optional[float]
+    dispersion_fraction: Optional[float]
+    unit: str = "eV"
+
+
+def _finite_energy(name: str, value: float) -> float:
+    result = float(value)
+    if not np.isfinite(result):
+        raise ValueError(f"{name} must be a finite energy")
+    return result
+
+
+def compute_peda_energy_terms(
+    *,
+    e_ab: float,
+    e_a: float,
+    e_b: float,
+    e_a0: float,
+    e_b0: float,
+    e0: float,
+    delta_e_elstat: float,
+    e_vdw_ab: Optional[float] = None,
+    e_vdw_a: Optional[float] = None,
+    e_vdw_b: Optional[float] = None,
+) -> PEDAEnergyTerms:
+    """Assemble the pEDA energy terms from electronic and dispersion energies.
+
+    ``e_ab``, ``e_a``, ``e_b``, ``e_a0``, ``e_b0`` and ``e0`` must be
+    electronic energies without the separate DFT-D correction.  The prepared
+    fragment energies are ``e_a``/``e_b`` at the complex geometry, while
+    ``e_a0``/``e_b0`` are the isolated relaxed fragments.  This gives the
+    positive preparation cost used by pEDA:
+
+    ``ΔE_prep = E_A + E_B - E_A0 - E_B0``
+
+    Args:
+        e_ab: Full-system electronic energy.
+        e_a: Prepared fragment A energy.
+        e_b: Prepared fragment B energy.
+        e_a0: Isolated relaxed fragment A energy.
+        e_b0: Isolated relaxed fragment B energy.
+        e0: Energy of the orthogonalized fragment intermediate.
+        delta_e_elstat: Fragment electrostatic cross term.
+        e_vdw_ab: Dispersion energy of the full system.
+        e_vdw_a: Dispersion energy of fragment A.
+        e_vdw_b: Dispersion energy of fragment B.
+
+    Returns:
+        The pEDA energy terms and attractive-term fractions.
+
+    Raises:
+        ValueError: If an energy is non-finite or the dispersion inputs are
+            only partially supplied.
+    """
+
+    energies = {
+        "e_ab": _finite_energy("e_ab", e_ab),
+        "e_a": _finite_energy("e_a", e_a),
+        "e_b": _finite_energy("e_b", e_b),
+        "e_a0": _finite_energy("e_a0", e_a0),
+        "e_b0": _finite_energy("e_b0", e_b0),
+        "e0": _finite_energy("e0", e0),
+        "delta_e_elstat": _finite_energy("delta_e_elstat", delta_e_elstat),
+    }
+    dispersion_values = (e_vdw_ab, e_vdw_a, e_vdw_b)
+    if all(value is None for value in dispersion_values):
+        dispersion = 0.0
+    elif any(value is None for value in dispersion_values):
+        raise ValueError("e_vdw_ab, e_vdw_a and e_vdw_b must be supplied together")
+    else:
+        dispersion = (
+            _finite_energy("e_vdw_ab", e_vdw_ab)
+            - _finite_energy("e_vdw_a", e_vdw_a)
+            - _finite_energy("e_vdw_b", e_vdw_b)
+        )
+
+    preparation = energies["e_a"] + energies["e_b"] - energies["e_a0"] - energies["e_b0"]
+    electrostatic = energies["delta_e_elstat"]
+    interaction_electronic = energies["e0"] - energies["e_a"] - energies["e_b"]
+    pauli = interaction_electronic - electrostatic
+    orbital = energies["e_ab"] - energies["e0"]
+    interaction = interaction_electronic + dispersion
+    bond = preparation + interaction
+
+    attractive = electrostatic + orbital
+    if abs(attractive) > 1e-12:
+        electrostatic_fraction = electrostatic / attractive
+        orbital_fraction = orbital / attractive
+    else:
+        electrostatic_fraction = None
+        orbital_fraction = None
+    dispersion_fraction = dispersion / interaction if abs(interaction) > 1e-12 else None
+
+    return PEDAEnergyTerms(
+        preparation=float(preparation),
+        electrostatic=float(electrostatic),
+        pauli=float(pauli),
+        orbital=float(orbital),
+        dispersion=float(dispersion),
+        interaction_electronic=float(interaction_electronic),
+        interaction=float(interaction),
+        bond=float(bond),
+        electrostatic_fraction=(
+            None if electrostatic_fraction is None else float(electrostatic_fraction)
+        ),
+        orbital_fraction=None if orbital_fraction is None else float(orbital_fraction),
+        dispersion_fraction=(None if dispersion_fraction is None else float(dispersion_fraction)),
+    )

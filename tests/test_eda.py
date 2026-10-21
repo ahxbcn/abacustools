@@ -8,7 +8,10 @@ import pytest
 
 import abacustools.data.lcao as lcao
 from abacustools.commands.workflow.eda import prepare_gamma_state_job
-from abacustools.data.eda import read_gamma_fixed_density_result
+from abacustools.data.eda import (
+    compute_peda_energy_terms,
+    read_gamma_fixed_density_result,
+)
 from abacustools.data.mayer import read_csr_matrix_blocks
 from abacustools.io.abacus import ReadInput
 from abacustools.io.stru import AbacusATOM, AbacusSTRU
@@ -451,3 +454,73 @@ def test_read_gamma_fixed_density_result_requires_hamiltonian(tmp_path):
 
     with pytest.raises(FileNotFoundError, match="Hamiltonian"):
         read_gamma_fixed_density_result(job)
+
+
+def test_compute_peda_energy_terms_and_fractions():
+    terms = compute_peda_energy_terms(
+        e_ab=-100.0,
+        e_a=-40.0,
+        e_b=-30.0,
+        e_a0=-45.0,
+        e_b0=-35.0,
+        e0=-80.0,
+        delta_e_elstat=-15.0,
+        e_vdw_ab=-1.0,
+        e_vdw_a=-0.2,
+        e_vdw_b=-0.3,
+    )
+
+    assert terms.preparation == pytest.approx(10.0)
+    assert terms.electrostatic == pytest.approx(-15.0)
+    assert terms.pauli == pytest.approx(5.0)
+    assert terms.orbital == pytest.approx(-20.0)
+    assert terms.dispersion == pytest.approx(-0.5)
+    assert terms.interaction_electronic == pytest.approx(-10.0)
+    assert terms.interaction == pytest.approx(-10.5)
+    assert terms.bond == pytest.approx(-0.5)
+    assert terms.electrostatic_fraction == pytest.approx(15.0 / 35.0)
+    assert terms.orbital_fraction == pytest.approx(20.0 / 35.0)
+    assert terms.dispersion_fraction == pytest.approx(0.5 / 10.5)
+
+
+def test_compute_peda_energy_terms_without_dispersion():
+    terms = compute_peda_energy_terms(
+        e_ab=-100.0,
+        e_a=-40.0,
+        e_b=-30.0,
+        e_a0=-45.0,
+        e_b0=-35.0,
+        e0=-80.0,
+        delta_e_elstat=-15.0,
+    )
+
+    assert terms.dispersion == 0.0
+    assert terms.dispersion_fraction == 0.0
+    assert terms.interaction == pytest.approx(terms.interaction_electronic)
+
+
+def test_compute_peda_energy_terms_rejects_partial_dispersion():
+    with pytest.raises(ValueError, match="supplied together"):
+        compute_peda_energy_terms(
+            e_ab=-100.0,
+            e_a=-40.0,
+            e_b=-30.0,
+            e_a0=-45.0,
+            e_b0=-35.0,
+            e0=-80.0,
+            delta_e_elstat=-15.0,
+            e_vdw_ab=-1.0,
+        )
+
+
+def test_compute_peda_energy_terms_rejects_non_finite_energy():
+    with pytest.raises(ValueError, match="finite"):
+        compute_peda_energy_terms(
+            e_ab=float("nan"),
+            e_a=-40.0,
+            e_b=-30.0,
+            e_a0=-45.0,
+            e_b0=-35.0,
+            e0=-80.0,
+            delta_e_elstat=-15.0,
+        )
