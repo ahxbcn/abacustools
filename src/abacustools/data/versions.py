@@ -65,6 +65,7 @@ _MARKER_FIELDS = (
     "fermi_keywords",
     "normal_end_keywords",
     "vdw_keywords",
+    "ewald_keywords",
     "total_mag_keywords",
     "absolute_mag_keywords",
     "orbital_mag_header_keywords",
@@ -103,6 +104,7 @@ class VersionProfile:
     fermi_keywords: tuple[str, ...] = ("efermi",)
     normal_end_keywords: tuple[str, ...] = ("Total  Time  :",)
     vdw_keywords: tuple[str, ...] = ("e_vdw",)
+    ewald_keywords: tuple[str, ...] = ("e_ewald",)
     total_mag_keywords: tuple[str, ...] = ("total magnetism (Bohr mag/cell)",)
     absolute_mag_keywords: tuple[str, ...] = ("absolute magnetism",)
     orbital_mag_header_keywords: tuple[str, ...] = ("orbital charge analysis",)

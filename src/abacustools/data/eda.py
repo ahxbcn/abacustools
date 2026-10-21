@@ -491,3 +491,21 @@ def electrostatic_cross_term(
         _finite_energy("ion_ion", ion_ion),
     )
     return float(sum(terms))
+
+
+def read_abacus_ewald_energy(
+    job: str | Path,
+    *,
+    version: Optional[str] = None,
+) -> float:
+    """Read the final ABACUS Ewald ion-ion energy in eV."""
+
+    result = get_result_from_job(
+        str(Path(job).resolve()),
+        ["ewald_energy"],
+        version=version,
+    )
+    value = result.get("ewald_energy")
+    if value is None or not np.isfinite(float(value)):
+        raise ValueError(f"no Ewald energy found in ABACUS log: {job}")
+    return float(value)

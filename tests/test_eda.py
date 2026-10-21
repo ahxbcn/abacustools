@@ -16,6 +16,7 @@ from abacustools.data.eda import (
     electron_nucleus_cross_term,
     electrostatic_cross_term,
     ion_ion_cross_term,
+    read_abacus_ewald_energy,
     read_gamma_fixed_density_result,
 )
 from abacustools.data.grid import Charge
@@ -657,3 +658,19 @@ def test_electrostatic_cross_term_rejects_non_finite_component():
             electron_nucleus_ba=-2.0,
             ion_ion=1.0,
         )
+
+
+def test_read_abacus_ewald_energy(tmp_path):
+    job = tmp_path / "job"
+    output = job / "OUT.ABACUS"
+    output.mkdir(parents=True)
+    (job / "INPUT").write_text(
+        "INPUT_PARAMETERS\ncalculation scf\nbasis_type lcao\ngamma_only 1\nsuffix ABACUS\n",
+        encoding="utf-8",
+    )
+    (output / "running_scf.log").write_text(
+        "E_Ewald 1.000000 13.605693\n",
+        encoding="utf-8",
+    )
+
+    assert read_abacus_ewald_energy(job) == pytest.approx(13.605693)

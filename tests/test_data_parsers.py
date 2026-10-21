@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from abacustools.data.abacus_result import (
     get_result_from_job,
@@ -332,3 +333,15 @@ H
     assert grid.atom_types.tolist() == [1]
     np.testing.assert_allclose(grid.atom_positions, [[1.0, 2.0, 3.0]], atol=1e-4)
     np.testing.assert_allclose(potential.data, 0.0)
+
+
+def test_get_result_reads_ewald_energy(tmp_path):
+    output = _job_with_output(tmp_path)
+    (output / "running_scf.log").write_text(
+        "E_Ewald 1.000000 13.605693\n",
+        encoding="utf-8",
+    )
+
+    result = get_result_from_job(tmp_path, ["ewald_energy"], version="")
+
+    assert result["ewald_energy"] == pytest.approx(13.605693)

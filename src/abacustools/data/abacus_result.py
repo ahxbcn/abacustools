@@ -32,6 +32,9 @@ grouped_params = {
     "vdw_results": [
         "vdw_energy",
     ],
+    "ewald_results": [
+        "ewald_energy",
+    ],
     "magnetic_results": [
         "total_mag",
         "absolute_mag",
@@ -1672,6 +1675,42 @@ def collect_vdw_results(
     return {metric: available[metric] for metric in param_groups["vdw_results"]}
 
 
+def collect_ewald_results(
+    job_dir: str,
+    metrics: List[str],
+    version: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Collect the final Ewald ion-ion energy in eV."""
+    param_groups = split_param_by_group(metrics)
+    if "ewald_results" not in param_groups:
+        return {}
+
+    job_path = Path(job_dir)
+    try:
+        inputs = _job_input(job_path)
+        output_path = _output_directory(job_path, inputs)
+        calculation = _calculation(inputs, output_path)
+        log_path = _log_file(output_path, calculation)
+    except FileNotFoundError:
+        return _empty_results(param_groups["ewald_results"])
+
+    profile = resolve_version(version, job_dir=job_path)
+    gate = _gate(profile.ewald_keywords)
+    energies: List[float] = []
+    for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        lower_line = line.lower()
+        if gate.search(lower_line) is None:
+            continue
+        if _contains_any(lower_line, profile.ewald_keywords):
+            values = _numbers(line)
+            if values:
+                # ABACUS prints the Ewald energy in Rydberg and eV.
+                energies.append(values[-1])
+
+    available = {"ewald_energy": energies[-1] if energies else None}
+    return {metric: available[metric] for metric in param_groups["ewald_results"]}
+
+
 def _mulliken_magnetization(line: str) -> Optional[Union[float, List[float]]]:
     """Read the magnetization of one ``Total Magnetism on atom`` line.
 
@@ -1964,6 +2003,10 @@ def get_result_from_job(
     if "vdw_results" in param_groups:
         results.update(
             collect_vdw_results(job_dir, param_groups["vdw_results"], version)
+        )
+    if "ewald_results" in param_groups:
+        results.update(
+            collect_ewald_results(job_dir, param_groups["ewald_results"], version)
         )
     if "magnetic_results" in param_groups:
         results.update(
