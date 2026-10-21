@@ -13,6 +13,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from abacustools.core.constant import RY_TO_EV
+
 
 @dataclass(frozen=True)
 class NOCVChannel:
@@ -58,6 +60,44 @@ class NOCVDecomposition:
     trace: float
     zero_tolerance: float
     pair_tolerance: float
+
+
+@dataclass(frozen=True)
+class NOCVChannelEnergy:
+    """Orbital-energy contribution of one paired NOCV channel.
+
+    Attributes:
+        index: One-based channel index from the NOCV decomposition.
+        eigenvalue: Positive deformation eigenvalue ``v_i``.
+        positive_expectation_ry: ``<psi_i|F_TS|psi_i>`` in Ry.
+        negative_expectation_ry: ``<psi_-i|F_TS|psi_-i>`` in Ry.
+        energy_ev: Channel energy contribution in eV.
+    """
+
+    index: int
+    eigenvalue: float
+    positive_expectation_ry: float
+    negative_expectation_ry: float
+    energy_ev: float
+
+
+@dataclass(frozen=True)
+class NOCVEnergyDecomposition:
+    """NOCV channel energies and their total orbital-energy contribution.
+
+    Attributes:
+        channels: Paired NOCV channel energies.
+        paired_total_ev: Sum of the paired channel energies in eV.
+        unpaired_total_ev: Contribution of unpaired eigenvectors in eV.
+        total_ev: Full ``Tr(delta_p @ F_TS)`` contribution in eV.
+        unit: Energy unit of the returned energy fields.
+    """
+
+    channels: tuple[NOCVChannelEnergy, ...]
+    paired_total_ev: float
+    unpaired_total_ev: float
+    total_ev: float
+    unit: str = "eV"
 
 
 def _validate_tolerance(value: float, name: str) -> float:
@@ -194,4 +234,91 @@ def diagonalize_nocv(
         trace=float(trace.real),
         zero_tolerance=zero,
         pair_tolerance=pair,
+    )
+
+
+def nocv_channel_energies(
+    decomposition: NOCVDecomposition,
+    f_ts: np.ndarray,
+    *,
+    hermitian_tolerance: float = 1e-8,
+) -> NOCVEnergyDecomposition:
+    """Assign an ``F_TS`` orbital-energy contribution to every NOCV channel.
+
+    ``f_ts`` must be the transition-state Fock matrix in the same orthonormal
+    basis as the NOCV eigenvectors, and its values must be in Ry.  For a paired
+    channel the contribution is::
+
+        delta_E_i = v_i [<psi_i|F_TS|psi_i> - <psi_-i|F_TS|psi_-i>]
+
+    The function also returns the full trace contribution so paired and
+    unpaired eigenvectors can be checked against ``Tr(delta_p @ F_TS)``.
+    A spin-polarized calculation calls this function once per spin channel and
+    sums the resulting energies.
+
+    Args:
+        decomposition: NOCV eigensystem from :func:`diagonalize_nocv`.
+        f_ts: Transition-state Fock matrix in the orthonormal NOCV basis, in Ry.
+        hermitian_tolerance: Absolute tolerance for the Hermiticity check.
+
+    Returns:
+        Per-channel energies, the paired sum, the unpaired remainder and the
+        full orbital-energy contribution, all converted to eV.
+
+    Raises:
+        ValueError: If the eigensystem or Fock matrix is inconsistent,
+            non-Hermitian or non-finite.
+    """
+
+    limit = _validate_tolerance(hermitian_tolerance, "hermitian_tolerance")
+    eigenvalues = np.asarray(decomposition.eigenvalues, dtype=float)
+    eigenvectors = np.asarray(decomposition.eigenvectors, dtype=np.complex128)
+    if eigenvalues.ndim != 1 or eigenvectors.ndim != 2:
+        raise ValueError("NOCV eigenvalues and eigenvectors have invalid dimensions")
+    if eigenvectors.shape[0] != eigenvectors.shape[1]:
+        raise ValueError("NOCV eigenvectors must form a square matrix")
+    if eigenvectors.shape[1] != eigenvalues.size:
+        raise ValueError("NOCV eigenvector count does not match the eigenvalues")
+
+    fock = np.asarray(f_ts, dtype=np.complex128)
+    if fock.shape != eigenvectors.shape:
+        raise ValueError("f_ts must match the NOCV eigenvector dimension")
+    if not np.all(np.isfinite(fock)):
+        raise ValueError("f_ts contains non-finite values")
+    if not np.allclose(fock, fock.conj().T, rtol=0.0, atol=limit):
+        raise ValueError("f_ts must be Hermitian")
+
+    expectations = np.real(
+        np.einsum(
+            "ij,ij->j",
+            eigenvectors.conj(),
+            fock @ eigenvectors,
+        )
+    )
+    if not np.all(np.isfinite(expectations)):
+        raise ValueError("F_TS expectations are not finite")
+
+    channels = tuple(
+        NOCVChannelEnergy(
+            index=channel.index,
+            eigenvalue=channel.eigenvalue,
+            positive_expectation_ry=float(expectations[channel.positive_index]),
+            negative_expectation_ry=float(expectations[channel.negative_index]),
+            energy_ev=float(
+                channel.eigenvalue
+                * (expectations[channel.positive_index] - expectations[channel.negative_index])
+                * RY_TO_EV
+            ),
+        )
+        for channel in decomposition.channels
+    )
+    paired_total = float(sum(channel.energy_ev for channel in channels))
+    total = float(np.sum(eigenvalues * expectations) * RY_TO_EV)
+    if not np.isfinite(paired_total) or not np.isfinite(total):
+        raise ValueError("NOCV channel energies are not finite")
+    return NOCVEnergyDecomposition(
+        channels=channels,
+        paired_total_ev=paired_total,
+        unpaired_total_ev=float(total - paired_total),
+        total_ev=total,
     )

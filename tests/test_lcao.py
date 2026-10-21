@@ -14,6 +14,7 @@ from abacustools.data.lcao import (
     orthogonalize_fragment_orbitals,
     kpoint_density_to_real_space,
     load_lcao_kpoint_densities,
+    operator_matrix_in_basis,
     real_space_density_to_kpoints,
     write_csr_matrix_blocks,
 )
@@ -295,6 +296,30 @@ def test_orthogonalize_fragment_orbitals_rejects_non_hermitian_overlap():
             np.array([[1.0], [0.0]]),
             np.array([[0.0], [1.0]]),
             np.array([[1.0, 0.5], [0.0, 1.0]]),
+        )
+
+
+def test_operator_matrix_in_basis_uses_coefficient_congruence():
+    overlap = np.array([[1.0, 0.5], [0.5, 1.0]])
+    basis = orthogonalize_fragment_orbitals(
+        np.array([[1.0], [0.0]]),
+        np.array([[0.0], [1.0]]),
+        overlap,
+    )
+    operator = np.array([[1.0, 0.2j], [-0.2j, 2.0]])
+
+    transformed = operator_matrix_in_basis(operator, basis.combined)
+
+    expected = basis.combined.conj().T @ operator @ basis.combined
+    np.testing.assert_allclose(transformed, expected, atol=1e-12)
+    np.testing.assert_allclose(transformed, transformed.conj().T, atol=1e-12)
+
+
+def test_operator_matrix_in_basis_rejects_non_hermitian_operator():
+    with pytest.raises(ValueError, match="Hermitian"):
+        operator_matrix_in_basis(
+            np.array([[1.0, 1.0], [0.0, 1.0]]),
+            np.eye(2),
         )
 
 

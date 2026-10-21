@@ -763,6 +763,53 @@ def density_matrix_in_basis(
     return transformed
 
 
+def operator_matrix_in_basis(
+    operator_nao: np.ndarray,
+    coefficients: np.ndarray,
+) -> np.ndarray:
+    """Transform a Hermitian NAO operator into a coefficient basis.
+
+    For an operator ``F`` and S-orthonormal coefficients ``C`` satisfying
+    ``C† S C = I``, the transformed operator is::
+
+        F_basis = C† F_NAO C
+
+    This is the transformation used for ``F_TS`` before assigning NOCV
+    channel energies.  Unlike a density matrix, an operator carries no extra
+    overlap factors.
+
+    Args:
+        operator_nao: Hermitian operator in the NAO basis, shape ``(n, n)``.
+        coefficients: Target orbital coefficients, shape ``(n, m)``.
+
+    Returns:
+        The transformed Hermitian operator with shape ``(m, m)``.
+
+    Raises:
+        ValueError: If shapes, Hermiticity or finiteness are inconsistent.
+    """
+
+    operator = np.asarray(operator_nao)
+    c = np.asarray(coefficients)
+    if operator.ndim != 2 or c.ndim != 2:
+        raise ValueError("operator and coefficients must be two-dimensional")
+    n_basis = int(operator.shape[0])
+    if operator.shape != (n_basis, n_basis):
+        raise ValueError("operator must be square")
+    if c.shape[0] != n_basis:
+        raise ValueError("coefficients must have one row per NAO basis function")
+    if not np.all(np.isfinite(operator)) or not np.all(np.isfinite(c)):
+        raise ValueError("operator and coefficients must be finite")
+    if not np.allclose(operator, operator.conj().T, atol=1e-10, rtol=1e-10):
+        raise ValueError("operator matrix must be Hermitian")
+
+    transformed = c.conj().T @ operator @ c
+    transformed = 0.5 * (transformed + transformed.conj().T)
+    if not np.all(np.isfinite(transformed)):
+        raise ValueError("transformed operator contains non-finite values")
+    return transformed
+
+
 def build_p0_lambda(
     occupations: Sequence[float],
     *,
