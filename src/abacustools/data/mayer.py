@@ -1447,7 +1447,21 @@ def _sorted_shell_orders(
     )
 
 
-def _atom_ranges(structure: AbacusSTRU, nao_by_file: dict[str, NAOData]) -> tuple[list[tuple[int, int]], int]:
+def atom_orbital_ranges(
+    structure: AbacusSTRU,
+    nao_by_file: dict[str, NAOData],
+) -> tuple[list[tuple[int, int]], int]:
+    """Map the atoms of a structure onto slices of the global NAO basis.
+
+    Args:
+        structure: Structure whose atoms follow the order of the matrix basis.
+        nao_by_file: Parsed numerical-orbital files keyed by the file name in
+            ``STRU``.
+
+    Returns:
+        One half-open ``(start, stop)`` range per atom and the total number of
+        NAO basis functions.
+    """
     shells, total = _atom_shell_ranges(structure, nao_by_file)
     ranges: list[tuple[int, int]] = []
     for atom_shells in shells:
@@ -1460,6 +1474,57 @@ def _atom_ranges(structure: AbacusSTRU, nao_by_file: dict[str, NAOData]) -> tupl
 def _resolve_orbital(job: Path, orbital_dir: Any, filename: str) -> Path:
     base = Path(str(orbital_dir)) if orbital_dir else job
     return (base if base.is_absolute() else job / base) / filename
+
+
+def read_nao_basis_layout(
+    job: str | Path,
+    *,
+    inputs: Any = None,
+    structure: AbacusSTRU | None = None,
+) -> tuple[AbacusSTRU, list[tuple[int, int]], int]:
+    """Read a job's structure and map every atom to its NAO basis slice.
+
+    This is the shared mapping behind Mayer bond orders and pair-based
+    COHP/COOP analysis. The atom order is the matrix basis order written by
+    ABACUS, and each atom uses the numerical orbital named by its ``STRU``
+    entry.
+
+    Args:
+        job: ABACUS job directory.
+        inputs: Previously parsed ``INPUT``, read from ``job`` when omitted.
+        structure: Previously read ``STRU``, read through ``inputs`` when
+            omitted.
+
+    Returns:
+        The structure, one half-open NAO range per atom, and the global basis
+        size.
+    """
+
+    job_path = Path(job).resolve()
+    if inputs is None:
+        inputs = ReadInput(str(_required_file(job_path / "INPUT", "INPUT file")))
+    if structure is None:
+        structure_path = job_path / str(_scalar(inputs.get("stru_file", "STRU")))
+        structure = AbacusSTRU.read(
+            str(_required_file(structure_path, "STRU file"))
+        )
+        if structure is None:
+            raise ValueError(f"cannot read structure: {structure_path}")
+
+    nao_by_file: dict[str, NAOData] = {}
+    for index, atom in enumerate(structure.atoms, 1):
+        if not atom.orb:
+            raise ValueError(f"atom {index} has no numerical orbital file")
+        if atom.orb not in nao_by_file:
+            nao_by_file[atom.orb] = read_nao_file(
+                _resolve_orbital(
+                    job_path,
+                    inputs.get("orbital_dir"),
+                    atom.orb,
+                )
+            )
+    atom_ranges, basis_functions = atom_orbital_ranges(structure, nao_by_file)
+    return structure, atom_ranges, basis_functions
 
 
 _DEVELOP_DM_NAME = re.compile(
@@ -1589,8 +1654,14 @@ def analyze_mayer_bond_order(job: str | Path, *, cutoff: Optional[float] = None,
         if not atom.orb:
             raise ValueError(f"atom {index} has no numerical orbital file")
         if atom.orb not in nao_by_file:
-            nao_by_file[atom.orb] = read_nao_file(_resolve_orbital(job_path, inputs.get("orbital_dir"), atom.orb))
-    atom_ranges, basis_functions = _atom_ranges(structure, nao_by_file)
+            nao_by_file[atom.orb] = read_nao_file(
+                _resolve_orbital(
+                    job_path,
+                    inputs.get("orbital_dir"),
+                    atom.orb,
+                )
+            )
+    atom_ranges, basis_functions = atom_orbital_ranges(structure, nao_by_file)
     atom_shells, _ = _atom_shell_ranges(structure, nao_by_file)
     selected_pairs = select_atom_pairs(structure, cutoff, pairs, pairs_file)
     orders = {pair: 0.0 for pair in selected_pairs}

@@ -801,25 +801,42 @@ curvature at the edge and is available for nspin=1 only.
 `--fat-band species|species-shell|species-orbital|atoms` plots the projected
 band structure from the `PBANDS_*` output.
 
-COHP and COOP curves can be calculated for selected ABACUS NAO orbital groups
-when the LCAO output contains `data-*-H`, `data-*-S`, `kpoints`, and
-`WFC_NAO_K*.txt` files:
+COHP and COOP curves can be calculated for atom pairs when the LCAO output
+contains `data-*-H`, `data-*-S`, `kpoints`, and `WFC_NAO_K*.txt` files. Atom
+indices are one-based, and every pair is automatically expanded to the complete
+NAO range of its two atoms from `STRU` and the numerical orbital files:
 
 ```text
-abacustools postprocess cohp -j JOB \
-  --atom-i-orbs 0,1,2 --atom-j-orbs 13,14,15 \
+abacustools postprocess cohp -j JOB --pairs 1-2 \
   --method COHP --de 0.1 --output cohp.png --data-output cohp.dat
+abacustools postprocess cohp -j JOB --pairs 1-2,1-3
+abacustools postprocess cohp -j JOB --pairs-file pairs.txt
+abacustools postprocess cohp -j JOB --cutoff 3.0
 ```
 
-Orbital indices are zero-based global NAO indices. Use `--method COOP` for
-overlap-weighted curves, `--spin up|down` for a spin channel, and `--invert`
-to invert only the plotted curve. The data file keeps the computed sign.
-Develop-version output is read as well: `hk*_nao.txt` and `sk*_nao.txt` replace
-the `data-*-H`/`data-*-S` pair, `wf*_nao.txt` replaces `WFC_NAO_K*.txt`, and
-the k-point weights come from the `dm*_nao.txt` density-matrix headers.
-`ICOHP`/`ICOOP` printed by the command is the integral up to the Fermi level.
-This is an ABACUS-NAO COHP/COOP implementation and is not a standard LOBSTER
-pCOHP projection.
+`--pairs`, `--pairs-file` and `--cutoff` have the same atom-pair semantics as
+`postprocess mayer`. A cutoff uses the shortest periodic distance in Angstrom.
+When several pairs are selected, each pair gets its own plot and data file with
+a `_1-2` style suffix, and the printed ICOHP/ICOOP labels identify the atom
+pair. The resolved zero-based NAO indices are also recorded on the data result
+and printed with the curve.
+
+The older advanced interface remains available for arbitrary orbital groups
+through `--atom-i-orbs` and `--atom-j-orbs`; those indices are zero-based
+global NAO indices. The atom-pair selectors and the explicit orbital groups are
+mutually exclusive. Use `--method COOP` for overlap-weighted curves,
+`--spin up|down` for a spin channel, and `--invert` to invert only the plotted
+curve. The data file keeps the computed sign. Develop-version output is read as
+well: `hk*_nao.txt` and `sk*_nao.txt` replace the `data-*-H`/`data-*-S` pair,
+`wf*_nao.txt` replaces `WFC_NAO_K*.txt`, and the k-point weights come from the
+`dm*_nao.txt` density-matrix headers. The WFC occupations already contain the
+k-point weight and, for `nspin 1`, the spin degeneracy, so the curve is weighted
+by those occupations without applying the k-point weight a second time. COHP
+uses the Hamiltonian in Ry and is converted to eV before writing; COOP uses the
+dimensionless overlap and stays dimensionless. `ICOHP` (eV) and `ICOOP` are
+evaluated as the occupied-band sum up to the Fermi level, independently of the
+plotting grid. This is an ABACUS-NAO COHP/COOP implementation and is not a
+standard LOBSTER pCOHP projection.
 
 An ABACUS LCAO wavefunction can be exported to the Molden format, for example
 to visualize the orbitals in Molden, Multiwfn or Avogadro:
