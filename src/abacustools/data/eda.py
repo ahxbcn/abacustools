@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 
@@ -310,6 +310,35 @@ def _require_neutral_fragment(density: Charge, tolerance: float) -> None:
         )
 
 
+def _reciprocal_grid(density: Charge) -> tuple[np.ndarray, np.ndarray, float]:
+    """Return FFT Miller indices, squared G vectors and cell volume."""
+
+    cell = np.asarray(density.cell, dtype=float)
+    if cell.shape != (3, 3) or not np.all(np.isfinite(cell)):
+        raise ValueError("charge-density cell must be a finite 3x3 matrix")
+    volume = abs(float(np.linalg.det(cell)))
+    if volume <= 0.0:
+        raise ValueError("charge-density cell has zero volume")
+    shape = density.data.shape
+    if len(shape) != 3:
+        raise ValueError("charge density must be a three-dimensional grid")
+
+    reciprocal = 2.0 * np.pi * np.linalg.inv(cell).T
+    indices = np.stack(
+        np.meshgrid(
+            np.fft.fftfreq(shape[0], d=1.0 / shape[0]),
+            np.fft.fftfreq(shape[1], d=1.0 / shape[1]),
+            np.fft.fftfreq(shape[2], d=1.0 / shape[2]),
+            indexing="ij",
+        ),
+        axis=-1,
+    )
+    wavevectors = indices @ reciprocal
+    squared = np.sum(wavevectors**2, axis=-1)
+    squared[0, 0, 0] = 1.0
+    return indices, squared, volume
+
+
 def electron_electron_cross_term(
     density_a: Charge,
     density_b: Charge,
@@ -344,28 +373,7 @@ def electron_electron_cross_term(
     _require_neutral_fragment(density_a, neutral_tolerance)
     _require_neutral_fragment(density_b, neutral_tolerance)
 
-    cell = np.asarray(density_a.cell, dtype=float)
-    volume = abs(float(np.linalg.det(cell)))
-    shape = density_a.data.shape
-    if len(shape) != 3:
-        raise ValueError("charge density must be a three-dimensional grid")
-    if volume <= 0.0:
-        raise ValueError("charge-density cell has zero volume")
-
-    reciprocal = 2.0 * np.pi * np.linalg.inv(cell).T
-    indices = np.stack(
-        np.meshgrid(
-            np.fft.fftfreq(shape[0], d=1.0 / shape[0]),
-            np.fft.fftfreq(shape[1], d=1.0 / shape[1]),
-            np.fft.fftfreq(shape[2], d=1.0 / shape[2]),
-            indexing="ij",
-        ),
-        axis=-1,
-    )
-    wavevectors = indices @ reciprocal
-    squared = np.sum(wavevectors**2, axis=-1)
-    squared[0, 0, 0] = 1.0
-
+    indices, squared, volume = _reciprocal_grid(density_a)
     n_points = density_a.data.size
     rho_a_g = np.fft.fftn(density_a.data) / n_points
     rho_b_g = np.fft.fftn(density_b.data) / n_points
@@ -377,3 +385,66 @@ def electron_electron_cross_term(
     if energy < -1e-8:
         raise ValueError("electron-electron cross term is negative; check the density convention")
     return max(energy, 0.0)
+
+
+def electron_nucleus_cross_term(
+    density: Charge,
+    nuclear_positions: np.ndarray,
+    nuclear_charges: Sequence[float],
+    *,
+    neutral_tolerance: float = 1e-5,
+) -> float:
+    """Return the periodic electron-nucleus cross energy in eV.
+
+    This is the attraction between the electrons on one fragment and the bare
+    nuclei of the other fragment.  Positions are Cartesian Angstrom coordinates
+    and charges are valence nuclear charges.
+
+    The reciprocal-space expression is::
+
+        E_eN = -k_e * 4π Ω Σ_G ρ_e(-G) S_nuc(G) / G²
+        S_nuc(G) = Σ_i Z_i exp(-i G·R_i)
+
+    Args:
+        density: Electron density of the first fragment.
+        nuclear_positions: Cartesian positions of the second fragment's nuclei.
+        nuclear_charges: Valence charges of those nuclei.
+        neutral_tolerance: Maximum electron/ionic charge mismatch in electrons.
+
+    Returns:
+        The attractive electron-nucleus cross energy in eV.
+
+    Raises:
+        ValueError: If the fragment is charged, the positions/charges are
+            inconsistent, or the result is not attractive.
+    """
+
+    _require_neutral_fragment(density, neutral_tolerance)
+    positions = np.asarray(nuclear_positions, dtype=float)
+    charges = np.asarray(nuclear_charges, dtype=float)
+    if positions.ndim != 2 or positions.shape[1] != 3:
+        raise ValueError("nuclear_positions must have shape (n_nuclei, 3)")
+    if charges.ndim != 1 or charges.size != positions.shape[0]:
+        raise ValueError("nuclear_charges must match the number of positions")
+    if positions.shape[0] == 0:
+        raise ValueError("at least one nucleus is required")
+    if not np.all(np.isfinite(positions)) or not np.all(np.isfinite(charges)):
+        raise ValueError("nuclear positions and charges must be finite")
+    if np.any(charges < 0.0) or not np.any(charges > 0.0):
+        raise ValueError("nuclear charges must be non-negative and not all zero")
+
+    indices, squared, volume = _reciprocal_grid(density)
+    cell = np.asarray(density.cell, dtype=float)
+    fractional = positions @ np.linalg.inv(cell)
+    phase = np.exp(-2j * np.pi * (indices @ fractional.T))
+    structure_factor = np.sum(phase * charges[np.newaxis, np.newaxis, np.newaxis, :], axis=-1)
+
+    rho_g = np.fft.fftn(density.data) / density.data.size
+    integrand = np.conj(rho_g) * structure_factor / squared
+    integrand[0, 0, 0] = 0.0
+    energy = -float(np.real(np.sum(integrand))) * 4.0 * np.pi * volume * COULOMB_EV_ANGSTROM
+    if not np.isfinite(energy):
+        raise ValueError("electron-nucleus cross term is not finite")
+    if energy > 1e-8:
+        raise ValueError("electron-nucleus cross term is positive; check the density convention")
+    return min(energy, 0.0)

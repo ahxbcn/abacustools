@@ -13,6 +13,7 @@ from abacustools.data.charge import ChargeDensityError
 from abacustools.data.eda import (
     compute_peda_energy_terms,
     electron_electron_cross_term,
+    electron_nucleus_cross_term,
     read_gamma_fixed_density_result,
 )
 from abacustools.data.grid import Charge
@@ -577,3 +578,53 @@ def test_electron_electron_cross_term_requires_atom_charges():
 
     with pytest.raises(ValueError, match="atom_charges"):
         electron_electron_cross_term(density, density)
+
+
+def test_electron_nucleus_cross_term_against_analytic_cosine():
+    density = _cosine_density(1.0)
+
+    energy = electron_nucleus_cross_term(
+        density,
+        np.array([[0.0, 0.0, 0.0]]),
+        [1.0],
+    )
+
+    assert energy == pytest.approx(-COULOMB_EV_ANGSTROM / np.pi, rel=1e-6)
+
+
+def test_electron_nucleus_cross_term_is_periodic():
+    density = _cosine_density(1.0)
+    origin = electron_nucleus_cross_term(
+        density,
+        np.array([[0.0, 0.0, 0.0]]),
+        [1.0],
+    )
+    shifted = electron_nucleus_cross_term(
+        density,
+        np.array([[1.0, 2.0, -1.0]]),
+        [1.0],
+    )
+
+    assert shifted == pytest.approx(origin, rel=1e-10)
+
+
+def test_electron_nucleus_cross_term_rejects_charge_mismatch():
+    density = _cosine_density(1.0)
+
+    with pytest.raises(ValueError, match="nuclear_charges"):
+        electron_nucleus_cross_term(
+            density,
+            np.zeros((2, 3)),
+            [1.0],
+        )
+
+
+def test_electron_nucleus_cross_term_rejects_empty_nuclei():
+    density = _cosine_density(1.0)
+
+    with pytest.raises(ValueError, match="at least one nucleus"):
+        electron_nucleus_cross_term(
+            density,
+            np.empty((0, 3)),
+            [],
+        )
