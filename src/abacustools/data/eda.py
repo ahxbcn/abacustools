@@ -5,16 +5,21 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 
 import numpy as np
 
 from abacustools.core.constant import COULOMB_EV_ANGSTROM
 from abacustools.data.abacus_result import get_result_from_job
-from abacustools.data.charge import validate_same_grid
+from abacustools.data.charge import (
+    ChargeDensityError,
+    valence_electrons,
+    validate_same_grid,
+)
 from abacustools.data.grid import Charge
 from abacustools.data.mayer import read_overlap_matrix, read_overlap_matrix_develop
 from abacustools.io.abacus import ReadInput
+from abacustools.io.stru import AbacusSTRU
 
 
 _DEVELOP_H_FILE = re.compile(
@@ -48,6 +53,15 @@ class GammaFixedDensityResult:
     nspin: int
     hamiltonians: dict[int, np.ndarray]
     data_files: tuple[str, ...]
+
+
+def _input_scalar(value: Any, name: str) -> Any:
+    """Return a single INPUT value and reject an ambiguous list."""
+    if isinstance(value, (list, tuple)):
+        if len(value) != 1:
+            raise ValueError(f"INPUT parameter {name!r} must have exactly one value")
+        return value[0]
+    return value
 
 
 def _output_directory(job: Path, inputs: dict) -> Path:
@@ -177,6 +191,27 @@ class PEDAEnergyTerms:
     orbital_fraction: Optional[float]
     dispersion_fraction: Optional[float]
     unit: str = "eV"
+
+
+@dataclass(frozen=True)
+class FragmentNuclei:
+    """Point-charge nuclei of one ABACUS fragment job.
+
+    Attributes:
+        labels: STRU labels in ABACUS atom order.
+        positions: Cartesian nuclear positions in Angstrom.
+        charges: Valence nuclear charges from the pseudopotentials.
+        cell: Periodic cell vectors in Angstrom.
+        pseudopotentials: Pseudopotential filenames in atom order.
+        unit: Length unit of ``positions`` and ``cell``.
+    """
+
+    labels: tuple[str, ...]
+    positions: np.ndarray
+    charges: np.ndarray
+    cell: np.ndarray
+    pseudopotentials: tuple[str, ...]
+    unit: str = "angstrom"
 
 
 def _finite_energy(name: str, value: float) -> float:
@@ -509,3 +544,84 @@ def read_abacus_ewald_energy(
     if value is None or not np.isfinite(float(value)):
         raise ValueError(f"no Ewald energy found in ABACUS log: {job}")
     return float(value)
+
+
+def fragment_nuclei(job: str | Path) -> FragmentNuclei:
+    """Read the point-charge nuclear model of one ABACUS fragment job.
+
+    The pseudopotentials supply the valence nuclear charges, so the returned
+    model uses the same core-valence partition as the fragment calculation.
+    Positions and the cell are converted from STRU conventions to Angstrom.
+
+    Args:
+        job: ABACUS job directory containing ``INPUT``, ``STRU`` and the
+            pseudopotentials named by the structure.
+
+    Returns:
+        Nuclear labels, Cartesian positions, valence charges and cell.
+
+    Raises:
+        FileNotFoundError: If the job, INPUT or structure file is missing.
+        ValueError: If the structure is invalid, contains ghost atoms, or a
+            pseudopotential is missing, unreadable or provides a non-positive
+            valence charge.
+    """
+
+    job_path = Path(job).resolve()
+    if not job_path.is_dir():
+        raise FileNotFoundError(f"ABACUS job directory does not exist: {job_path}")
+    input_path = job_path / "INPUT"
+    if not input_path.is_file():
+        raise FileNotFoundError(f"INPUT file does not exist: {input_path}")
+    inputs = ReadInput(str(input_path))
+    if not inputs:
+        raise ValueError(f"could not read INPUT parameters from {input_path}")
+
+    structure_name = _input_scalar(inputs.get("stru_file", "STRU"), "stru_file")
+    structure_path = job_path / str(structure_name)
+    if not structure_path.is_file():
+        raise FileNotFoundError(f"structure file does not exist: {structure_path}")
+    structure = AbacusSTRU.read(str(structure_path), fmt="stru")
+    if structure is None:
+        raise ValueError(f"could not read structure: {structure_path}")
+    if structure.natoms == 0:
+        raise ValueError(f"structure contains no atoms: {structure_path}")
+    ghost_atoms = [
+        index for index, label in enumerate(structure.labels, start=1) if "empty" in label.lower()
+    ]
+    if ghost_atoms:
+        raise ValueError(
+            "fragment nuclei require physical atoms; ghost atoms are at "
+            + ", ".join(str(index) for index in ghost_atoms)
+        )
+
+    pseudo_value = inputs.get("pseudo_dir")
+    pseudo_dir = None if pseudo_value is None else _input_scalar(pseudo_value, "pseudo_dir")
+    try:
+        charge_values = valence_electrons(structure, pseudo_dir, job_path)
+    except (ChargeDensityError, OSError, ValueError) as error:
+        raise ValueError(
+            f"could not read fragment nuclear charges from {job_path}: {error}"
+        ) from error
+
+    positions = np.asarray(structure.coords, dtype=float)
+    charges = np.asarray(charge_values, dtype=float)
+    cell = np.asarray(structure.cell, dtype=float)
+    if positions.shape != (structure.natoms, 3):
+        raise ValueError(f"invalid Cartesian positions in {structure_path}")
+    if charges.shape != (structure.natoms,):
+        raise ValueError(f"expected one nuclear charge per atom in {structure_path}")
+    if cell.shape != (3, 3):
+        raise ValueError(f"invalid cell in {structure_path}")
+    if not np.all(np.isfinite(positions)) or not np.all(np.isfinite(cell)):
+        raise ValueError(f"non-finite positions or cell in {structure_path}")
+    if not np.all(np.isfinite(charges)) or np.any(charges <= 0.0):
+        raise ValueError(f"nuclear charges must be finite and positive in {structure_path}")
+
+    return FragmentNuclei(
+        labels=tuple(structure.labels),
+        positions=positions,
+        charges=charges,
+        cell=cell,
+        pseudopotentials=tuple(str(value) for value in structure.pps),
+    )

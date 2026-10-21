@@ -15,6 +15,7 @@ from abacustools.data.eda import (
     electron_electron_cross_term,
     electron_nucleus_cross_term,
     electrostatic_cross_term,
+    fragment_nuclei,
     ion_ion_cross_term,
     read_abacus_ewald_energy,
     read_gamma_fixed_density_result,
@@ -674,3 +675,89 @@ def test_read_abacus_ewald_energy(tmp_path):
     )
 
     assert read_abacus_ewald_energy(job) == pytest.approx(13.605693)
+
+
+def _minimal_upf(element: str, valence: float) -> str:
+    return f"""<UPF version="2.0.1">
+  <PP_HEADER element="{element}" z_valence="{valence}" l_max="0" mesh_size="2"/>
+  <PP_MESH>
+    <PP_R size="2">0.0 1.0</PP_R>
+    <PP_RAB size="2">1.0 1.0</PP_RAB>
+  </PP_MESH>
+  <PP_LOCAL size="2">0.0 0.0</PP_LOCAL>
+  <PP_RHOATOM size="2">0.0 0.0</PP_RHOATOM>
+</UPF>
+"""
+
+
+def _write_fragment_job(tmp_path, *, hydrogen_label="H"):
+    job = tmp_path / "fragment"
+    pseudopotentials = job / "pp"
+    pseudopotentials.mkdir(parents=True)
+    (pseudopotentials / "H.upf").write_text(_minimal_upf("H", 1.0), encoding="utf-8")
+    (pseudopotentials / "O.upf").write_text(_minimal_upf("O", 6.0), encoding="utf-8")
+    (job / "INPUT").write_text(
+        "INPUT_PARAMETERS\nstru_file STRU\npseudo_dir pp\n",
+        encoding="utf-8",
+    )
+    (job / "STRU").write_text(
+        f"""ATOMIC_SPECIES
+{hydrogen_label} 1.0 H.upf
+O 16.0 O.upf
+
+LATTICE_CONSTANT
+1.889726125457828
+
+LATTICE_VECTORS
+5 0 0
+0 5 0
+0 0 5
+
+ATOMIC_POSITIONS
+Direct
+
+{hydrogen_label}
+0.0
+1
+0 0 0
+
+O
+0.0
+1
+0.5 0.5 0.5
+""",
+        encoding="utf-8",
+    )
+    return job
+
+
+def test_fragment_nuclei_reads_positions_cell_and_valence_charges(tmp_path):
+    job = _write_fragment_job(tmp_path)
+
+    fragment = fragment_nuclei(job)
+
+    assert fragment.labels == ("H", "O")
+    assert fragment.pseudopotentials == ("H.upf", "O.upf")
+    assert fragment.unit == "angstrom"
+    np.testing.assert_allclose(
+        fragment.positions,
+        [[0.0, 0.0, 0.0], [2.5, 2.5, 2.5]],
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(fragment.cell, 5.0 * np.eye(3), atol=1e-6)
+    np.testing.assert_allclose(fragment.charges, [1.0, 6.0])
+
+
+def test_fragment_nuclei_rejects_missing_pseudopotential(tmp_path):
+    job = _write_fragment_job(tmp_path)
+    (job / "pp" / "O.upf").unlink()
+
+    with pytest.raises(ValueError, match="pseudopotential file not found"):
+        fragment_nuclei(job)
+
+
+def test_fragment_nuclei_rejects_ghost_atoms(tmp_path):
+    job = _write_fragment_job(tmp_path, hydrogen_label="H_empty")
+
+    with pytest.raises(ValueError, match="ghost atoms"):
+        fragment_nuclei(job)
