@@ -14,6 +14,8 @@ from abacustools.data.eda import (
     compute_peda_energy_terms,
     electron_electron_cross_term,
     electron_nucleus_cross_term,
+    electrostatic_cross_term,
+    ion_ion_cross_term,
     read_gamma_fixed_density_result,
 )
 from abacustools.data.grid import Charge
@@ -627,4 +629,31 @@ def test_electron_nucleus_cross_term_rejects_empty_nuclei():
             density,
             np.empty((0, 3)),
             [],
+        )
+
+
+def test_ion_ion_cross_term_from_ewald_energies():
+    value = ion_ion_cross_term(-10.0, -6.0, -3.0)
+
+    assert value == pytest.approx(-1.0)
+
+
+def test_electrostatic_cross_term_sums_all_components():
+    value = electrostatic_cross_term(
+        electron_electron=-5.0,
+        electron_nucleus_ab=-3.0,
+        electron_nucleus_ba=-2.0,
+        ion_ion=1.0,
+    )
+
+    assert value == pytest.approx(-9.0)
+
+
+def test_electrostatic_cross_term_rejects_non_finite_component():
+    with pytest.raises(ValueError, match="finite"):
+        electrostatic_cross_term(
+            electron_electron=float("inf"),
+            electron_nucleus_ab=-3.0,
+            electron_nucleus_ba=-2.0,
+            ion_ion=1.0,
         )

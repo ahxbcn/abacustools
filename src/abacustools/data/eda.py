@@ -448,3 +448,46 @@ def electron_nucleus_cross_term(
     if energy > 1e-8:
         raise ValueError("electron-nucleus cross term is positive; check the density convention")
     return min(energy, 0.0)
+
+
+def ion_ion_cross_term(
+    e_ewald_ab: float,
+    e_ewald_a: float,
+    e_ewald_b: float,
+) -> float:
+    """Return the ion-ion cross term from three Ewald energies in eV.
+
+    ``E_NN(A,B) = E_Ewald(AB) - E_Ewald(A) - E_Ewald(B)``.
+    """
+
+    full = _finite_energy("e_ewald_ab", e_ewald_ab)
+    part_a = _finite_energy("e_ewald_a", e_ewald_a)
+    part_b = _finite_energy("e_ewald_b", e_ewald_b)
+    return full - part_a - part_b
+
+
+def electrostatic_cross_term(
+    electron_electron: float,
+    electron_nucleus_ab: float,
+    electron_nucleus_ba: float,
+    ion_ion: float,
+) -> float:
+    """Assemble the complete fragment electrostatic cross term in eV.
+
+    Args:
+        electron_electron: Electron-electron cross term.
+        electron_nucleus_ab: A electrons with B nuclei.
+        electron_nucleus_ba: B electrons with A nuclei.
+        ion_ion: Nuclear-nuclear Ewald cross term.
+
+    Returns:
+        ``E_ee + E_eN(A,B) + E_eN(B,A) + E_NN``.
+    """
+
+    terms = (
+        _finite_energy("electron_electron", electron_electron),
+        _finite_energy("electron_nucleus_ab", electron_nucleus_ab),
+        _finite_energy("electron_nucleus_ba", electron_nucleus_ba),
+        _finite_energy("ion_ion", ion_ion),
+    )
+    return float(sum(terms))
