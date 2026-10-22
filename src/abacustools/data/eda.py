@@ -1079,6 +1079,28 @@ def _p0_energy_from_fixed_density(
     return float(p0_result.harris_energy_ev)
 
 
+@dataclass(frozen=True)
+class KPointPEDAResult:
+    """pEDA energy decomposition for a multi-k, non-NOCV calculation.
+
+    Attributes:
+        terms: preparation, electrostatic, Pauli, orbital, dispersion and
+            total energy terms.
+        electrostatic: Individual periodic electrostatic cross terms.
+        kpoint_count: Number of computed k-points used in the analysis.
+        nspin: Number of spin channels.
+        e0: Energy of the orthogonalized-fragment intermediate.
+        data_files: Wavefunction, Hamiltonian and density files used.
+    """
+
+    terms: PEDAEnergyTerms
+    electrostatic: ElectrostaticCrossTerms
+    kpoint_count: int
+    nspin: int
+    e0: float
+    data_files: tuple[str, ...]
+
+
 def _p0_energy_from_kpoint_fixed_density(
     states: Sequence[object],
     p0_result: KPointFixedDensityResult,
@@ -1135,6 +1157,151 @@ def _p0_energy_from_kpoint_fixed_density(
             "the P0 fixed-density job has neither a corrected nscf band energy nor E_Harris"
         )
     return float(p0_result.harris_energy_ev)
+
+
+def _require_multik_peda_job(job: str | Path, label: str) -> None:
+    """Validate that a SCF job uses an explicitly supported k-point mode."""
+
+    job_path = Path(job).resolve()
+    input_path = job_path / "INPUT"
+    if not input_path.is_file():
+        raise FileNotFoundError(f"{label} INPUT file does not exist: {input_path}")
+    inputs = ReadInput(str(input_path))
+    if str(inputs.get("basis_type", "pw")).lower() != "lcao":
+        raise ValueError(f"{label} must use basis_type=lcao")
+    gamma_only = bool(
+        int(_input_scalar(inputs.get("gamma_only", 0), "gamma_only") or 0)
+    )
+    if gamma_only:
+        raise ValueError(f"{label} must use gamma_only=0 for multi-k pEDA")
+    symmetry_value = inputs.get("symmetry")
+    if symmetry_value is None:
+        raise ValueError(f"{label} must set symmetry=-1 or 0")
+    symmetry = int(_input_scalar(symmetry_value, "symmetry"))
+    if symmetry not in (-1, 0):
+        raise ValueError(
+            f"{label} multi-k pEDA currently supports symmetry=-1 or 0; "
+            f"got symmetry={symmetry}"
+        )
+
+
+def analyze_kpoint_peda(
+    full_job: str | Path,
+    fragment_a_job: str | Path,
+    fragment_b_job: str | Path,
+    p0_job: str | Path,
+    fragment_a_atoms: Sequence[int],
+    fragment_b_atoms: Sequence[int],
+    *,
+    reference_a_job: Optional[str | Path] = None,
+    reference_b_job: Optional[str | Path] = None,
+    version: Optional[str] = None,
+    occupation_tolerance: float = 1e-6,
+    require_converged_fragments: bool = False,
+) -> KPointPEDAResult:
+    """Analyse multi-k pEDA energy terms without NOCV.
+
+    The full system and both fragments at the complex geometry must use
+    ``gamma_only=0`` and ``symmetry=-1`` or ``0``.  The P0 job is a multi-k
+    fixed-density ``nscf`` run.  Reference fragment jobs may be Gamma-only
+    because they only contribute scalar preparation energies.
+
+    Args:
+        full_job: Converged full-system multi-k job.
+        fragment_a_job: Fragment A multi-k SCF at the complex geometry.
+        fragment_b_job: Fragment B multi-k SCF at the complex geometry.
+        p0_job: Multi-k fixed-density job prepared from P0.
+        fragment_a_atoms: Zero-based full-system atom indices of fragment A.
+        fragment_b_atoms: Zero-based full-system atom indices of fragment B.
+        reference_a_job: Isolated reference A; defaults to fragment A.
+        reference_b_job: Isolated reference B; defaults to fragment B.
+        version: Optional ABACUS version hint.
+        occupation_tolerance: Tolerance for integer fragment occupations.
+        require_converged_fragments: Refuse non-converged fragment SCF jobs.
+
+    Returns:
+        Energy terms, electrostatic cross terms and k-point metadata.
+    """
+
+    from abacustools.data.lcao import build_peda_kpoint_states
+
+    _require_multik_peda_job(full_job, "full-system job")
+    _require_multik_peda_job(fragment_a_job, "fragment A job")
+    _require_multik_peda_job(fragment_b_job, "fragment B job")
+
+    states = build_peda_kpoint_states(
+        full_job,
+        fragment_a_job,
+        fragment_b_job,
+        fragment_a_atoms,
+        fragment_b_atoms,
+        nspin=None,
+        gamma_only=False,
+        occupation_tolerance=occupation_tolerance,
+    )
+    if not states:
+        raise ValueError("multi-k pEDA found no k-point states")
+    p0_result = read_kpoint_fixed_density_result(p0_job, version=version)
+    e0 = _p0_energy_from_kpoint_fixed_density(states, p0_result)
+    e_ab = _finite_energy(
+        "full-system energy",
+        get_result_from_job(str(full_job), ["energy"], version)["energy"],
+    )
+    e_a = _finite_energy(
+        "fragment A energy",
+        get_result_from_job(str(fragment_a_job), ["energy"], version)["energy"],
+    )
+    e_b = _finite_energy(
+        "fragment B energy",
+        get_result_from_job(str(fragment_b_job), ["energy"], version)["energy"],
+    )
+    if reference_a_job is None:
+        e_a0 = e_a
+    else:
+        e_a0 = _finite_energy(
+            "reference A energy",
+            get_result_from_job(str(reference_a_job), ["energy"], version)["energy"],
+        )
+    if reference_b_job is None:
+        e_b0 = e_b
+    else:
+        e_b0 = _finite_energy(
+            "reference B energy",
+            get_result_from_job(str(reference_b_job), ["energy"], version)["energy"],
+        )
+
+    electrostatic = electrostatic_cross_term_from_jobs(
+        full_job,
+        fragment_a_job,
+        fragment_b_job,
+        version=version,
+        require_converged=require_converged_fragments,
+    )
+    terms = compute_peda_energy_terms(
+        e_ab=e_ab,
+        e_a=e_a,
+        e_b=e_b,
+        e_a0=e_a0,
+        e_b0=e_b0,
+        e0=e0,
+        delta_e_elstat=electrostatic.total,
+    )
+    data_files = tuple(
+        dict.fromkeys(
+            (
+                *(file for state in states for file in state.data_files),
+                *p0_result.data_files,
+            )
+        )
+    )
+    return KPointPEDAResult(
+        terms=terms,
+        electrostatic=electrostatic,
+        kpoint_count=len(states),
+        nspin=len(states[0].channels),
+        e0=e0,
+        data_files=data_files,
+    )
 
 
 def analyze_gamma_peda_nocv(

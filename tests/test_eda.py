@@ -15,6 +15,7 @@ from abacustools.core.constant import COULOMB_EV_ANGSTROM, RY_TO_EV
 from abacustools.data.charge import ChargeDensityError, read_job_total_density
 from abacustools.data.eda import (
     analyze_gamma_peda_nocv,
+    analyze_kpoint_peda,
     compute_peda_energy_terms,
     electron_electron_cross_term,
     electron_nucleus_cross_term,
@@ -1311,6 +1312,91 @@ def test_read_abacus_harris_energy(tmp_path):
     )
 
     assert read_abacus_harris_energy(job) == pytest.approx(-9.75)
+
+
+def test_analyze_kpoint_peda_assembles_non_nocv_terms(monkeypatch):
+    import abacustools.data.eda as eda_module
+    import abacustools.data.lcao as lcao_module
+
+    states = [
+        SimpleNamespace(
+            index=index,
+            direct=direct,
+            weight=0.5,
+            channels={1: SimpleNamespace(), 2: SimpleNamespace()},
+            data_files=(f"wf{kpoint}",),
+        )
+        for index, direct, kpoint in (
+            (1, (0.0, 0.0, 0.0), 1),
+            (2, (0.5, 0.0, 0.0), 2),
+        )
+    ]
+    monkeypatch.setattr(eda_module, "_require_multik_peda_job", lambda *_args: None)
+    monkeypatch.setattr(lcao_module, "build_peda_kpoint_states", lambda *_args, **_kwargs: states)
+    monkeypatch.setattr(
+        eda_module,
+        "read_kpoint_fixed_density_result",
+        lambda *_args, **_kwargs: SimpleNamespace(data_files=("hk1", "hk2")),
+    )
+    monkeypatch.setattr(
+        eda_module,
+        "_p0_energy_from_kpoint_fixed_density",
+        lambda _states, _result: -18.5,
+    )
+
+    def fake_result(job, _keys, version=None):
+        return {"energy": {
+            "full": -20.0,
+            "fa": -8.0,
+            "fb": -5.0,
+            "ra": -7.5,
+            "rb": -5.5,
+        }[job]}
+
+    monkeypatch.setattr(eda_module, "get_result_from_job", fake_result)
+    monkeypatch.setattr(
+        eda_module,
+        "electrostatic_cross_term_from_jobs",
+        lambda *_args, **_kwargs: SimpleNamespace(total=-2.0),
+    )
+
+    result = analyze_kpoint_peda(
+        "full",
+        "fa",
+        "fb",
+        "p0",
+        [0],
+        [1],
+        reference_a_job="ra",
+        reference_b_job="rb",
+    )
+
+    assert result.kpoint_count == 2
+    assert result.nspin == 2
+    assert result.e0 == pytest.approx(-18.5)
+    assert result.terms.preparation == pytest.approx(0.0)
+    assert result.terms.electrostatic == pytest.approx(-2.0)
+    assert result.terms.pauli == pytest.approx(-3.5)
+    assert result.terms.orbital == pytest.approx(-1.5)
+    assert result.terms.interaction == pytest.approx(-7.0)
+    assert result.terms.bond == pytest.approx(-7.0)
+    assert set(result.data_files) == {"wf1", "wf2", "hk1", "hk2"}
+
+
+def test_analyze_kpoint_peda_rejects_symmetry_one(tmp_path):
+    job = tmp_path / "full"
+    job.mkdir()
+    (job / "INPUT").write_text(
+        "INPUT_PARAMETERS\n"
+        "calculation scf\n"
+        "basis_type lcao\n"
+        "gamma_only 0\n"
+        "symmetry 1\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="symmetry=-1 or 0"):
+        analyze_kpoint_peda(job, "fa", "fb", "p0", [0], [1])
 
 
 def _mock_gamma_peda_jobs(monkeypatch, *, fock_expectation_difference):
