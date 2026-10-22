@@ -298,6 +298,7 @@ class KPointFixedDensityResult:
 def read_kpoint_fixed_density_result(
     job: str | Path,
     *,
+    kpoints: Optional[Sequence[tuple[Sequence[float], float]]] = None,
     version: Optional[str] = None,
 ) -> KPointFixedDensityResult:
     """Read energy and k-resolved H(k) from a fixed-density LCAO run.
@@ -309,6 +310,10 @@ def read_kpoint_fixed_density_result(
 
     Args:
         job: ABACUS fixed-density job directory.
+        kpoints: Optional k-point coordinates and weights.  Use this when the
+            fixed-density job does not write an ``OUT.*/kpoints`` table, as is
+            the case for some ABACUS ``nscf`` runs.  The caller normally takes
+            these values from the matching full-system SCF states.
         version: Optional ABACUS version hint for log parsing.
 
     Returns:
@@ -350,17 +355,38 @@ def read_kpoint_fixed_density_result(
         raise ValueError(f"fixed-density pEDA supports nspin=1 or 2, got {nspin}")
 
     output = _output_directory(job_path, inputs)
-    kpoint_table = read_kpoint_table(output / "kpoints")
-    if not kpoint_table.ibz:
-        raise ValueError(f"no computed k-points found in {output / 'kpoints'}")
-    weights = exact_kpoint_weights(kpoint_table)
-    if len(weights) != len(kpoint_table.ibz):
-        raise AssertionError("k-point weight normalization changed the k-point count")
+    if kpoints is None:
+        kpoint_table = read_kpoint_table(output / "kpoints")
+        if not kpoint_table.ibz:
+            raise ValueError(f"no computed k-points found in {output / 'kpoints'}")
+        weights = exact_kpoint_weights(kpoint_table)
+        if len(weights) != len(kpoint_table.ibz):
+            raise AssertionError("k-point weight normalization changed the k-point count")
+        kpoint_entries = [
+            (tuple(float(value) for value in kpoint.direct), float(weight))
+            for kpoint, weight in zip(kpoint_table.ibz, weights)
+        ]
+    else:
+        kpoint_entries = [
+            (
+                tuple(float(value) for value in direct),
+                float(weight),
+            )
+            for direct, weight in kpoints
+        ]
+        if not kpoint_entries:
+            raise ValueError("kpoints must contain at least one entry")
+        if any(len(direct) != 3 for direct, _weight in kpoint_entries):
+            raise ValueError("each kpoint must contain three direct coordinates")
+        if any(not np.isfinite(weight) or weight < 0.0 for _direct, weight in kpoint_entries):
+            raise ValueError("kpoint weights must be finite and non-negative")
+        if not np.isclose(sum(weight for _direct, weight in kpoint_entries), 1.0, atol=1e-8):
+            raise ValueError("kpoint weights must sum to one")
 
-    files = _find_develop_multik_hamiltonians(output, nspin, len(kpoint_table.ibz))
-    kpoints: list[KPointHamiltonian] = []
+    files = _find_develop_multik_hamiltonians(output, nspin, len(kpoint_entries))
+    kpoint_results: list[KPointHamiltonian] = []
     data_files: list[str] = []
-    for position, (kpoint, weight) in enumerate(zip(kpoint_table.ibz, weights), start=1):
+    for position, (direct, weight) in enumerate(kpoint_entries, start=1):
         hamiltonians: dict[int, np.ndarray] = {}
         point_files: list[str] = []
         for spin in ((1,) if nspin == 1 else (1, 2)):
@@ -371,11 +397,11 @@ def read_kpoint_fixed_density_result(
             )
             point_files.append(str(path))
             data_files.append(str(path))
-        kpoints.append(
+        kpoint_results.append(
             KPointHamiltonian(
                 index=position,
-                direct=tuple(float(value) for value in kpoint.direct),
-                weight=float(weight),
+                direct=direct,
+                weight=weight,
                 hamiltonians=hamiltonians,
                 data_files=tuple(point_files),
             )
@@ -409,7 +435,7 @@ def read_kpoint_fixed_density_result(
         converged=result.get("converged"),
         normal_end=result.get("normal_end"),
         nspin=nspin,
-        kpoints=tuple(kpoints),
+        kpoints=tuple(kpoint_results),
         data_files=tuple(data_files),
     )
 
@@ -1241,7 +1267,11 @@ def analyze_kpoint_peda(
     )
     if not states:
         raise ValueError("multi-k pEDA found no k-point states")
-    p0_result = read_kpoint_fixed_density_result(p0_job, version=version)
+    p0_result = read_kpoint_fixed_density_result(
+        p0_job,
+        kpoints=[(state.direct, state.weight) for state in states],
+        version=version,
+    )
     e0 = _p0_energy_from_kpoint_fixed_density(states, p0_result)
     e_ab = _finite_energy(
         "full-system energy",

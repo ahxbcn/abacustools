@@ -758,6 +758,19 @@ def test_read_kpoint_fixed_density_result_multik_two_spins(tmp_path):
             )
 
 
+def test_read_kpoint_fixed_density_result_accepts_caller_kpoints(tmp_path):
+    job, matrices = _multik_fixed_density_job(tmp_path)
+    (job / "OUT.ABACUS" / "kpoints").unlink()
+
+    result = read_kpoint_fixed_density_result(
+        job,
+        kpoints=[((0.0, 0.0, 0.0), 0.5), ((0.5, 0.0, 0.0), 0.5)],
+    )
+
+    assert [kpoint.weight for kpoint in result.kpoints] == pytest.approx([0.5, 0.5])
+    np.testing.assert_allclose(result.kpoints[0].hamiltonians[1], matrices[(1, 1)])
+
+
 def test_read_kpoint_fixed_density_result_accepts_time_reversal_symmetry(tmp_path):
     job, _matrices = _multik_fixed_density_job(tmp_path, symmetry=0)
 
