@@ -18,7 +18,12 @@ from abacustools.data.charge import (
     validate_same_grid,
 )
 from abacustools.data.grid import Charge
-from abacustools.data.mayer import read_overlap_matrix, read_overlap_matrix_develop
+from abacustools.data.mayer import (
+    exact_kpoint_weights,
+    read_kpoint_table,
+    read_overlap_matrix,
+    read_overlap_matrix_develop,
+)
 from abacustools.io.abacus import ReadInput
 from abacustools.io.stru import AbacusSTRU
 
@@ -26,8 +31,13 @@ if TYPE_CHECKING:
     from abacustools.data.nocv import NOCVEnergyDecomposition
 
 
-_DEVELOP_H_FILE = re.compile(
-    r"^hk(?:s(?P<is>\d+))?(?:g(?P<step>\d+))?_nao\.txt$",
+_DEVELOP_GAMMA_H_FILE = re.compile(
+    r"^hk(?:s(?P<is>\d+))?(?:g(?P<step>\d+))?(?:e(?P<electronic>\d+))?_nao\.txt$",
+    re.IGNORECASE,
+)
+_DEVELOP_MULTIK_H_FILE = re.compile(
+    r"^hk(?P<ik>\d+)(?:s(?P<is>\d+))?"
+    r"(?:g(?P<step>\d+))?(?:e(?P<electronic>\d+))?_nao\.txt$",
     re.IGNORECASE,
 )
 
@@ -85,18 +95,20 @@ def _output_directory(job: Path, inputs: dict) -> Path:
 
 
 def _find_develop_hamiltonians(output: Path, nspin: int) -> dict[int, Path]:
-    candidates: dict[int, tuple[int, Path]] = {}
+    candidates: dict[int, tuple[tuple[int, int], Path]] = {}
     for path in output.iterdir():
         if not path.is_file():
             continue
-        match = _DEVELOP_H_FILE.match(path.name)
+        match = _DEVELOP_GAMMA_H_FILE.match(path.name)
         if match is None:
             continue
         spin = int(match.group("is")) if match.group("is") else 1
         step = int(match.group("step")) if match.group("step") else 0
+        electronic = int(match.group("electronic")) if match.group("electronic") else 0
+        rank = (-step, -electronic)
         previous = candidates.get(spin)
-        if previous is None or step > previous[0]:
-            candidates[spin] = (step, path)
+        if previous is None or rank < previous[0]:
+            candidates[spin] = (rank, path)
     expected = {1} if nspin == 1 else {1, 2}
     if set(candidates) == expected:
         return {spin: candidates[spin][1] for spin in expected}
@@ -106,6 +118,41 @@ def _find_develop_hamiltonians(output: Path, nspin: int) -> dict[int, Path]:
         f"Hamiltonian files in {output} do not match nspin={nspin}; "
         f"found spins {sorted(candidates)}"
     )
+
+
+def _find_develop_multik_hamiltonians(
+    output: Path,
+    nspin: int,
+    n_kpoints: int,
+) -> dict[tuple[int, int], Path]:
+    candidates: dict[tuple[int, int], tuple[tuple[int, int], Path]] = {}
+    for path in output.iterdir():
+        if not path.is_file():
+            continue
+        match = _DEVELOP_MULTIK_H_FILE.match(path.name)
+        if match is None:
+            continue
+        ik = int(match.group("ik"))
+        spin = int(match.group("is")) if match.group("is") else 1
+        step = int(match.group("step")) if match.group("step") else 0
+        electronic = int(match.group("electronic")) if match.group("electronic") else 0
+        rank = (-step, -electronic)
+        key = (ik, spin)
+        previous = candidates.get(key)
+        if previous is None or rank < previous[0]:
+            candidates[key] = (rank, path)
+    expected = {
+        (ik, spin)
+        for ik in range(1, n_kpoints + 1)
+        for spin in ((1,) if nspin == 1 else (1, 2))
+    }
+    missing = expected - set(candidates)
+    if missing:
+        raise ValueError(
+            "missing multi-k Hamiltonian files for (k-point, spin) pairs: "
+            + ", ".join(f"({ik}, {spin})" for ik, spin in sorted(missing))
+        )
+    return {key: candidates[key][1] for key in expected}
 
 
 def read_gamma_fixed_density_result(
@@ -189,6 +236,181 @@ def read_gamma_fixed_density_result(
         nspin=nspin,
         hamiltonians=hamiltonians,
         data_files=tuple(str(path) for _spin, path in sorted(files.items())),
+    )
+
+
+@dataclass(frozen=True)
+class KPointHamiltonian:
+    """Hamiltonian matrices of one k-point and spin channel set.
+
+    Attributes:
+        index: One-based k-point index used in ABACUS file names.
+        direct: Direct k-point coordinate.
+        weight: Brillouin-zone weight, normalized so the weights sum to one.
+        hamiltonians: One H(k) matrix per spin channel, in Ry.
+        data_files: Hamiltonian files used for this k-point.
+    """
+
+    index: int
+    direct: tuple[float, float, float]
+    weight: float
+    hamiltonians: dict[int, np.ndarray]
+    data_files: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class KPointFixedDensityResult:
+    """Energy and k-resolved Hamiltonians of a fixed-density LCAO run.
+
+    Attributes:
+        energy_ev: Total energy printed by ABACUS, in eV.
+        harris_energy_ev: Harris functional energy of the input density when
+            printed, in eV.
+        band_energy_ev: Band energy of the diagonalized eigenvalues, in eV.
+        calculation: Calculation type from INPUT.
+        symmetry: ABACUS symmetry mode from INPUT.
+        gamma_only: Whether the run used the Gamma-only algorithm.
+        vdw_energy_ev: DFT-D energy when present, in eV.
+        electronic_energy_ev: Total energy without the separate DFT-D term.
+        converged: ABACUS SCF convergence flag.
+        normal_end: Whether ABACUS reached its normal job end.
+        nspin: Number of spin channels.
+        kpoints: One entry per computed k-point.
+        data_files: All Hamiltonian files used for the result.
+    """
+
+    job: str
+    energy_ev: float
+    harris_energy_ev: Optional[float]
+    band_energy_ev: Optional[float]
+    calculation: str
+    symmetry: int
+    gamma_only: bool
+    vdw_energy_ev: Optional[float]
+    electronic_energy_ev: float
+    converged: Optional[bool]
+    normal_end: Optional[bool]
+    nspin: int
+    kpoints: tuple[KPointHamiltonian, ...]
+    data_files: tuple[str, ...]
+
+
+def read_kpoint_fixed_density_result(
+    job: str | Path,
+    *,
+    version: Optional[str] = None,
+) -> KPointFixedDensityResult:
+    """Read energy and k-resolved H(k) from a fixed-density LCAO run.
+
+    Multi-k pEDA currently supports ``symmetry=-1`` (unreduced k-points) and
+    ``symmetry=0`` (time-reversal reduction only).  A symmetry-reduced
+    ``symmetry=1`` run is rejected because the full k-star cannot be rebuilt
+    from the current fixed-density output alone.
+
+    Args:
+        job: ABACUS fixed-density job directory.
+        version: Optional ABACUS version hint for log parsing.
+
+    Returns:
+        The printed energies and one :class:`KPointHamiltonian` per k-point.
+
+    Raises:
+        FileNotFoundError: If INPUT, OUT.*, the k-point table or an H(k) file
+            is missing.
+        ValueError: If the run is not LCAO, uses an unsupported symmetry mode,
+            has inconsistent spin/k-point outputs, or lacks an energy.
+    """
+
+    job_path = Path(job).resolve()
+    input_path = job_path / "INPUT"
+    if not input_path.is_file():
+        raise FileNotFoundError(f"INPUT file does not exist: {input_path}")
+    inputs = ReadInput(str(input_path))
+    if str(inputs.get("basis_type", "pw")).lower() != "lcao":
+        raise ValueError("fixed-density pEDA results require basis_type=lcao")
+    gamma_only = bool(int(_input_scalar(inputs.get("gamma_only", 0), "gamma_only") or 0))
+    if gamma_only:
+        raise ValueError(
+            "read_kpoint_fixed_density_result expects a multi-k run; "
+            "use read_gamma_fixed_density_result for gamma_only=1"
+        )
+    symmetry_value = inputs.get("symmetry")
+    if symmetry_value is None:
+        raise ValueError(
+            "multi-k fixed-density pEDA requires an explicit symmetry=-1 or 0 in INPUT"
+        )
+    symmetry = int(_input_scalar(symmetry_value, "symmetry"))
+    if symmetry not in (-1, 0):
+        raise ValueError(
+            "multi-k fixed-density pEDA currently supports symmetry=-1 or 0; "
+            f"got symmetry={symmetry}"
+        )
+    nspin = int(_input_scalar(inputs.get("nspin", 1), "nspin"))
+    if nspin not in (1, 2):
+        raise ValueError(f"fixed-density pEDA supports nspin=1 or 2, got {nspin}")
+
+    output = _output_directory(job_path, inputs)
+    kpoint_table = read_kpoint_table(output / "kpoints")
+    if not kpoint_table.ibz:
+        raise ValueError(f"no computed k-points found in {output / 'kpoints'}")
+    weights = exact_kpoint_weights(kpoint_table)
+    if len(weights) != len(kpoint_table.ibz):
+        raise AssertionError("k-point weight normalization changed the k-point count")
+
+    files = _find_develop_multik_hamiltonians(output, nspin, len(kpoint_table.ibz))
+    kpoints: list[KPointHamiltonian] = []
+    data_files: list[str] = []
+    for position, (kpoint, weight) in enumerate(zip(kpoint_table.ibz, weights), start=1):
+        hamiltonians: dict[int, np.ndarray] = {}
+        point_files: list[str] = []
+        for spin in ((1,) if nspin == 1 else (1, 2)):
+            path = files[(position, spin)]
+            hamiltonians[spin] = np.asarray(
+                read_overlap_matrix_develop(path),
+                dtype=np.complex128,
+            )
+            point_files.append(str(path))
+            data_files.append(str(path))
+        kpoints.append(
+            KPointHamiltonian(
+                index=position,
+                direct=tuple(float(value) for value in kpoint.direct),
+                weight=float(weight),
+                hamiltonians=hamiltonians,
+                data_files=tuple(point_files),
+            )
+        )
+
+    result = get_result_from_job(
+        str(job_path),
+        ["energy", "harris_energy", "band_energy", "vdw_energy", "converged", "normal_end"],
+        version=version,
+    )
+    energy = result.get("energy")
+    if energy is None or not np.isfinite(float(energy)):
+        raise ValueError(f"no total energy found for fixed-density job: {job_path}")
+    vdw = result.get("vdw_energy")
+    vdw_value = None if vdw is None else float(vdw)
+    electronic = float(energy) - (0.0 if vdw_value is None else vdw_value)
+    return KPointFixedDensityResult(
+        job=str(job_path),
+        energy_ev=float(energy),
+        harris_energy_ev=(
+            None if result.get("harris_energy") is None else float(result["harris_energy"])
+        ),
+        band_energy_ev=(
+            None if result.get("band_energy") is None else float(result["band_energy"])
+        ),
+        calculation=str(inputs.get("calculation", "scf")).lower(),
+        symmetry=symmetry,
+        gamma_only=False,
+        vdw_energy_ev=vdw_value,
+        electronic_energy_ev=electronic,
+        converged=result.get("converged"),
+        normal_end=result.get("normal_end"),
+        nspin=nspin,
+        kpoints=tuple(kpoints),
+        data_files=tuple(data_files),
     )
 
 
@@ -849,6 +1071,64 @@ def _p0_energy_from_fixed_density(
                 channel.basis.combined,
             )
             band_energy += float(np.trace(channel.p0_lambda @ hamiltonian).real * RY_TO_EV)
+        return float(p0_result.electronic_energy_ev - float(p0_result.band_energy_ev) + band_energy)
+    if p0_result.harris_energy_ev is None:
+        raise ValueError(
+            "the P0 fixed-density job has neither a corrected nscf band energy nor E_Harris"
+        )
+    return float(p0_result.harris_energy_ev)
+
+
+def _p0_energy_from_kpoint_fixed_density(
+    states: Sequence[object],
+    p0_result: KPointFixedDensityResult,
+) -> float:
+    """Return the P0 energy functional for a multi-k fixed-density run.
+
+    ``E_KohnSham`` from an ABACUS ``nscf`` run contains the band energy of the
+    diagonalized states.  Replace that term by the k- and spin-weighted trace
+    of the input P0 density matrix with the Hamiltonian built from P0.
+    """
+
+    if p0_result.calculation == "nscf" and p0_result.band_energy_ev is not None:
+        from abacustools.data.lcao import operator_matrix_in_basis
+
+        by_index = {kpoint.index: kpoint for kpoint in p0_result.kpoints}
+        band_energy = 0.0
+        for state in states:
+            kpoint = by_index.get(int(state.index))
+            if kpoint is None:
+                raise ValueError(f"P0 state has no Hamiltonian for k-point {state.index}")
+            direct_delta = (
+                np.asarray(kpoint.direct, dtype=float)
+                - np.asarray(state.direct, dtype=float)
+                + 0.5
+            ) % 1.0 - 0.5
+            if np.max(np.abs(direct_delta)) > 1e-6:
+                raise ValueError(
+                    f"P0 state k-point {state.direct} does not match Hamiltonian "
+                    f"k-point {kpoint.direct}"
+                )
+            if not np.isclose(kpoint.weight, state.weight, atol=1e-8):
+                raise ValueError(
+                    f"P0 state k-point {state.direct} has weight {state.weight}, "
+                    f"but the Hamiltonian has weight {kpoint.weight}"
+                )
+            for spin in sorted(state.channels):
+                if spin not in kpoint.hamiltonians:
+                    raise ValueError(
+                        f"P0 state k-point {state.direct} has no Hamiltonian for spin {spin}"
+                    )
+                channel = state.channels[spin]
+                hamiltonian = operator_matrix_in_basis(
+                    kpoint.hamiltonians[spin],
+                    channel.basis.combined,
+                )
+                band_energy += (
+                    kpoint.weight
+                    * float(np.trace(channel.p0_lambda @ hamiltonian).real)
+                    * RY_TO_EV
+                )
         return float(p0_result.electronic_energy_ev - float(p0_result.band_energy_ev) + band_energy)
     if p0_result.harris_energy_ev is None:
         raise ValueError(

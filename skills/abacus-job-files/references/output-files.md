@@ -74,7 +74,7 @@ Written for `basis_type lcao`. The names and the indexing differ by branch:
 
 | quantity | trigger | LTS 3.10 | develop |
 | --- | --- | --- | --- |
-| H(k), S(k) | `out_mat_hs 1` | `data-<ik>-H`, `data-<ik>-S`, `<ik>` zero-based | `hk<ik>_nao.txt`, `sk<ik>_nao.txt`, `<ik>` one-based |
+| H(k), S(k) | `out_mat_hs 1` | `data-<ik>-H`, `data-<ik>-S`, `<ik>` zero-based | `hk<ik>_nao.txt`, `hk<ik>s<n>_nao.txt`, `sk<ik>_nao.txt`, `<ik>` one-based |
 | density matrix (k space) | `out_dm` / `out_dmk` | `SPIN<n>_DM` | `dm_nao.txt`, `dmk<ik>_nao.txt`, `dms<n>_nao.txt` |
 | density matrix (real space) | `out_dm1` / `out_dmr` | `data-DMR-sparse_SPIN<n>.csr` | `dmrs<n>_nao.csr` |
 | NAO wavefunctions | `out_wfc_lcao 1` | `WFC_NAO_GAMMA<n>.TXT`, `WFC_NAO_K<n>.TXT` | `wf_nao.txt`, `wfs<n>_nao.txt`, `wfs<n>k<ik>_nao.txt`, `wfk<ik>_nao.txt`, `wfk<ik>s<n>_nao.txt` |
@@ -88,9 +88,9 @@ Format and step conventions:
   (`2_data-3-H`); the k index is zero-based.
 - develop inserts `g<step>` when `out_app_flag 0` (`hk1s1g1_nao.txt`) and can
   write `.dat` instead of `.txt` for a binary wavefunction (`out_wfc_lcao 2`).
-  LCAO WFC files may additionally carry `e<electronic>` after `g<step>` when
-  `out_freq_ion > 0`; the reader selects the latest geometry step, then the
-  latest electronic step.
+  LCAO WFC and H(k) files may additionally carry `e<electronic>` after
+  `g<step>` when `out_freq_ion > 0`; the reader selects the latest geometry
+  step, then the latest electronic step.
 - develop `out_hsr 0|1|2|3` selects disabled, text CSR, binary CSR `.dat`, or
   `.npz`; `out_mat_hs2` is the legacy alias for `out_hsr 1`.
 - develop NAO wavefunctions go to `OUT.<suffix>/` with `out_app_flag 1` (the

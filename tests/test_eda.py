@@ -22,6 +22,7 @@ from abacustools.data.eda import (
     read_abacus_ewald_energy,
     read_abacus_harris_energy,
     read_gamma_fixed_density_result,
+    read_kpoint_fixed_density_result,
 )
 from abacustools.data.grid import Charge
 from abacustools.data.mayer import read_csr_matrix_blocks
@@ -457,6 +458,92 @@ def _fixed_density_job(
         name = "hk_nao.txt" if nspin == 1 else f"hks{spin}_nao.txt"
         _write_develop_matrix(output / name, matrix)
     return job, matrices
+
+
+def _multik_fixed_density_job(
+    tmp_path: Path,
+    *,
+    nspin: int = 2,
+    symmetry: int = -1,
+    energy: float = -10.0,
+    harris: float = -9.75,
+    band: float = -8.0,
+    vdw: float = -0.5,
+) -> tuple[Path, dict[tuple[int, int], np.ndarray]]:
+    job = tmp_path / "state"
+    output = job / "OUT.ABACUS"
+    output.mkdir(parents=True)
+    (job / "INPUT").write_text(
+        "INPUT_PARAMETERS\n"
+        "calculation nscf\n"
+        "basis_type lcao\n"
+        "gamma_only 0\n"
+        f"nspin {nspin}\n"
+        f"symmetry {symmetry}\n"
+        "suffix ABACUS\n",
+        encoding="utf-8",
+    )
+    (output / "kpoints").write_text(
+        " nkstot now = 2\n"
+        "K-POINTS DIRECT COORDINATES\n"
+        " KPOINTS DIRECT_X DIRECT_Y DIRECT_Z WEIGHT\n"
+        " 1 0.0 0.0 0.0 0.5000\n"
+        " 2 0.5 0.0 0.0 0.5000\n",
+        encoding="utf-8",
+    )
+    (output / "running_scf.log").write_text(
+        f"E_KohnSham = {energy:.8f} eV\n"
+        f"E_Harris = {harris:.8f} eV\n"
+        f"E_band = {band:.8f} eV\n"
+        f"E_vdwD3 = {vdw:.8f} eV\n"
+        "charge density convergence is achieved\n"
+        f"final etot is {energy:.8f} eV\n",
+        encoding="utf-8",
+    )
+    matrices: dict[tuple[int, int], np.ndarray] = {}
+    for ik in (1, 2):
+        for spin in ((1,) if nspin == 1 else (1, 2)):
+            matrix = np.array([[1.0 + ik + spin, 0.25j], [-0.25j, 2.0 + ik + spin]])
+            matrices[(ik, spin)] = matrix
+            name = f"hk{ik}_nao.txt" if nspin == 1 else f"hk{ik}s{spin}_nao.txt"
+            _write_develop_matrix(output / name, matrix)
+    return job, matrices
+
+
+def test_read_kpoint_fixed_density_result_multik_two_spins(tmp_path):
+    job, matrices = _multik_fixed_density_job(tmp_path)
+
+    result = read_kpoint_fixed_density_result(job)
+
+    assert result.energy_ev == pytest.approx(-10.0)
+    assert result.band_energy_ev == pytest.approx(-8.0)
+    assert result.electronic_energy_ev == pytest.approx(-9.5)
+    assert result.symmetry == -1
+    assert result.nspin == 2
+    assert [kpoint.index for kpoint in result.kpoints] == [1, 2]
+    assert [kpoint.weight for kpoint in result.kpoints] == pytest.approx([0.5, 0.5])
+    for kpoint in result.kpoints:
+        assert set(kpoint.hamiltonians) == {1, 2}
+        for spin in (1, 2):
+            np.testing.assert_allclose(
+                kpoint.hamiltonians[spin],
+                matrices[(kpoint.index, spin)],
+            )
+
+
+def test_read_kpoint_fixed_density_result_accepts_time_reversal_symmetry(tmp_path):
+    job, _matrices = _multik_fixed_density_job(tmp_path, symmetry=0)
+
+    result = read_kpoint_fixed_density_result(job)
+
+    assert result.symmetry == 0
+
+
+def test_read_kpoint_fixed_density_result_rejects_symmetry_one(tmp_path):
+    job, _matrices = _multik_fixed_density_job(tmp_path, symmetry=1)
+
+    with pytest.raises(ValueError, match="symmetry=-1 or 0"):
+        read_kpoint_fixed_density_result(job)
 
 
 def test_read_gamma_fixed_density_result_single_spin(tmp_path):
@@ -1090,6 +1177,45 @@ def test_analyze_gamma_peda_nocv_rejects_orbital_mismatch(monkeypatch):
             [0],
             [1],
         )
+
+
+def test_multik_fixed_density_nscf_energy_uses_k_and_spin_weights():
+    import abacustools.data.eda as eda_module
+
+    states = [
+        SimpleNamespace(
+            index=index,
+            direct=direct,
+            weight=0.5,
+            channels={
+                spin: SimpleNamespace(
+                    p0_lambda=np.diag([1.0, 0.0]),
+                    basis=SimpleNamespace(combined=np.eye(2)),
+                )
+                for spin in (1, 2)
+            },
+        )
+        for index, direct in ((1, (0.0, 0.0, 0.0)), (2, (0.5, 0.0, 0.0)))
+    ]
+    p0_result = SimpleNamespace(
+        calculation="nscf",
+        electronic_energy_ev=-10.0,
+        band_energy_ev=-8.0,
+        harris_energy_ev=-9.0,
+        kpoints=tuple(
+            SimpleNamespace(
+                index=index,
+                direct=direct,
+                weight=0.5,
+                hamiltonians={1: np.diag([1.0, 2.0]), 2: np.diag([1.0, 2.0])},
+            )
+            for index, direct in ((1, (0.0, 0.0, 0.0)), (2, (0.5, 0.0, 0.0)))
+        ),
+    )
+
+    energy = eda_module._p0_energy_from_kpoint_fixed_density(states, p0_result)
+
+    assert energy == pytest.approx(-2.0 + 2.0 * RY_TO_EV)
 
 
 def test_fixed_density_nscf_energy_replaces_diagonalized_band_term():
