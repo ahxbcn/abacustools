@@ -511,6 +511,21 @@ def test_public_orbital_loader_reads_develop_gamma_wfc(tmp_path):
     np.testing.assert_allclose(orbitals[0].occupations[1], [1.0, 1.0])
 
 
+def test_public_orbital_loader_reads_develop_nspin2_gamma_wfc(tmp_path):
+    root = _nspin2_gamma_job(tmp_path)
+    output = root / "OUT.ABACUS"
+    coefficients = np.eye(2, dtype=complex)
+    _write_wfc(output / "wfs1_nao.txt", coefficients, [1.0, 0.0])
+    _write_wfc(output / "wfs2_nao.txt", coefficients, [0.0, 1.0])
+
+    orbitals = load_lcao_kpoint_orbitals(root)
+
+    assert len(orbitals) == 1
+    assert set(orbitals[0].coefficients) == {1, 2}
+    np.testing.assert_allclose(orbitals[0].occupations[1], [1.0, 0.0])
+    np.testing.assert_allclose(orbitals[0].occupations[2], [0.0, 1.0])
+
+
 def test_public_orbital_loader_reads_develop_multik_wfc(tmp_path):
     root = _multik_job(tmp_path, weighted=False)
     coefficients = np.eye(2, dtype=complex)

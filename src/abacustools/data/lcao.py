@@ -1011,20 +1011,32 @@ def _discover_wfc_channels(
                 lts_k[ik] = (step, path)
 
     ordered_lts = [lts_k[index][1] for index in sorted(lts_k)]
-    if nspin == 1:
-        for ik, path in enumerate(ordered_lts, start=1):
-            keep((ik, 1), 1, 0, path)
-    else:
-        if len(ordered_lts) != 2 * n_kpoints:
-            raise LCAODataError(
-                f"found {len(ordered_lts)} LTS wavefunction files for {n_kpoints} "
-                "k-points and nspin=2; expected twice as many"
-            )
-        for ik, path in enumerate(ordered_lts[:n_kpoints], start=1):
-            keep((ik, 1), 1, 0, path)
-        for ik, path in enumerate(ordered_lts[n_kpoints:], start=1):
-            keep((ik, 2), 1, 0, path)
+    if ordered_lts:
+        if nspin == 1:
+            for ik, path in enumerate(ordered_lts, start=1):
+                keep((ik, 1), 1, 0, path)
+        else:
+            if len(ordered_lts) != 2 * n_kpoints:
+                raise LCAODataError(
+                    f"found {len(ordered_lts)} LTS wavefunction files for {n_kpoints} "
+                    "k-points and nspin=2; expected twice as many"
+                )
+            for ik, path in enumerate(ordered_lts[:n_kpoints], start=1):
+                keep((ik, 1), 1, 0, path)
+            for ik, path in enumerate(ordered_lts[n_kpoints:], start=1):
+                keep((ik, 2), 1, 0, path)
 
+    expected = {
+        (ik, spin)
+        for ik in range(1, n_kpoints + 1)
+        for spin in ((1,) if nspin == 1 else (1, 2))
+    }
+    missing = expected - set(candidates)
+    if missing:
+        raise LCAODataError(
+            "missing wavefunction files for (k-point, spin) pairs: "
+            + ", ".join(f"({ik}, {spin})" for ik, spin in sorted(missing))
+        )
     return {key: value[2] for key, value in candidates.items()}
 
 
