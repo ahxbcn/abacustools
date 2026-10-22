@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Sequence
 
 from abacustools.core.job import read_job_structure
+from abacustools.io.abacus import WriteInput
 from abacustools.data.lcao import PEDAOrbitalState, write_peda_state_dmr
 
 from .common import kpoint_filename, write_abacus_job
@@ -80,7 +81,7 @@ def prepare_gamma_state_job(
     state_inputs = deepcopy(inputs)
     state_inputs.update(
         {
-            "calculation": "scf",
+            "calculation": "nscf",
             "init_chg": "dm",
             "read_file_dir": ".",
             "mixing_beta": 0.0,
@@ -102,6 +103,12 @@ def prepare_gamma_state_job(
         stru_filename=stru_filename,
         kpoint=kpoint_file,
     )
+    # The generated job contains symlinks to every resource, but retaining the
+    # source job's relative pseudo/orbital directories would make ABACUS look
+    # for them below the new state directory.
+    state_inputs["pseudo_dir"] = "."
+    state_inputs["orbital_dir"] = "."
+    WriteInput(state_inputs, output / "INPUT")
     write_peda_state_dmr(
         states,
         structure,

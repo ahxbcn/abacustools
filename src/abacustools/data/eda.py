@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Optional, Sequence
 
 import numpy as np
 
-from abacustools.core.constant import COULOMB_EV_ANGSTROM
+from abacustools.core.constant import COULOMB_EV_ANGSTROM, RY_TO_EV
 from abacustools.data.abacus_result import get_result_from_job
 from abacustools.data.charge import (
     ChargeDensityError,
@@ -39,8 +39,8 @@ class GammaFixedDensityResult:
     Attributes:
         energy_ev: Total energy printed by ABACUS, in eV.
         harris_energy_ev: Harris functional energy of the input density when
-            printed, in eV.  This is the appropriate pEDA intermediate energy
-            for a fixed-density state that is not self-consistent.
+            printed, in eV.
+        band_energy_ev: Band energy of the diagonalized eigenvalues, in eV.
         vdw_energy_ev: DFT-D energy when present, in eV.
         electronic_energy_ev: Total energy without the separate DFT-D term.
         converged: ABACUS SCF convergence flag.  A one-step fixed-density job
@@ -54,6 +54,8 @@ class GammaFixedDensityResult:
     job: str
     energy_ev: float
     harris_energy_ev: Optional[float]
+    band_energy_ev: Optional[float]
+    calculation: str
     vdw_energy_ev: Optional[float]
     electronic_energy_ev: float
     converged: Optional[bool]
@@ -157,7 +159,7 @@ def read_gamma_fixed_density_result(
 
     result = get_result_from_job(
         str(job_path),
-        ["energy", "harris_energy", "vdw_energy", "converged", "normal_end"],
+        ["energy", "harris_energy", "band_energy", "vdw_energy", "converged", "normal_end"],
         version=version,
     )
     energy = result.get("energy")
@@ -176,6 +178,10 @@ def read_gamma_fixed_density_result(
         harris_energy_ev=(
             None if result.get("harris_energy") is None else float(result["harris_energy"])
         ),
+        band_energy_ev=(
+            None if result.get("band_energy") is None else float(result["band_energy"])
+        ),
+        calculation=str(inputs.get("calculation", "scf")).lower(),
         vdw_energy_ev=vdw_value,
         electronic_energy_ev=electronic,
         converged=result.get("converged"),
@@ -341,9 +347,12 @@ def compute_peda_energy_terms(
 
     preparation = energies["e_a"] + energies["e_b"] - energies["e_a0"] - energies["e_b0"]
     electrostatic = energies["delta_e_elstat"]
-    interaction_electronic = energies["e0"] - energies["e_a"] - energies["e_b"]
-    pauli = interaction_electronic - electrostatic
+    # E0 - E_A - E_B contains electrostatics plus Pauli repulsion.  The fully
+    # relaxed electronic interaction additionally contains the orbital term.
+    steric_electronic = energies["e0"] - energies["e_a"] - energies["e_b"]
+    pauli = steric_electronic - electrostatic
     orbital = energies["e_ab"] - energies["e0"]
+    interaction_electronic = steric_electronic + orbital
     interaction = interaction_electronic + dispersion
     bond = preparation + interaction
 
@@ -814,6 +823,40 @@ def read_abacus_harris_energy(
     return float(value)
 
 
+def _p0_energy_from_fixed_density(
+    state: object,
+    p0_result: GammaFixedDensityResult,
+) -> float:
+    """Return the energy functional evaluated at the fixed P0 density.
+
+    In an ABACUS ``nscf`` run the charge density stays at the input density,
+    while the eigensolver still diagonalizes H[P0].  ``E_KohnSham`` therefore
+    contains the band energy of the diagonalized states, not the band energy
+    of P0.  Replace only that band term with ``Tr(P0 H[P0])``.  The remaining
+    Hartree, exchange-correlation and Ewald terms already belong to P0.
+    """
+
+    if p0_result.calculation == "nscf" and p0_result.band_energy_ev is not None:
+        from abacustools.data.lcao import operator_matrix_in_basis
+
+        band_energy = 0.0
+        for spin in sorted(state.channels):
+            if spin not in p0_result.hamiltonians:
+                raise ValueError(f"P0 state job has no Hamiltonian for spin {spin}")
+            channel = state.channels[spin]
+            hamiltonian = operator_matrix_in_basis(
+                p0_result.hamiltonians[spin],
+                channel.basis.combined,
+            )
+            band_energy += float(np.trace(channel.p0_lambda @ hamiltonian).real * RY_TO_EV)
+        return float(p0_result.electronic_energy_ev - float(p0_result.band_energy_ev) + band_energy)
+    if p0_result.harris_energy_ev is None:
+        raise ValueError(
+            "the P0 fixed-density job has neither a corrected nscf band energy nor E_Harris"
+        )
+    return float(p0_result.harris_energy_ev)
+
+
 def analyze_gamma_peda_nocv(
     full_job: str | Path,
     fragment_a_job: str | Path,
@@ -887,12 +930,7 @@ def analyze_gamma_peda_nocv(
 
     p0_result = read_gamma_fixed_density_result(p0_job, version=version)
     p_ts_result = read_gamma_fixed_density_result(p_ts_job, version=version)
-    if p0_result.harris_energy_ev is None:
-        raise ValueError(
-            "the P0 fixed-density job did not print E_Harris; update abacustools "
-            "or the ABACUS version to the current log format"
-        )
-
+    e0 = _p0_energy_from_fixed_density(state, p0_result)
     e_ab = _finite_energy(
         "full-system energy", get_result_from_job(str(full_job), ["energy"], version)["energy"]
     )
@@ -932,7 +970,7 @@ def analyze_gamma_peda_nocv(
         e_b=e_b,
         e_a0=e_a0,
         e_b0=e_b0,
-        e0=float(p0_result.harris_energy_ev),
+        e0=e0,
         delta_e_elstat=electrostatic.total,
     )
 
@@ -969,3 +1007,21 @@ def analyze_gamma_peda_nocv(
         nocv_total_ev=nocv_total,
         orbital_error_ev=orbital_error,
     )
+
+
+def read_abacus_band_energy(
+    job: str | Path,
+    *,
+    version: Optional[str] = None,
+) -> float:
+    """Read the final ABACUS band energy ``E_band`` in eV."""
+
+    result = get_result_from_job(
+        str(Path(job).resolve()),
+        ["band_energy"],
+        version=version,
+    )
+    value = result.get("band_energy")
+    if value is None or not np.isfinite(float(value)):
+        raise ValueError(f"no band energy found in ABACUS log: {job}")
+    return float(value)

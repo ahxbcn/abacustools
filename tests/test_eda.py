@@ -344,7 +344,7 @@ def test_prepare_gamma_state_job_writes_fixed_density_input(tmp_path):
     )
 
     inputs = ReadInput(str(output / "INPUT"))
-    assert inputs.get("calculation") == "scf"
+    assert inputs.get("calculation") == "nscf"
     assert inputs.get("init_chg") == "dm"
     assert inputs.get("read_file_dir") == "."
     assert float(inputs.get("mixing_beta")) == 0.0
@@ -357,6 +357,34 @@ def test_prepare_gamma_state_job_writes_fixed_density_input(tmp_path):
         read_csr_matrix_blocks(output / "dmrs1_nao.csr")[(0, 0, 0)],
         matrix,
     )
+
+
+def test_prepare_gamma_state_job_rewrites_resource_directories(tmp_path):
+    job = _reference_gamma_job(tmp_path)
+    resources = job / "pp"
+    resources.mkdir()
+    (job / "H.upf").rename(resources / "H.upf")
+    (job / "H.orb").rename(resources / "H.orb")
+    (job / "INPUT").write_text(
+        "INPUT_PARAMETERS\n"
+        "calculation scf\n"
+        "basis_type lcao\n"
+        "gamma_only 1\n"
+        "nspin 1\n"
+        "stru_file STRU\n"
+        "pseudo_dir pp\n"
+        "orbital_dir pp\n",
+        encoding="utf-8",
+    )
+    state = _state_with_densities(np.eye(2), 0.5 * np.eye(2), (1,))
+
+    output = prepare_gamma_state_job(job, [state], "eda/states/rho0")
+
+    inputs = ReadInput(str(output / "INPUT"))
+    assert inputs.get("pseudo_dir") == "."
+    assert inputs.get("orbital_dir") == "."
+    assert (output / "H.upf").is_file()
+    assert (output / "H.orb").is_file()
 
 
 def test_prepare_gamma_state_job_requires_override(tmp_path):
@@ -398,6 +426,7 @@ def _fixed_density_job(
     nspin: int = 1,
     energy: float = -10.0,
     harris: float = -9.75,
+    band: float = -8.0,
     vdw: float = -0.5,
 ) -> tuple[Path, dict[int, np.ndarray]]:
     job = tmp_path / "state"
@@ -415,6 +444,7 @@ def _fixed_density_job(
     (output / "running_scf.log").write_text(
         f"E_KohnSham = {energy:.8f} eV\n"
         f"E_Harris = {harris:.8f} eV\n"
+        f"E_band = {band:.8f} eV\n"
         f"E_vdwD3 = {vdw:.8f} eV\n"
         "charge density convergence is achieved\n"
         f"final etot is {energy:.8f} eV\n",
@@ -436,6 +466,8 @@ def test_read_gamma_fixed_density_result_single_spin(tmp_path):
 
     assert result.energy_ev == pytest.approx(-10.0)
     assert result.harris_energy_ev == pytest.approx(-9.75)
+    assert result.band_energy_ev == pytest.approx(-8.0)
+    assert result.calculation == "scf"
     assert result.vdw_energy_ev == pytest.approx(-0.5)
     assert result.electronic_energy_ev == pytest.approx(-9.5)
     assert result.nspin == 1
@@ -495,12 +527,12 @@ def test_compute_peda_energy_terms_and_fractions():
     assert terms.pauli == pytest.approx(5.0)
     assert terms.orbital == pytest.approx(-20.0)
     assert terms.dispersion == pytest.approx(-0.5)
-    assert terms.interaction_electronic == pytest.approx(-10.0)
-    assert terms.interaction == pytest.approx(-10.5)
-    assert terms.bond == pytest.approx(-0.5)
+    assert terms.interaction_electronic == pytest.approx(-30.0)
+    assert terms.interaction == pytest.approx(-30.5)
+    assert terms.bond == pytest.approx(-20.5)
     assert terms.electrostatic_fraction == pytest.approx(15.0 / 35.0)
     assert terms.orbital_fraction == pytest.approx(20.0 / 35.0)
-    assert terms.dispersion_fraction == pytest.approx(0.5 / 10.5)
+    assert terms.dispersion_fraction == pytest.approx(0.5 / 30.5)
 
 
 def test_compute_peda_energy_terms_without_dispersion():
@@ -990,7 +1022,13 @@ def _mock_gamma_peda_jobs(monkeypatch, *, fock_expectation_difference):
         eda_module,
         "read_gamma_fixed_density_result",
         lambda job, **kwargs: (
-            SimpleNamespace(harris_energy_ev=-9.0)
+            SimpleNamespace(
+                harris_energy_ev=-9.0,
+                band_energy_ev=None,
+                electronic_energy_ev=-9.0,
+                calculation="scf",
+                hamiltonians={},
+            )
             if str(job).endswith("p0")
             else SimpleNamespace(
                 hamiltonians={
@@ -1052,3 +1090,27 @@ def test_analyze_gamma_peda_nocv_rejects_orbital_mismatch(monkeypatch):
             [0],
             [1],
         )
+
+
+def test_fixed_density_nscf_energy_replaces_diagonalized_band_term():
+    import abacustools.data.eda as eda_module
+
+    state = SimpleNamespace(
+        channels={
+            1: SimpleNamespace(
+                p0_lambda=np.eye(2),
+                basis=SimpleNamespace(combined=np.eye(2)),
+            )
+        }
+    )
+    p0_result = SimpleNamespace(
+        calculation="nscf",
+        electronic_energy_ev=-10.0,
+        band_energy_ev=-8.0,
+        harris_energy_ev=-9.0,
+        hamiltonians={1: np.eye(2)},
+    )
+
+    energy = eda_module._p0_energy_from_fixed_density(state, p0_result)
+
+    assert energy == pytest.approx(-2.0 + 2.0 * RY_TO_EV)
