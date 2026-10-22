@@ -17,7 +17,11 @@ from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence
 import numpy as np
 
 from abacustools.core.constant import BOHR_TO_ANG
-from abacustools.data.mayer import read_nao_basis_layout, read_wfc_nao_k_data
+from abacustools.data.mayer import (
+    read_nao_basis_layout,
+    read_nao_file,
+    read_wfc_nao_k_data,
+)
 from abacustools.io.abacus import ReadInput
 from abacustools.io.stru import AbacusSTRU
 
@@ -1473,6 +1477,103 @@ def _peda_channel_matrix(channel: PEDAChannelState, field: str) -> np.ndarray:
         return matrices[field]
     except KeyError as error:
         raise ValueError(f"unknown pEDA state field: {field}") from error
+
+
+def suggest_peda_dmr_r_blocks(
+    job: str | Path,
+    *,
+    padding_shells: int = 0,
+    tolerance: float = 1e-6,
+) -> tuple[tuple[int, int, int], ...]:
+    """Suggest the R blocks needed for a pEDA DMR export.
+
+    The blocks are generated from the NAO radial cutoff radii and the atom
+    positions: an R block is retained when at least one atom pair in the
+    structure can have overlapping orbitals across that lattice translation.
+    The result is the minimal orbital-range set.  Add ``padding_shells`` to
+    include extra neighboring cells for convergence checks.
+
+    Args:
+        job: ABACUS job directory containing INPUT, STRU and the NAO files.
+        padding_shells: Number of additional cells to add in every direction.
+        tolerance: Distance tolerance in Angstrom for the overlap test.
+
+    Returns:
+        A sorted tuple of ``(Rx, Ry, Rz)`` lattice translations.
+
+    Raises:
+        FileNotFoundError: If INPUT, STRU or an orbital file is missing.
+        ValueError: If the cell, orbital radii or padding are invalid.
+    """
+
+    if padding_shells < 0:
+        raise ValueError("padding_shells must be non-negative")
+    if not np.isfinite(tolerance) or tolerance < 0.0:
+        raise ValueError("tolerance must be a finite non-negative number")
+
+    job_path = Path(job).resolve()
+    inputs = ReadInput(str(job_path / "INPUT"))
+    structure, _ranges, _basis_functions = read_nao_basis_layout(
+        job_path,
+        inputs=inputs,
+    )
+    if structure.cell is None:
+        raise ValueError("a periodic cell is required to generate DMR R blocks")
+    cell = np.asarray(structure.cell, dtype=float)
+    if cell.shape != (3, 3):
+        raise ValueError("the structure cell must be a 3x3 matrix")
+    positions = np.asarray([atom.coord for atom in structure.atoms], dtype=float)
+    if positions.ndim != 2 or positions.shape[1] != 3:
+        raise ValueError("atom coordinates must have shape (n_atoms, 3)")
+    if not np.all(np.isfinite(cell)) or not np.all(np.isfinite(positions)):
+        raise ValueError("cell and atom coordinates must be finite")
+
+    orbital_dir = inputs.get("orbital_dir")
+    base = Path(str(orbital_dir)) if orbital_dir else job_path
+    if not base.is_absolute():
+        base = job_path / base
+    radii: dict[str, float] = {}
+    for atom in structure.atoms:
+        if not atom.orb:
+            raise ValueError("every atom needs a numerical orbital file")
+        if atom.orb not in radii:
+            data = read_nao_file(base / atom.orb)
+            radii[atom.orb] = float(data.radius) * BOHR_TO_ANG
+    atom_radii = np.asarray([radii[atom.orb] for atom in structure.atoms], dtype=float)
+    if np.any(atom_radii <= 0.0):
+        raise ValueError("NAO radial cutoff radii must be positive")
+
+    volume = abs(float(np.linalg.det(cell)))
+    if volume <= 0.0:
+        raise ValueError("the structure cell must have positive volume")
+    heights = []
+    for first, second in ((1, 2), (2, 0), (0, 1)):
+        heights.append(volume / float(np.linalg.norm(np.cross(cell[first], cell[second]))))
+    min_height = min(heights)
+    if min_height <= 0.0:
+        raise ValueError("the structure cell has a zero lattice-plane height")
+
+    max_cutoff = 2.0 * float(np.max(atom_radii))
+    nmax = int(np.ceil((max_cutoff + tolerance) / min_height)) + int(padding_shells) + 1
+    blocks: list[tuple[int, int, int]] = []
+    for rx in range(-nmax, nmax + 1):
+        for ry in range(-nmax, nmax + 1):
+            for rz in range(-nmax, nmax + 1):
+                shift = np.array([rx, ry, rz], dtype=float) @ cell
+                keep = False
+                for first in range(len(positions)):
+                    if keep:
+                        break
+                    for second in range(len(positions)):
+                        distance = float(np.linalg.norm(positions[second] + shift - positions[first]))
+                        if distance <= atom_radii[first] + atom_radii[second] + tolerance:
+                            keep = True
+                            break
+                if keep:
+                    blocks.append((rx, ry, rz))
+    if not blocks:
+        raise ValueError("no overlapping atom pairs were found for any R block")
+    return tuple(sorted(blocks))
 
 
 def write_peda_state_dmr(

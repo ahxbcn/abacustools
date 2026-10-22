@@ -37,11 +37,26 @@ from abacustools.data.lcao import (
     assemble_peda_kpoint_state,
     build_peda_kpoint_states,
     real_space_density_to_kpoints,
+    suggest_peda_dmr_r_blocks,
     write_peda_state_dmr,
 )
 
 
 ROOT2 = np.sqrt(0.5)
+
+H_ORBITAL = """Element H
+Energy Cutoff(Ry) 100
+Radius Cutoff(a.u.) 6
+Lmax 0
+Number of Sorbital--> 1
+SUMMARY  END
+
+Mesh 1
+dr 0.01
+Type L N
+0 0 0
+1.0
+"""
 
 
 def _full_coefficients() -> np.ndarray:
@@ -419,7 +434,7 @@ def _reference_gamma_job(tmp_path: Path) -> Path:
     structure = _writer_structure()
     assert structure.write(job / "STRU")
     (job / "H.upf").write_text("", encoding="utf-8")
-    (job / "H.orb").write_text("", encoding="utf-8")
+    (job / "H.orb").write_text(H_ORBITAL, encoding="utf-8")
     (job / "INPUT").write_text(
         "INPUT_PARAMETERS\n"
         "calculation scf\n"
@@ -440,7 +455,7 @@ def _reference_multik_job(tmp_path: Path, *, symmetry: int = 0) -> Path:
     structure = _writer_structure()
     assert structure.write(job / "STRU")
     (job / "H.upf").write_text("", encoding="utf-8")
-    (job / "H.orb").write_text("", encoding="utf-8")
+    (job / "H.orb").write_text(H_ORBITAL, encoding="utf-8")
     (job / "KPT").write_text(
         "K_POINTS\n"
         "0\n"
@@ -505,6 +520,30 @@ def test_prepare_peda_state_job_writes_multik_input_and_dmr(tmp_path):
     for spin in (1, 2):
         blocks = read_csr_matrix_blocks(output / f"dmrs{spin}_nao.csr")
         assert set(blocks) == {(0, 0, 0), (1, 0, 0)}
+
+
+def test_suggest_peda_dmr_r_blocks_from_nao_cutoff(tmp_path):
+    job = _reference_multik_job(tmp_path, symmetry=0)
+
+    blocks = suggest_peda_dmr_r_blocks(job)
+
+    assert (0, 0, 0) in blocks
+    assert any(block != (0, 0, 0) for block in blocks)
+
+
+def test_prepare_peda_state_job_generates_r_blocks_for_multik(tmp_path):
+    job = _reference_multik_job(tmp_path, symmetry=0)
+
+    output = prepare_peda_state_job(
+        job,
+        _multik_writer_states(),
+        "eda/states/rho0",
+        field="p0",
+    )
+
+    blocks = read_csr_matrix_blocks(output / "dmrs1_nao.csr")
+    assert (0, 0, 0) in blocks
+    assert len(blocks) > 1
 
 
 def test_prepare_peda_state_job_rejects_symmetry_one_multik(tmp_path):

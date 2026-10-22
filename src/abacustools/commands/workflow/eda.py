@@ -9,7 +9,11 @@ from typing import Sequence
 
 from abacustools.core.job import read_job_structure
 from abacustools.io.abacus import WriteInput
-from abacustools.data.lcao import PEDAOrbitalState, write_peda_state_dmr
+from abacustools.data.lcao import (
+    PEDAOrbitalState,
+    suggest_peda_dmr_r_blocks,
+    write_peda_state_dmr,
+)
 
 from .common import kpoint_filename, write_abacus_job
 
@@ -79,7 +83,7 @@ def prepare_peda_state_job(
                 f"got symmetry={symmetry}"
             )
         if r_blocks is None:
-            raise ValueError("multi-k pEDA state jobs require explicit r_blocks")
+            r_blocks = suggest_peda_dmr_r_blocks(job_path)
 
     output = Path(destination)
     if not output.is_absolute():
