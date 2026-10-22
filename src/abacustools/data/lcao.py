@@ -953,8 +953,18 @@ class KPointOrbitals:
     data_files: tuple[str, ...]
 
 
-_DEVELOP_WFC_FILE = re.compile(
-    r"^wf(?:k(?P<ik>\d+))?(?:s(?P<is>\d+))?(?:g(?P<step>\d+))?_nao\.txt$",
+_DEVELOP_GAMMA_WFC_FILE = re.compile(
+    r"^wfs?(?P<is>\d+)?(?:g(?P<step>\d+))?(?:e(?P<electronic>\d+))?_nao\.txt$",
+    re.IGNORECASE,
+)
+_DEVELOP_SPIN_K_WFC_FILE = re.compile(
+    r"^wfs(?P<is>\d+)k(?P<ik>\d+)"
+    r"(?:g(?P<step>\d+))?(?:e(?P<electronic>\d+))?_nao\.txt$",
+    re.IGNORECASE,
+)
+_DEVELOP_K_SPIN_WFC_FILE = re.compile(
+    r"^wfk(?P<ik>\d+)(?:s(?P<is>\d+))?"
+    r"(?:g(?P<step>\d+))?(?:e(?P<electronic>\d+))?_nao\.txt$",
     re.IGNORECASE,
 )
 _LTS_GAMMA_WFC_FILE = re.compile(
@@ -975,31 +985,56 @@ def _discover_wfc_channels(
 ) -> dict[tuple[int, int], Path]:
     """Return ``(k_index, spin) -> WFC file`` for the final output set."""
 
-    candidates: dict[tuple[int, int], tuple[int, int, Path]] = {}
+    candidates: dict[tuple[int, int], tuple[tuple[int, int, int], Path]] = {}
 
-    def keep(key: tuple[int, int], priority: int, step: int, path: Path) -> None:
+    def keep(
+        key: tuple[int, int],
+        priority: int,
+        step: int,
+        electronic: int,
+        path: Path,
+    ) -> None:
+        rank = (priority, -step, -electronic)
         previous = candidates.get(key)
-        if previous is None or (priority, -step) < (previous[0], -previous[1]):
-            candidates[key] = (priority, step, path)
+        if previous is None or rank < previous[0]:
+            candidates[key] = (rank, path)
 
     lts_k: dict[int, tuple[int, Path]] = {}
     for path in output.iterdir():
         if not path.is_file():
             continue
         name = path.name
-        match = _DEVELOP_WFC_FILE.match(name)
-        if match is not None:
-            ik = int(match.group("ik")) if match.group("ik") else 1
+        match = _DEVELOP_SPIN_K_WFC_FILE.match(name)
+        if match is not None and not gamma_only:
+            ik = int(match.group("ik"))
+            spin = int(match.group("is"))
+            step = int(match.group("step")) if match.group("step") else 0
+            electronic = int(match.group("electronic")) if match.group("electronic") else 0
+            keep((ik, spin), 0, step, electronic, path)
+            continue
+
+        match = _DEVELOP_K_SPIN_WFC_FILE.match(name)
+        if match is not None and not gamma_only:
+            ik = int(match.group("ik"))
             spin = int(match.group("is")) if match.group("is") else 1
             step = int(match.group("step")) if match.group("step") else 0
-            keep((ik, spin), 0, step, path)
+            electronic = int(match.group("electronic")) if match.group("electronic") else 0
+            keep((ik, spin), 1, step, electronic, path)
+            continue
+
+        match = _DEVELOP_GAMMA_WFC_FILE.match(name)
+        if match is not None and gamma_only:
+            spin = int(match.group("is")) if match.group("is") else 1
+            step = int(match.group("step")) if match.group("step") else 0
+            electronic = int(match.group("electronic")) if match.group("electronic") else 0
+            keep((1, spin), 0, step, electronic, path)
             continue
 
         match = _LTS_GAMMA_WFC_FILE.match(name)
         if match is not None and gamma_only:
             spin = int(match.group("is"))
             step = int(match.group("step")) if match.group("step") else 0
-            keep((1, spin), 1, step, path)
+            keep((1, spin), 2, step, 0, path)
             continue
 
         match = _LTS_K_WFC_FILE.match(name)
@@ -1014,7 +1049,7 @@ def _discover_wfc_channels(
     if ordered_lts:
         if nspin == 1:
             for ik, path in enumerate(ordered_lts, start=1):
-                keep((ik, 1), 1, 0, path)
+                keep((ik, 1), 2, 0, 0, path)
         else:
             if len(ordered_lts) != 2 * n_kpoints:
                 raise LCAODataError(
@@ -1022,9 +1057,9 @@ def _discover_wfc_channels(
                     "k-points and nspin=2; expected twice as many"
                 )
             for ik, path in enumerate(ordered_lts[:n_kpoints], start=1):
-                keep((ik, 1), 1, 0, path)
+                keep((ik, 1), 2, 0, 0, path)
             for ik, path in enumerate(ordered_lts[n_kpoints:], start=1):
-                keep((ik, 2), 1, 0, path)
+                keep((ik, 2), 2, 0, 0, path)
 
     expected = {
         (ik, spin)
@@ -1037,7 +1072,7 @@ def _discover_wfc_channels(
             "missing wavefunction files for (k-point, spin) pairs: "
             + ", ".join(f"({ik}, {spin})" for ik, spin in sorted(missing))
         )
-    return {key: value[2] for key, value in candidates.items()}
+    return {key: value[1] for key, value in candidates.items()}
 
 
 def load_lcao_kpoint_orbitals(
