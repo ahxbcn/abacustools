@@ -1481,19 +1481,26 @@ def write_peda_state_dmr(
     output_dir: str | Path,
     *,
     field: str = "p0",
+    r_blocks: Optional[Sequence[tuple[int, int, int]]] = None,
     precision: int = 8,
     sparse_threshold: float = 1e-10,
 ) -> dict[int, Path]:
-    """Write Gamma-point pEDA density matrices as ABACUS DMR files.
+    """Write pEDA density matrices as ABACUS DMR files.
 
-    The first version intentionally handles only one Gamma k-point.  Multi-k
-    export needs an explicit set of R blocks and will be added separately.
+    Gamma-only input is written as a single ``R=(0,0,0)`` block.  Multi-k
+    input requires an explicit set of R blocks; the k-resolved density
+    matrices are Fourier transformed with the ABACUS ``exp(+ikR)``
+    convention before writing.  The R blocks should cover the orbital-range
+    sparsity of the full-system DMR; omitting a nonzero block silently loses
+    density in the fixed-density calculation.
 
     Args:
-        states: pEDA k-point states.  Exactly one Gamma-point state is required.
+        states: pEDA k-point states in one full-system k-point order.
         structure: Full-system structure used for the ABACUS CSR header.
         output_dir: Directory in which ``dmrs{spin}_nao.csr`` files are written.
         field: ``p0``, ``p_ab`` or ``p_ts``.
+        r_blocks: Explicit Bravais lattice vectors for multi-k export.  For a
+            single Gamma point this defaults to ``((0, 0, 0),)``.
         precision: Text precision passed to the CSR writer.
         sparse_threshold: Entries below this magnitude are omitted.
 
@@ -1501,34 +1508,70 @@ def write_peda_state_dmr(
         Mapping from one-based spin index to the written file path.
 
     Raises:
-        ValueError: If the state is not a single Gamma point or the requested
-            field is invalid.
+        ValueError: If the k-points, weights, spin channels, field or R blocks
+            are invalid.
     """
 
-    if len(states) != 1:
-        raise ValueError("Gamma-point DMR export requires exactly one k-point")
-    state = states[0]
-    if _periodic_direct_distance(state.direct, (0.0, 0.0, 0.0)) > 1e-6:
-        raise ValueError("multi-k DMR export requires explicit R blocks; only Gamma is supported")
+    if not states:
+        raise ValueError("at least one pEDA k-point state is required")
     if field not in {"p0", "p_ab", "p_ts"}:
         raise ValueError(f"unknown pEDA state field: {field}")
-    if not state.channels:
-        raise ValueError("pEDA state has no spin channels")
 
-    spins = sorted(state.channels)
+    spin_sets = {tuple(sorted(state.channels)) for state in states}
+    if len(spin_sets) != 1:
+        raise ValueError("all pEDA k-point states must have the same spin channels")
+    spins = list(next(iter(spin_sets)))
     nspin = len(spins)
     if nspin not in (1, 2):
         raise ValueError(f"DMR export supports nspin=1 or 2, got {nspin}")
+
+    gamma_state = (
+        len(states) == 1
+        and _periodic_direct_distance(states[0].direct, (0.0, 0.0, 0.0)) <= 1e-6
+    )
+    if r_blocks is None:
+        if not gamma_state:
+            raise ValueError(
+                "multi-k DMR export requires an explicit r_blocks sequence"
+            )
+        normalized_blocks = ((0, 0, 0),)
+    else:
+        normalized_blocks = tuple(
+            sorted({tuple(int(value) for value in block) for block in r_blocks})
+        )
+        if not normalized_blocks:
+            raise ValueError("at least one R block is required")
+        if any(len(block) != 3 for block in normalized_blocks):
+            raise ValueError("each R block must contain three integer components")
+        if gamma_state and normalized_blocks != ((0, 0, 0),):
+            raise ValueError(
+                "a single Gamma-point DMR export can only use R=(0,0,0); "
+                "use gamma_only=0 for explicit R blocks"
+            )
+
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
-
     result: dict[int, Path] = {}
     for spin in spins:
-        matrix = np.asarray(_peda_channel_matrix(state.channels[spin], field))
+        kpoint_entries: list[tuple[tuple[float, float, float], float, np.ndarray]] = []
+        for state in states:
+            channel = state.channels.get(spin)
+            if channel is None:
+                raise ValueError(
+                    f"pEDA k-point {state.direct} has no spin channel {spin}"
+                )
+            kpoint_entries.append(
+                (
+                    state.direct,
+                    state.weight,
+                    np.asarray(_peda_channel_matrix(channel, field)),
+                )
+            )
+        blocks = kpoint_density_to_real_space(kpoint_entries, normalized_blocks)
         path = output / f"dmrs{spin}_nao.csr"
         write_csr_matrix_blocks(
             path,
-            {(0, 0, 0): matrix},
+            blocks,
             structure=structure,
             nspin=nspin,
             spin=spin,

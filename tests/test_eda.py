@@ -7,7 +7,10 @@ import numpy as np
 import pytest
 
 import abacustools.data.lcao as lcao
-from abacustools.commands.workflow.eda import prepare_gamma_state_job
+from abacustools.commands.workflow.eda import (
+    prepare_gamma_state_job,
+    prepare_peda_state_job,
+)
 from abacustools.core.constant import COULOMB_EV_ANGSTROM, RY_TO_EV
 from abacustools.data.charge import ChargeDensityError, read_job_total_density
 from abacustools.data.eda import (
@@ -33,6 +36,7 @@ from abacustools.data.lcao import (
     KPointOrbitals,
     assemble_peda_kpoint_state,
     build_peda_kpoint_states,
+    real_space_density_to_kpoints,
     write_peda_state_dmr,
 )
 
@@ -257,7 +261,15 @@ def _writer_structure() -> AbacusSTRU:
     )
 
 
-def _state_with_densities(p0: np.ndarray, p_ts: np.ndarray, spins: tuple[int, ...]):
+def _state_with_densities(
+    p0: np.ndarray,
+    p_ts: np.ndarray,
+    spins: tuple[int, ...],
+    *,
+    direct: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    index: int = 1,
+    weight: float = 1.0,
+):
     channels = {
         spin: SimpleNamespace(
             p0_nao=p0,
@@ -267,8 +279,9 @@ def _state_with_densities(p0: np.ndarray, p_ts: np.ndarray, spins: tuple[int, ..
         for spin in spins
     }
     return SimpleNamespace(
-        index=1,
-        direct=(0.0, 0.0, 0.0),
+        index=index,
+        direct=direct,
+        weight=weight,
         channels=channels,
     )
 
@@ -296,12 +309,101 @@ def test_write_peda_state_dmr_two_spins_uses_separate_files(tmp_path):
     assert "2 # number of spin directions" in paths[1].read_text()
 
 
-def test_write_peda_state_dmr_rejects_multik(tmp_path):
-    state = _state_with_densities(np.eye(2), np.eye(2), (1,))
-    state.direct = (0.5, 0.0, 0.0)
+def test_write_peda_state_dmr_rejects_multik_without_r_blocks(tmp_path):
+    state = _state_with_densities(
+        np.eye(2),
+        np.eye(2),
+        (1,),
+        direct=(0.5, 0.0, 0.0),
+    )
 
-    with pytest.raises(ValueError, match="only Gamma"):
+    with pytest.raises(ValueError, match="explicit r_blocks"):
         write_peda_state_dmr([state], _writer_structure(), tmp_path)
+
+
+def test_write_peda_state_dmr_multik_two_spins_round_trips_kpoints(tmp_path):
+    a = np.array([[1.0, 0.1], [0.1, 2.0]])
+    b_up = np.array([[0.2, 0.0], [0.0, -0.2]])
+    b_down = np.array([[0.3, 0.0], [0.0, -0.1]])
+    states = [
+        _state_with_densities(
+            a + b_up,
+            0.5 * (a + b_up),
+            (1,),
+            direct=(0.0, 0.0, 0.0),
+            index=1,
+            weight=0.5,
+        ),
+        _state_with_densities(
+            a - b_up,
+            0.5 * (a - b_up),
+            (1,),
+            direct=(0.5, 0.0, 0.0),
+            index=2,
+            weight=0.5,
+        ),
+    ]
+
+    paths = write_peda_state_dmr(
+        states,
+        _writer_structure(),
+        tmp_path,
+        field="p0",
+        r_blocks=((1, 0, 0), (0, 0, 0)),
+    )
+
+    blocks = read_csr_matrix_blocks(paths[1])
+    np.testing.assert_allclose(blocks[(0, 0, 0)], a)
+    np.testing.assert_allclose(blocks[(1, 0, 0)], b_up)
+    reconstructed = real_space_density_to_kpoints(
+        blocks,
+        [((0.0, 0.0, 0.0), 0.5), ((0.5, 0.0, 0.0), 0.5)],
+    )
+    np.testing.assert_allclose(reconstructed[0][2], a + b_up, atol=1e-12)
+    np.testing.assert_allclose(reconstructed[1][2], a - b_up, atol=1e-12)
+
+    states_both = []
+    for index, direct, up_density, down_density in (
+        (1, (0.0, 0.0, 0.0), a + b_up, a + b_down),
+        (2, (0.5, 0.0, 0.0), a - b_up, a - b_down),
+    ):
+        states_both.append(
+            SimpleNamespace(
+                index=index,
+                direct=direct,
+                weight=0.5,
+                channels={
+                    1: SimpleNamespace(
+                        p0_nao=up_density,
+                        p_ab_nao=0.5 * up_density,
+                        p_ts_nao=0.5 * up_density,
+                    ),
+                    2: SimpleNamespace(
+                        p0_nao=down_density,
+                        p_ab_nao=0.5 * down_density,
+                        p_ts_nao=0.5 * down_density,
+                    ),
+                },
+            )
+        )
+
+    spin_paths = write_peda_state_dmr(
+        states_both,
+        _writer_structure(),
+        tmp_path / "spin2",
+        field="p0",
+        r_blocks=((0, 0, 0), (1, 0, 0)),
+    )
+    assert set(spin_paths) == {1, 2}
+    np.testing.assert_allclose(
+        read_csr_matrix_blocks(spin_paths[1])[(1, 0, 0)],
+        b_up,
+    )
+    np.testing.assert_allclose(
+        read_csr_matrix_blocks(spin_paths[2])[(1, 0, 0)],
+        b_down,
+    )
+    assert "2 # number of spin directions" in spin_paths[1].read_text()
 
 
 def test_write_peda_state_dmr_rejects_unknown_field(tmp_path):
@@ -330,6 +432,91 @@ def _reference_gamma_job(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return job
+
+
+def _reference_multik_job(tmp_path: Path, *, symmetry: int = 0) -> Path:
+    job = tmp_path / "job"
+    job.mkdir()
+    structure = _writer_structure()
+    assert structure.write(job / "STRU")
+    (job / "H.upf").write_text("", encoding="utf-8")
+    (job / "H.orb").write_text("", encoding="utf-8")
+    (job / "KPT").write_text(
+        "K_POINTS\n"
+        "0\n"
+        "Gamma\n"
+        "2 2 2 0 0 0\n",
+        encoding="utf-8",
+    )
+    (job / "INPUT").write_text(
+        "INPUT_PARAMETERS\n"
+        "calculation scf\n"
+        "basis_type lcao\n"
+        "gamma_only 0\n"
+        "nspin 2\n"
+        f"symmetry {symmetry}\n"
+        "stru_file STRU\n"
+        "pseudo_dir .\n"
+        "orbital_dir .\n",
+        encoding="utf-8",
+    )
+    return job
+
+
+def _multik_writer_states() -> list[SimpleNamespace]:
+    matrix = np.array([[1.0, 0.0], [0.0, 2.0]])
+    return [
+        _state_with_densities(
+            matrix,
+            0.5 * matrix,
+            (1, 2),
+            direct=(0.0, 0.0, 0.0),
+            index=1,
+            weight=0.5,
+        ),
+        _state_with_densities(
+            matrix,
+            0.5 * matrix,
+            (1, 2),
+            direct=(0.5, 0.0, 0.0),
+            index=2,
+            weight=0.5,
+        ),
+    ]
+
+
+def test_prepare_peda_state_job_writes_multik_input_and_dmr(tmp_path):
+    job = _reference_multik_job(tmp_path, symmetry=0)
+
+    output = prepare_peda_state_job(
+        job,
+        _multik_writer_states(),
+        "eda/states/rho0",
+        field="p0",
+        r_blocks=((0, 0, 0), (1, 0, 0)),
+    )
+
+    inputs = ReadInput(str(output / "INPUT"))
+    assert inputs.get("calculation") == "nscf"
+    assert int(inputs.get("gamma_only")) == 0
+    assert int(inputs.get("symmetry")) == 0
+    assert int(inputs.get("out_hsk")) == 1
+    assert (output / "KPT").is_file()
+    for spin in (1, 2):
+        blocks = read_csr_matrix_blocks(output / f"dmrs{spin}_nao.csr")
+        assert set(blocks) == {(0, 0, 0), (1, 0, 0)}
+
+
+def test_prepare_peda_state_job_rejects_symmetry_one_multik(tmp_path):
+    job = _reference_multik_job(tmp_path, symmetry=1)
+
+    with pytest.raises(ValueError, match="symmetry=-1 or 0"):
+        prepare_peda_state_job(
+            job,
+            _multik_writer_states(),
+            "eda/states/rho0",
+            r_blocks=((0, 0, 0),),
+        )
 
 
 def test_prepare_gamma_state_job_writes_fixed_density_input(tmp_path):
