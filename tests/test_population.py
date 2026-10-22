@@ -551,8 +551,8 @@ def test_public_orbital_loader_reads_develop_multik_nspin2_wfc(tmp_path):
     output = root / "OUT.ABACUS"
     coefficients = np.eye(2, dtype=complex)
     for kpoint in (1, 2):
-        _write_wfc(output / f"wfs1k{kpoint}_nao.txt", coefficients, [1.0, 0.0])
-        _write_wfc(output / f"wfs2k{kpoint}_nao.txt", coefficients, [0.0, 1.0])
+        _write_wfc(output / f"wfs1k{kpoint}_nao.txt", coefficients, [0.5, 0.0])
+        _write_wfc(output / f"wfs2k{kpoint}_nao.txt", coefficients, [0.0, 0.5])
 
     orbitals = load_lcao_kpoint_orbitals(root)
 
@@ -569,10 +569,10 @@ def test_public_orbital_loader_prefers_latest_multik_geometry_and_electronic_ste
     output = root / "OUT.ABACUS"
     coefficients = np.eye(2, dtype=complex)
     for kpoint in (1, 2):
-        _write_wfc(output / f"wfs1k{kpoint}_nao.txt", coefficients, [1.0, 0.0])
-        _write_wfc(output / f"wfs2k{kpoint}_nao.txt", coefficients, [0.0, 1.0])
-    _write_wfc(output / "wfs1k1g2e1_nao.txt", coefficients, [1.0, 0.0])
-    _write_wfc(output / "wfs1k1g2e3_nao.txt", coefficients, [0.0, 1.0])
+        _write_wfc(output / f"wfs1k{kpoint}_nao.txt", coefficients, [0.5, 0.0])
+        _write_wfc(output / f"wfs2k{kpoint}_nao.txt", coefficients, [0.0, 0.5])
+    _write_wfc(output / "wfs1k1g2e1_nao.txt", coefficients, [0.5, 0.0])
+    _write_wfc(output / "wfs1k1g2e3_nao.txt", coefficients, [0.0, 0.5])
 
     orbitals = load_lcao_kpoint_orbitals(root)
 
@@ -606,5 +606,5 @@ def test_public_orbital_loader_reads_lts_nspin2_channels(tmp_path):
     assert len(orbitals) == 2
     for orbital in orbitals:
         assert set(orbital.coefficients) == {1, 2}
-        np.testing.assert_allclose(orbital.occupations[1], [0.5, 0.5])
-        np.testing.assert_allclose(orbital.occupations[2], [0.5, 0.5])
+        np.testing.assert_allclose(orbital.occupations[1], [1.0, 1.0])
+        np.testing.assert_allclose(orbital.occupations[2], [1.0, 1.0])

@@ -943,7 +943,9 @@ class KPointOrbitals:
         overlap: Full-basis overlap matrix ``S(k)``.
         coefficients: Spin channel to ``(n_basis, n_bands)`` coefficients.
         energies: Spin channel to band energies in Ry.
-        occupations: Spin channel to band occupations.
+        occupations: Spin channel to band occupations normalized by the
+            k-point weight, so occupied bands are 1 for ``nspin=2`` and 2 for
+            a closed-shell ``nspin=1`` calculation.
         data_files: Files used to assemble this k-point.
     """
 
@@ -1141,16 +1143,20 @@ def load_lcao_kpoint_orbitals(
                 raise LCAODataError(
                     f"wavefunction file is missing for k-point {kpoint.index}, spin {spin}"
                 )
-            coeff, band_energies, band_occupations = read_wfc_nao_k_data(path)
+            coeff, band_energies, raw_occupations = read_wfc_nao_k_data(path)
             if coeff.shape[0] != kpoint.overlap.shape[0]:
                 raise LCAODataError(f"{path}: coefficient rows do not match the overlap dimension")
-            if band_energies.shape != (coeff.shape[1],) or band_occupations.shape != (
+            if band_energies.shape != (coeff.shape[1],) or raw_occupations.shape != (
                 coeff.shape[1],
             ):
                 raise LCAODataError(f"{path}: band energies or occupations are inconsistent")
+            if kpoint.weight <= 0.0:
+                raise LCAODataError(
+                    f"{path}: k-point weight must be positive to normalize occupations"
+                )
             coefficients[spin] = coeff
             energies[spin] = band_energies
-            occupations[spin] = band_occupations
+            occupations[spin] = raw_occupations / kpoint.weight
             files.append(str(path))
         result.append(
             KPointOrbitals(
