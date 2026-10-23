@@ -1279,6 +1279,28 @@ abacustools workflow chgdiff prepare -j JOB -i 1 3 4
 abacustools workflow chgdiff postprocess -j JOB
 ```
 
+Periodic energy decomposition analysis is available as `workflow peda`. The
+full-system, two fragment, and optional isolated-reference SCF jobs must be
+complete first. Atom indices are one-based and the two fragments must cover the
+full structure:
+
+```text
+abacustools workflow peda prepare -j JOB \
+  --fragment-a FRAGMENT_A --fragment-b FRAGMENT_B \
+  --atoms-a 1 2 3 4 --atoms-b 5 6 7 8 \
+  --reference-a REFERENCE_A --reference-b REFERENCE_B
+# run JOB/peda/states/p0, plus p_ts for a Gamma-only job
+abacustools workflow peda postprocess -j JOB
+```
+
+The preparation stage records the fragment partition and state jobs in
+`workflow_peda.json`. For a Gamma-only calculation it writes both `P0` and
+`P_TS` and postprocessing includes the NOCV channel decomposition. For an
+explicit multi-k calculation it writes only `P0` and reports the k-weighted
+pEDA terms without NOCV. The result is written to `peda_results.json`; use
+`-o/--output` to change the filename. Missing or unconverged parent SCF jobs
+stop postprocessing instead of producing a partial decomposition.
+
 Elastic constants can be calculated with the stress-strain workflow. It
 generates one unstrained job and 24 independently strained jobs. By default,
 the jobs use ionic relaxation at fixed cell shape; use `--norelax` for fixed-ion

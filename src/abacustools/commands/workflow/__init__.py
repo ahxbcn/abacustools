@@ -1,4 +1,5 @@
 """The ``abacustools workflow`` command family."""
+
 from __future__ import annotations
 
 from . import band as band_workflow
@@ -7,6 +8,7 @@ from . import bec as bec_workflow
 from . import chgdiff as chgdiff_workflow
 from . import dftu as dftu_workflow
 from . import dielectric as dielectric_workflow
+from . import eda as eda_workflow
 from . import ecutwfc as ecutwfc_workflow
 from . import energy_strain as energy_strain_workflow
 from . import eos as eos_workflow
@@ -42,6 +44,7 @@ def register_parser(subparsers) -> None:
     chgdiff_workflow.register_parser(workflow_subparsers)
     dftu_workflow.register_parser(workflow_subparsers)
     dielectric_workflow.register_parser(workflow_subparsers)
+    eda_workflow.register_parser(workflow_subparsers)
     ecutwfc_workflow.register_parser(workflow_subparsers)
     energy_strain_workflow.register_parser(workflow_subparsers)
     eos_workflow.register_parser(workflow_subparsers)
