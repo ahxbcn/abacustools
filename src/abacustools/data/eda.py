@@ -845,7 +845,6 @@ _PEDA_METHOD_KEYS = (
     "ks_solver",
     "smearing_method",
     "smearing_sigma",
-    "nbands",
     "dft_functional",
     "exx_hybrid_alpha",
     "exx_hybrid_method",

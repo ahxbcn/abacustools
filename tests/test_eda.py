@@ -31,6 +31,7 @@ from abacustools.data.eda import (
     read_gamma_fixed_density_result,
     read_kpoint_fixed_density_result,
     read_peda_job_energy,
+    validate_peda_jobs,
 )
 from abacustools.data.grid import Charge
 from abacustools.data.mayer import read_csr_matrix_blocks, read_wfc_nao_k_data
@@ -723,6 +724,47 @@ def test_assemble_lts_peda_densities_sums_get_pchg_bands(tmp_path):
     assert result.electron_numbers[1] == pytest.approx(2.0, abs=2.0e-3)
     assert (state_dir / "SPIN1_CHG.cube").is_file()
     assert (pts_dir / "SPIN1_CHG.cube").is_file()
+
+
+def test_validate_peda_jobs_allows_fragment_specific_nbands(tmp_path):
+    full = _reference_gamma_job(tmp_path)
+    (full / "INPUT").write_text(
+        (full / "INPUT").read_text().replace("nspin 1\n", "nspin 1\nnbands 2\n"),
+        encoding="utf-8",
+    )
+    fragments = []
+    for name, coord in (
+        ("fragment_a", (0.0, 0.0, 0.0)),
+        ("fragment_b", (1.0, 0.0, 0.0)),
+    ):
+        path = tmp_path / name
+        path.mkdir()
+        structure = AbacusSTRU(
+            cell=np.diag([4.0, 4.0, 4.0]),
+            atoms=[AbacusATOM(label="H", coord=coord, pp="H.upf", orb="H.orb")],
+            metadata={"lattice_constant": 1.889726},
+        )
+        assert structure.write(path / "STRU")
+        (path / "H.upf").write_text("", encoding="utf-8")
+        (path / "H.orb").write_text(H_ORBITAL, encoding="utf-8")
+        (path / "INPUT").write_text(
+            "INPUT_PARAMETERS\n"
+            "calculation scf\n"
+            "basis_type lcao\n"
+            "gamma_only 1\n"
+            "nspin 1\n"
+            "nbands 1\n"
+            "stru_file STRU\n"
+            "pseudo_dir .\n"
+            "orbital_dir .\n",
+            encoding="utf-8",
+        )
+        fragments.append(path)
+
+    result = validate_peda_jobs(full, fragments[0], fragments[1], [0], [1])
+
+    assert result.fragment_a_atoms == (0,)
+    assert result.fragment_b_atoms == (1,)
 
 
 def test_prepare_gamma_state_job_writes_fixed_density_input(tmp_path):
