@@ -9,9 +9,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from abacustools.commands.workflow.eda import postprocess, prepare
+from abacustools.commands.workflow.eda import density, postprocess, prepare
 from abacustools.data.eda import (
     ElectrostaticCrossTerms,
+    LTSStateDensityResult,
+    PEDAJobEnergy,
     PEDANOCVResult,
     PEDAEnergyTerms,
 )
@@ -45,6 +47,7 @@ def _prepare_args(
         atoms_a=[1, 2],
         atoms_b=[3, 4],
         override=False,
+        version="auto",
     )
 
 
@@ -74,6 +77,11 @@ def test_registered_command_exposes_both_stages() -> None:
     assert prepare_namespace.workflow_command == "peda"
     assert prepare_namespace.peda_command == "prepare"
     assert prepare_namespace.atoms_a == [1, 2]
+    assert prepare_namespace.version
+
+    density_namespace = parser.parse_args(["workflow", "peda", "density", "-j", "."])
+    assert density_namespace.peda_command == "density"
+    assert density_namespace.output == "peda_density.json"
 
     postprocess_namespace = parser.parse_args(["workflow", "peda", "postprocess", "-j", "."])
     assert postprocess_namespace.peda_command == "postprocess"
@@ -114,6 +122,9 @@ def test_prepare_writes_state_jobs_and_manifest(
     assert manifest["tasks"] == ["peda/states/p0", "peda/states/p_ts"]
     assert manifest["fragment_a_atoms"] == [1, 2]
     assert manifest["fragment_b_atoms"] == [3, 4]
+    assert manifest["fragment_a_atom_map"] == [1, 2]
+    assert manifest["fragment_b_atom_map"] == [3, 4]
+    assert "validated_settings" in manifest
     assert manifest["nocv"] is True
     assert (job / "peda/states/p0").is_dir()
     assert (job / "peda/states/p_ts").is_dir()
@@ -154,6 +165,89 @@ def test_prepare_multik_skips_pts(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert not (job / "peda/states/p_ts").exists()
 
 
+def test_prepare_lts_adds_density_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job, fragment_a, fragment_b, reference_a, reference_b = _make_jobs(tmp_path)
+    args = _prepare_args(job, fragment_a, fragment_b, reference_a, reference_b)
+    args.version = "LTS3.10.1"
+    state = SimpleNamespace(direct=(0.0, 0.0, 0.0), channels={1: object()})
+
+    monkeypatch.setattr(
+        "abacustools.commands.workflow.eda.read_job_structure",
+        lambda path: (
+            {"basis_type": "lcao", "gamma_only": 1, "nspin": 1},
+            "STRU",
+            SimpleNamespace(natoms=4),
+        ),
+    )
+    monkeypatch.setattr(
+        "abacustools.commands.workflow.eda.build_peda_kpoint_states",
+        lambda *args, **kwargs: [state],
+    )
+    monkeypatch.setattr(
+        "abacustools.commands.workflow.eda.prepare_lts_p0_density_job",
+        lambda job_path, states, destination, **kwargs: (
+            Path(destination).mkdir(parents=True) or Path(destination)
+        ),
+    )
+    monkeypatch.setattr(
+        "abacustools.commands.workflow.eda.prepare_peda_state_job",
+        lambda job_path, states, destination, **kwargs: (
+            Path(destination).mkdir(parents=True) or Path(destination)
+        ),
+    )
+
+    assert prepare(args) == 0
+    manifest = json.loads((job / "workflow_peda.json").read_text())
+    assert manifest["tasks"][0] == "peda/density/p0"
+    assert manifest["density_mode"] == "file"
+    assert manifest["abacus_version"] == "3.10.1LTS"
+    assert (job / "peda/density/p0").is_dir()
+
+
+def test_density_stage_writes_metadata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    job, fragment_a, fragment_b, _reference_a, _reference_b = _make_jobs(tmp_path)
+    (job / "peda/density/p0").mkdir(parents=True)
+    (job / "peda/states/p0").mkdir(parents=True)
+    (job / "peda/states/p_ts").mkdir(parents=True)
+    (job / "workflow_peda.json").write_text(
+        json.dumps(
+            {
+                "format": 1,
+                "workflow": "peda",
+                "tasks": ["peda/density/p0", "peda/states/p0", "peda/states/p_ts"],
+                "fragment_a_job": "frag_a",
+                "fragment_b_job": "frag_b",
+                "fragment_a_atoms": [1, 2],
+                "fragment_b_atoms": [3, 4],
+                "density_mode": "file",
+                "density_task": "peda/density/p0",
+                "nspin": 1,
+                "gamma_only": True,
+            }
+        )
+    )
+    monkeypatch.setattr(
+        "abacustools.commands.workflow.eda.build_peda_kpoint_states",
+        lambda *args, **kwargs: [object()],
+    )
+    monkeypatch.setattr(
+        "abacustools.commands.workflow.eda.assemble_lts_peda_state_densities",
+        lambda *args, **kwargs: LTSStateDensityResult(
+            density_job=str(job / "peda/density/p0"),
+            p0_files={1: "p0.cube"},
+            p_ts_files={1: "pts.cube"},
+            electron_numbers={1: 2.0},
+            band_files={1: ("band.cube",)},
+        ),
+    )
+
+    assert density(Namespace(job=job, version="LTS3.10.1", output="peda_density.json")) == 0
+    result = json.loads((job / "peda_density.json").read_text())
+    assert result["electron_numbers"] == {"1": 2.0}
+
+
 def _fake_result() -> PEDANOCVResult:
     terms = PEDAEnergyTerms(
         preparation=0.1,
@@ -189,6 +283,17 @@ def _fake_result() -> PEDANOCVResult:
         nocv_channels=nocv,
         nocv_total_ev=-3.0,
         orbital_error_ev=0.0,
+        energy_ledger={
+            "full": PEDAJobEnergy(-10.0, -9.5, -0.5, "d3_bj"),
+            "p0": PEDAJobEnergy(-7.0, -7.0, 0.0, "none"),
+        },
+        dmr_validation={
+            "p0": {
+                "field": "p0",
+                "max_block_error": 1.0e-10,
+                "electron_numbers": [4.0],
+            }
+        },
     )
 
 
@@ -241,7 +346,11 @@ def test_postprocess_writes_gamma_nocv_results(
     report = json.loads((job / "peda_results.json").read_text())
     assert report["analysis"] == "gamma_peda_nocv"
     assert report["kpoint_count"] == 1
-    assert report["e0_ev"] == pytest.approx(-7.0)
+    assert report["e0_ev"] == pytest.approx(-6.5)
     assert report["terms_ev"]["bond"] == pytest.approx(-1.9)
     assert report["nocv_total_ev"] == pytest.approx(-3.0)
     assert report["nocv_channels"]["1"]["total_ev"] == pytest.approx(-3.0)
+    assert report["energy_ledger_ev"]["full"]["electronic_ev"] == pytest.approx(-9.5)
+    assert report["energy_ledger_ev"]["full"]["dispersion_ev"] == pytest.approx(-0.5)
+    assert report["energy_ledger_ev"]["full"]["vdw_method"] == "d3_bj"
+    assert report["dmr_validation"]["p0"]["max_block_error"] == pytest.approx(1.0e-10)

@@ -8,6 +8,7 @@ import pytest
 
 import abacustools.data.lcao as lcao
 from abacustools.commands.workflow.eda import (
+    prepare_lts_p0_density_job,
     prepare_gamma_state_job,
     prepare_peda_state_job,
 )
@@ -23,13 +24,16 @@ from abacustools.data.eda import (
     electrostatic_cross_term_from_jobs,
     fragment_nuclei,
     ion_ion_cross_term,
+    map_fragment_atoms_to_full,
     read_abacus_ewald_energy,
     read_abacus_harris_energy,
+    assemble_lts_peda_state_densities,
     read_gamma_fixed_density_result,
     read_kpoint_fixed_density_result,
+    read_peda_job_energy,
 )
 from abacustools.data.grid import Charge
-from abacustools.data.mayer import read_csr_matrix_blocks
+from abacustools.data.mayer import read_csr_matrix_blocks, read_wfc_nao_k_data
 from abacustools.data.nocv import diagonalize_nocv
 from abacustools.io.abacus import ReadInput
 from abacustools.io.stru import AbacusATOM, AbacusSTRU
@@ -40,6 +44,7 @@ from abacustools.data.lcao import (
     real_space_density_to_kpoints,
     suggest_peda_dmr_r_blocks,
     write_peda_state_dmr,
+    write_peda_state_wfc,
 )
 
 
@@ -312,6 +317,30 @@ def test_write_peda_state_dmr_gamma_single_spin(tmp_path):
     np.testing.assert_allclose(read_csr_matrix_blocks(paths[1])[(0, 0, 0)], matrix)
 
 
+def test_abacus_conj_first_storage_conversion():
+    physical = np.array(
+        [[1.0, 0.5 + 0.25j], [0.5 - 0.25j, 2.0]],
+        dtype=complex,
+    )
+
+    # ABACUS stores DM(i,j)=P(j,i), i.e. the transpose of the physical P.
+    np.testing.assert_allclose(
+        lcao._abacus_dmr_matrix(physical),
+        physical.T,
+    )
+
+
+def test_write_peda_state_dmr_rejects_complex_gamma_block(tmp_path):
+    physical = np.array(
+        [[1.0, 0.5 + 0.25j], [0.5 - 0.25j, 2.0]],
+        dtype=complex,
+    )
+    state = _state_with_densities(physical, physical, (1,))
+
+    with pytest.raises(ValueError, match="imaginary component"):
+        write_peda_state_dmr([state], _writer_structure(), tmp_path, field="p0")
+
+
 def test_write_peda_state_dmr_two_spins_uses_separate_files(tmp_path):
     p0 = np.eye(2)
     p_ts = 0.5 * np.eye(2)
@@ -559,6 +588,143 @@ def test_prepare_peda_state_job_rejects_symmetry_one_multik(tmp_path):
         )
 
 
+def test_write_peda_state_wfc_gamma(tmp_path):
+    overlap = np.eye(4)
+    full = _state(
+        coefficients={1: _full_coefficients()},
+        occupations={1: np.array([2.0, 2.0, 0.0, 0.0])},
+        overlap=overlap,
+    )
+    fragment_a = _state(
+        coefficients={1: _fragment_coefficients()},
+        occupations={1: np.array([2.0, 0.0])},
+        overlap=np.eye(2),
+    )
+    fragment_b = _state(
+        coefficients={1: _fragment_coefficients()},
+        occupations={1: np.array([2.0, 0.0])},
+        overlap=np.eye(2),
+    )
+    state = assemble_peda_kpoint_state(
+        full,
+        fragment_a,
+        fragment_b,
+        [(0, 2), (2, 4)],
+        [0],
+        [1],
+        nspin=1,
+    )
+
+    paths = write_peda_state_wfc([state], tmp_path, gamma_only=True)
+
+    assert paths[(1, 1)].name == "WFC_NAO_GAMMA1.txt"
+    coefficients, energies, occupations = read_wfc_nao_k_data(paths[(1, 1)])
+    np.testing.assert_allclose(
+        coefficients[:, : state.channels[1].basis.occupied.shape[1]],
+        state.channels[1].basis.occupied,
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(energies, 0.0)
+    np.testing.assert_allclose(occupations, [2.0, 2.0, 0.0, 0.0])
+
+
+def test_prepare_lts_density_job_writes_wfc_and_get_pchg_input(tmp_path):
+    job = _reference_gamma_job(tmp_path)
+    state = SimpleNamespace(
+        direct=(0.0, 0.0, 0.0),
+        index=1,
+        weight=1.0,
+        channels={
+            1: SimpleNamespace(
+                basis=SimpleNamespace(occupied=np.array([[1.0], [0.0]])),
+                maximum_occupation=2.0,
+            )
+        },
+    )
+
+    output = prepare_lts_p0_density_job(job, [state], "peda/density/p0")
+
+    inputs = ReadInput(str(output / "INPUT"))
+    assert inputs.get("calculation") == "get_pchg"
+    assert inputs.get("init_wfc") == "file"
+    assert inputs.get("read_file_dir") == "."
+    assert int(inputs.get("nbands")) == 2
+    assert inputs.get("out_pchg") == [1, 0]
+    assert (output / "WFC_NAO_GAMMA1.txt").is_file()
+
+
+def test_prepare_lts_gamma_state_job_uses_file_density(tmp_path):
+    job = _reference_gamma_job(tmp_path)
+    state = _state_with_densities(np.eye(2), 0.5 * np.eye(2), (1,))
+
+    output = prepare_gamma_state_job(
+        job,
+        [state],
+        "eda/states/rho0",
+        version="LTS3.10.1",
+    )
+
+    inputs = ReadInput(str(output / "INPUT"))
+    assert inputs.get("calculation") == "nscf"
+    assert inputs.get("init_chg") == "file"
+    assert int(inputs.get("out_mat_hs")) == 1
+    assert "out_hsk" not in inputs
+    assert "out_dmr" not in inputs
+    assert not (output / "dmrs1_nao.csr").exists()
+
+
+def test_assemble_lts_peda_densities_sums_get_pchg_bands(tmp_path):
+    cell = np.diag([2.0, 2.0, 2.0])
+    density = np.ones((2, 2, 2)) * (2.0 / 8.0)
+    density_job = tmp_path / "density"
+    density_output = density_job / "OUT.ABACUS"
+    density_output.mkdir(parents=True)
+    (density_job / "INPUT").write_text(
+        "INPUT_PARAMETERS\ncalculation get_pchg\nbasis_type lcao\n"
+        "gamma_only 1\nnspin 1\nsuffix ABACUS\n",
+        encoding="utf-8",
+    )
+    p0_cube = Charge(density, cell, np.zeros((2, 3)), [1, 1], [1.0, 1.0])
+    p0_cube.save_cube(str(density_output / "BAND1_GAMMA_SPIN1_CHG.cube"))
+
+    full_job = tmp_path / "full"
+    full_output = full_job / "OUT.ABACUS"
+    full_output.mkdir(parents=True)
+    (full_job / "INPUT").write_text(
+        "INPUT_PARAMETERS\ncalculation scf\nbasis_type lcao\n"
+        "gamma_only 1\nnspin 1\nsuffix ABACUS\n",
+        encoding="utf-8",
+    )
+    p0_cube.save_cube(str(full_output / "SPIN1_CHG.cube"))
+    state_dir = tmp_path / "p0"
+    state_dir.mkdir()
+    pts_dir = tmp_path / "pts"
+    pts_dir.mkdir()
+    state = SimpleNamespace(
+        index=1,
+        direct=(0.0, 0.0, 0.0),
+        weight=1.0,
+        channels={
+            1: SimpleNamespace(
+                basis=SimpleNamespace(occupied=np.ones((2, 1))),
+                maximum_occupation=2.0,
+            )
+        },
+    )
+
+    result = assemble_lts_peda_state_densities(
+        [state],
+        density_job,
+        full_job,
+        state_dir,
+        p_ts_job=pts_dir,
+    )
+
+    assert result.electron_numbers[1] == pytest.approx(2.0, abs=2.0e-3)
+    assert (state_dir / "SPIN1_CHG.cube").is_file()
+    assert (pts_dir / "SPIN1_CHG.cube").is_file()
+
+
 def test_prepare_gamma_state_job_writes_fixed_density_input(tmp_path):
     job = _reference_gamma_job(tmp_path)
     matrix = np.array([[1.0, 0.25], [0.25, 2.0]])
@@ -578,6 +744,7 @@ def test_prepare_gamma_state_job_writes_fixed_density_input(tmp_path):
     assert float(inputs.get("mixing_beta")) == 0.0
     assert int(inputs.get("scf_nmax")) == 1
     assert int(inputs.get("out_hsk")) == 1
+    assert int(inputs.get("out_dmr")) == 1
     assert (output / "STRU").is_file()
     assert (output / "H.upf").is_file()
     assert (output / "H.orb").is_file()
@@ -645,6 +812,19 @@ def _write_develop_matrix(path: Path, matrix: np.ndarray) -> None:
         )
         lines.append(f"Row {row + 1}")
         lines.append(values)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_lts_matrix(path: Path, matrix: np.ndarray) -> None:
+    rows = []
+    for row in range(matrix.shape[0]):
+        rows.append(
+            " ".join(
+                f"({matrix[row, column].real:.12f},{matrix[row, column].imag:.12f})"
+                for column in range(row, matrix.shape[1])
+            )
+        )
+    lines = [f"{matrix.shape[0]} {rows[0]}"] + rows[1:]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -779,6 +959,25 @@ def test_read_kpoint_fixed_density_result_accepts_time_reversal_symmetry(tmp_pat
     assert result.symmetry == 0
 
 
+def test_read_kpoint_fixed_density_result_accepts_lts_two_spins(tmp_path):
+    job, matrices = _multik_fixed_density_job(tmp_path, nspin=2)
+    output = job / "OUT.ABACUS"
+    for path in output.glob("hk*_nao.txt"):
+        path.unlink()
+    for index, key in enumerate(((1, 1), (2, 1), (1, 2), (2, 2))):
+        _write_lts_matrix(output / f"data-{index}-H", matrices[key])
+
+    result = read_kpoint_fixed_density_result(job, version="LTS3.10.1")
+
+    assert [kpoint.index for kpoint in result.kpoints] == [1, 2]
+    for kpoint in result.kpoints:
+        for spin in (1, 2):
+            np.testing.assert_allclose(
+                kpoint.hamiltonians[spin],
+                matrices[(kpoint.index, spin)],
+            )
+
+
 def test_read_kpoint_fixed_density_result_rejects_symmetry_one(tmp_path):
     job, _matrices = _multik_fixed_density_job(tmp_path, symmetry=1)
 
@@ -805,6 +1004,21 @@ def test_read_gamma_fixed_density_result_two_spins(tmp_path):
     job, matrices = _fixed_density_job(tmp_path, nspin=2)
 
     result = read_gamma_fixed_density_result(job)
+
+    assert set(result.hamiltonians) == {1, 2}
+    np.testing.assert_allclose(result.hamiltonians[1], matrices[1])
+    np.testing.assert_allclose(result.hamiltonians[2], matrices[2])
+
+
+def test_read_gamma_fixed_density_result_accepts_lts_two_spins(tmp_path):
+    job, matrices = _fixed_density_job(tmp_path, nspin=2)
+    output = job / "OUT.ABACUS"
+    (output / "hks1_nao.txt").unlink()
+    (output / "hks2_nao.txt").unlink()
+    for index, spin in enumerate((1, 2)):
+        _write_lts_matrix(output / f"data-{index}-H", matrices[spin])
+
+    result = read_gamma_fixed_density_result(job, version="LTS3.10.1")
 
     assert set(result.hamiltonians) == {1, 2}
     np.testing.assert_allclose(result.hamiltonians[1], matrices[1])
@@ -903,6 +1117,76 @@ def test_compute_peda_energy_terms_rejects_non_finite_energy():
             e0=-80.0,
             delta_e_elstat=-15.0,
         )
+
+
+def test_read_peda_job_energy_separates_dftd_term(tmp_path):
+    job, _matrices = _fixed_density_job(tmp_path)
+
+    ledger = read_peda_job_energy(job)
+
+    assert ledger.total_ev == pytest.approx(-10.0)
+    assert ledger.dispersion_ev == pytest.approx(-0.5)
+    assert ledger.electronic_ev == pytest.approx(-9.5)
+    assert ledger.vdw_method == "none"
+
+
+def test_peda_method_settings_compare_explicit_and_default_values():
+    import abacustools.data.eda as eda_module
+
+    implicit = eda_module._job_method_settings({"basis_type": "lcao"})
+    explicit = eda_module._job_method_settings(
+        {
+            "basis_type": "lcao",
+            "nspin": 1,
+            "gamma_only": 0,
+            "smearing_method": "gauss",
+            "smearing_sigma": 0.015,
+            "dft_plus_u": 0,
+            "vdw_method": "none",
+            "ecutwfc": 100,
+            "ecutrho": 400,
+        }
+    )
+
+    assert implicit == explicit
+
+
+def test_map_fragment_atoms_to_full_preserves_fragment_order():
+    full = AbacusSTRU(
+        cell=np.diag([4.0, 4.0, 4.0]),
+        atoms=[
+            AbacusATOM(label="H", coord=(0.0, 0.0, 0.0), pp="H.upf", orb="H.orb"),
+            AbacusATOM(label="B", coord=(1.0, 0.0, 0.0), pp="B.upf", orb="B.orb"),
+            AbacusATOM(label="H", coord=(2.0, 0.0, 0.0), pp="H.upf", orb="H.orb"),
+        ],
+    )
+    fragment = AbacusSTRU(
+        cell=np.diag([4.0, 4.0, 4.0]),
+        atoms=[
+            AbacusATOM(label="H", coord=(2.0, 0.0, 0.0), pp="H.upf", orb="H.orb"),
+            AbacusATOM(label="B", coord=(1.0, 0.0, 0.0), pp="B.upf", orb="B.orb"),
+        ],
+    )
+
+    assert map_fragment_atoms_to_full(full, fragment, [1, 2]) == (2, 1)
+
+
+def test_map_fragment_atoms_to_full_rejects_singular_cell():
+    full = AbacusSTRU(
+        cell=np.zeros((3, 3)),
+        atoms=[
+            AbacusATOM(label="H", coord=(0.0, 0.0, 0.0), pp="H.upf", orb="H.orb"),
+        ],
+    )
+    fragment = AbacusSTRU(
+        cell=np.zeros((3, 3)),
+        atoms=[
+            AbacusATOM(label="H", coord=(0.0, 0.0, 0.0), pp="H.upf", orb="H.orb"),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="non-singular"):
+        map_fragment_atoms_to_full(full, fragment, [0])
 
 
 def _cosine_density(amplitude: float, *, shape: int = 8) -> Charge:
@@ -1364,6 +1648,7 @@ def test_analyze_kpoint_peda_assembles_non_nocv_terms(monkeypatch):
             "fb": -5.0,
             "ra": -7.5,
             "rb": -5.5,
+            "p0": -18.5,
         }[job]}
 
     monkeypatch.setattr(eda_module, "get_result_from_job", fake_result)
@@ -1394,6 +1679,7 @@ def test_analyze_kpoint_peda_assembles_non_nocv_terms(monkeypatch):
     assert result.terms.interaction == pytest.approx(-7.0)
     assert result.terms.bond == pytest.approx(-7.0)
     assert set(result.data_files) == {"wf1", "wf2", "hk1", "hk2"}
+    assert result.energy_ledger["p0"].total_ev == pytest.approx(-18.5)
 
 
 def test_analyze_kpoint_peda_rejects_symmetry_one(tmp_path):
@@ -1451,7 +1737,13 @@ def _mock_gamma_peda_jobs(monkeypatch, *, fock_expectation_difference):
             )
         ),
     )
-    energy_map = {"full": -10.0, "fragment_a": -4.0, "fragment_b": -4.0}
+    energy_map = {
+        "full": -10.0,
+        "fragment_a": -4.0,
+        "fragment_b": -4.0,
+        "p0": -9.0,
+        "p_ts": -9.0,
+    }
 
     def fake_result(job, *args, **kwargs):
         name = Path(job).name
@@ -1484,6 +1776,7 @@ def test_analyze_gamma_peda_nocv_validates_orbital_sum(monkeypatch):
     assert result.terms.orbital == pytest.approx(-1.0)
     assert result.nocv_total_ev == pytest.approx(-1.0)
     assert result.orbital_error_ev == pytest.approx(0.0, abs=1e-12)
+    assert result.energy_ledger["p0"].electronic_ev == pytest.approx(-9.0)
 
 
 def test_analyze_gamma_peda_nocv_rejects_orbital_mismatch(monkeypatch):

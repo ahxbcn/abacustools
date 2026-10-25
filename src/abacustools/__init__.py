@@ -33,6 +33,11 @@ _LAZY_EXPORTS: dict[str, str] = {
     "MoldenShell": "abacustools.io.molden",
     "MoldenAtom": "abacustools.io.molden",
     "MoldenOrbital": "abacustools.io.molden",
+    # pEDA diagnostics
+    "PEDAJobEnergy": "abacustools.data.eda",
+    "PEDAJobValidation": "abacustools.data.eda",
+    "LTSStateDensityResult": "abacustools.data.eda",
+    "PEDADMRValidation": "abacustools.data.lcao",
 }
 
 

@@ -40,7 +40,7 @@ Written by `out_chg`, `out_pot`, `out_tau`/Meta-GGA, `out_elf`, `out_ldos` and
 | ELF | `out_elf 1` | `ELF.cube` (nspin 1), `ELF_SPIN<n>.cube` (nspin 2) | `elftot.cube` (nspin 1/4), `elfs<n>.cube` (nspin 2) |
 | electrostatic potential | `out_pot 2` | `ElecStaticPot.cube` | `potes.cube` |
 | local DOS | `out_ldos` | not written | `LDOS_<E>eV.cube`, and `LDOS.txt` along a line |
-| band partial charge | `out_band 1` | `BAND<n>_GAMMA_SPIN<n>_CHG.cube`, `BAND<n>_K<m>_SPIN<n>_CHG.cube` | `pchgi<n>s<n>.cube`, `pchgi<n>s<n>k<m>.cube` |
+| band partial charge | `get_pchg` with `out_pchg` | `BAND<n>_GAMMA_SPIN<n>_CHG.cube`; `BAND<n>_SPIN<n>_CHG.cube` when `if_separate_k=0`; `BAND<n>_K<m>_SPIN<n>_CHG.cube` when separated | `pchgi<n>s<n>.cube`, `pchgi<n>s<n>k<m>.cube` |
 
 Notes on the two naming schemes:
 
@@ -76,7 +76,7 @@ Written for `basis_type lcao`. The names and the indexing differ by branch:
 | --- | --- | --- | --- |
 | H(k), S(k) | `out_mat_hs 1` | `data-<ik>-H`, `data-<ik>-S`, `<ik>` zero-based | `hk<ik>_nao.txt`, `hk<ik>s<n>_nao.txt`, `sk<ik>_nao.txt`, `<ik>` one-based |
 | density matrix (k space) | `out_dm` / `out_dmk` | `SPIN<n>_DM` | `dm_nao.txt`, `dmk<ik>_nao.txt`, `dms<n>_nao.txt` |
-| density matrix (real space) | `out_dm1` / `out_dmr` | `data-DMR-sparse_SPIN<n>.csr` | `dmrs<n>_nao.csr` |
+| density matrix (real space) | `out_dm1` / `out_dmr` | `data-DMR-sparse_SPIN<n>.csr` | `dmrs<n>_nao.csr`; non-appended ionic steps may be `dmrs<n>g<step>_nao.csr` |
 | NAO wavefunctions | `out_wfc_lcao 1` | `WFC_NAO_GAMMA<n>.TXT`, `WFC_NAO_K<n>.TXT` | `wf_nao.txt`, `wfs<n>_nao.txt`, `wfs<n>k<ik>_nao.txt`, `wfk<ik>_nao.txt`, `wfk<ik>s<n>_nao.txt` |
 | H(R), S(R) | `out_mat_hs2 1` / `out_hsr 1` | `data-HR-sparse_SPIN<n>.csr`, `data-SR-sparse_SPIN0.csr` | `hrs<n>_nao.csr`, `sr_nao.csr` |
 | kinetic matrix T(R) | `out_mat_t 1` / `out_mat_tk` | `data-TR-sparse_SPIN0.csr` (k-space `data-<ik>-T`) | `tr_nao.csr` (k-space `tk..._nao.txt`) |

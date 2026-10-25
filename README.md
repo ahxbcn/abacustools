@@ -1288,7 +1288,10 @@ full structure:
 abacustools workflow peda prepare -j JOB \
   --fragment-a FRAGMENT_A --fragment-b FRAGMENT_B \
   --atoms-a 1 2 3 4 --atoms-b 5 6 7 8 \
-  --reference-a REFERENCE_A --reference-b REFERENCE_B
+  --reference-a REFERENCE_A --reference-b REFERENCE_B \
+  --version LTS3.10.1
+# For LTS, run JOB/peda/density/p0, then:
+abacustools workflow peda density -j JOB
 # run JOB/peda/states/p0, plus p_ts for a Gamma-only job
 abacustools workflow peda postprocess -j JOB
 ```
@@ -1300,6 +1303,15 @@ explicit multi-k calculation it writes only `P0` and reports the k-weighted
 pEDA terms without NOCV. The result is written to `peda_results.json`; use
 `-o/--output` to change the filename. Missing or unconverged parent SCF jobs
 stop postprocessing instead of producing a partial decomposition.
+
+`--version` selects the ABACUS workflow dialect. With an LTS alias such as
+`LTS3.10.1` (or `3.10.1`), the prepared jobs use LTS's `out_mat_hs` and
+`get_pchg` capabilities instead of develop-only `out_hsk`/`out_dmr`
+keywords. The generated `get_pchg` job converts the P0
+occupied fragment orbitals into band-decomposed cubes; `workflow peda density`
+then assembles the spin-resolved `SPIN*_CHG.cube` files consumed by the
+fixed-density state jobs. The default `auto` keeps the historical DMR route
+unless the parent job log identifies an LTS version.
 
 Elastic constants can be calculated with the stress-strain workflow. It
 generates one unstrained job and 24 independently strained jobs. By default,

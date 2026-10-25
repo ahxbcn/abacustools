@@ -20,6 +20,7 @@ from abacustools.core.constant import BOHR_TO_ANG
 from abacustools.data.mayer import (
     read_nao_basis_layout,
     read_nao_file,
+    read_csr_matrix_blocks,
     read_wfc_nao_k_data,
 )
 from abacustools.io.abacus import ReadInput
@@ -1250,6 +1251,18 @@ class PEDAOrbitalState:
     data_files: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class PEDADMRValidation:
+    """Conservation and round-trip diagnostics for a pEDA density."""
+
+    field: str
+    max_hermiticity_error: float
+    max_trace_error: float
+    max_p0_idempotency_error: float
+    max_block_error: float
+    electron_numbers: tuple[float, ...]
+
+
 def assemble_peda_kpoint_state(
     full: KPointOrbitals,
     fragment_a: KPointOrbitals,
@@ -1485,6 +1498,154 @@ def _peda_channel_matrix(channel: PEDAChannelState, field: str) -> np.ndarray:
         raise ValueError(f"unknown pEDA state field: {field}") from error
 
 
+def _abacus_dmr_matrix(matrix: np.ndarray) -> np.ndarray:
+    """Convert the physical P matrix to ABACUS's conj-first storage.
+
+    ABACUS stores ``P.T`` because its convention is
+    ``DM(i,j)=sum(conj(C_i) C_j)`` while the physical one-body matrix is
+    ``P(i,j)=sum(C_i conj(C_j))``.
+    """
+
+    array = np.asarray(matrix, dtype=np.complex128)
+    return array.T
+
+
+def validate_peda_dmr_states(
+    states: Sequence[PEDAOrbitalState],
+    *,
+    field: str = "p0",
+    trace_tolerance: float = 1e-6,
+    hermiticity_tolerance: float = 1e-8,
+    idempotency_tolerance: float = 1e-6,
+) -> PEDADMRValidation:
+    """Check electron conservation and matrix invariants before DMR export."""
+
+    if not states:
+        raise ValueError("at least one pEDA state is required for DMR validation")
+    if field not in {"p0", "p_ab", "p_ts"}:
+        raise ValueError(f"unknown pEDA state field: {field}")
+    max_hermiticity = 0.0
+    max_trace_error = 0.0
+    max_idempotency = 0.0
+    electrons: list[float] = []
+    for state in states:
+        if not hasattr(state, "overlap"):
+            # Small synthetic callers that exercise only the CSR writer do not
+            # carry the SCF overlap; their file round-trip is still checked.
+            continue
+        overlap = np.asarray(state.overlap, dtype=np.complex128)
+        if overlap.ndim != 2 or overlap.shape[0] != overlap.shape[1]:
+            raise ValueError(f"k-point {state.index}: overlap matrix is not square")
+        if not np.allclose(overlap, overlap.conj().T, atol=hermiticity_tolerance, rtol=0.0):
+            raise ValueError(f"k-point {state.index}: overlap matrix is not Hermitian")
+        state_electrons = 0.0
+        for spin, channel in sorted(state.channels.items()):
+            density = np.asarray(_peda_channel_matrix(channel, field), dtype=np.complex128)
+            if density.shape != overlap.shape:
+                raise ValueError(
+                    f"k-point {state.index}, spin {spin}: density and overlap dimensions differ"
+                )
+            if not np.all(np.isfinite(density)):
+                raise ValueError(f"k-point {state.index}, spin {spin}: density is not finite")
+            hermiticity = float(np.max(np.abs(density - density.conj().T)))
+            max_hermiticity = max(max_hermiticity, hermiticity)
+            if hermiticity > hermiticity_tolerance:
+                raise ValueError(
+                    f"k-point {state.index}, spin {spin}: density is not Hermitian "
+                    f"(error={hermiticity:g})"
+                )
+            trace = float(np.trace(density @ overlap).real)
+            expected = (
+                float(np.trace(channel.p0_lambda).real)
+                if hasattr(channel, "p0_lambda")
+                else trace
+            )
+            trace_error = abs(trace - expected)
+            max_trace_error = max(max_trace_error, trace_error)
+            if trace_error > trace_tolerance:
+                raise ValueError(
+                    f"k-point {state.index}, spin {spin}: Tr(P S)={trace:.10f} "
+                    f"differs from the occupied electron count {expected:.10f}"
+                )
+            state_electrons += trace
+            if hasattr(channel, "p0_lambda") and hasattr(channel, "maximum_occupation"):
+                p0 = np.asarray(channel.p0_lambda, dtype=np.complex128)
+                idempotency = float(
+                    np.max(np.abs(p0 @ p0 - channel.maximum_occupation * p0))
+                )
+            else:
+                idempotency = 0.0
+            max_idempotency = max(max_idempotency, idempotency)
+        electrons.append(state_electrons)
+    if field == "p0" and max_idempotency > idempotency_tolerance:
+        raise ValueError(
+            "P0 density is not idempotent in the orthonormal fragment basis: "
+            f"error={max_idempotency:g}"
+        )
+    return PEDADMRValidation(
+        field=field,
+        max_hermiticity_error=max_hermiticity,
+        max_trace_error=max_trace_error,
+        max_p0_idempotency_error=max_idempotency,
+        max_block_error=0.0,
+        electron_numbers=tuple(electrons),
+    )
+
+
+def validate_peda_dmr_files(
+    states: Sequence[PEDAOrbitalState],
+    files: Mapping[int, str | Path],
+    *,
+    field: str = "p0",
+    block_tolerance: float = 1e-7,
+) -> PEDADMRValidation:
+    """Compare ABACUS CSR DMR blocks with the expected Fourier transform."""
+
+    report = validate_peda_dmr_states(states, field=field)
+    expected_by_spin: dict[int, dict[tuple[int, int, int], np.ndarray]] = {}
+    for spin in sorted(states[0].channels):
+        entries = [
+            (
+                state.direct,
+                state.weight,
+                _abacus_dmr_matrix(_peda_channel_matrix(state.channels[spin], field)),
+            )
+            for state in states
+        ]
+        path = files.get(spin)
+        if path is None:
+            raise ValueError(f"DMR file mapping is missing spin {spin}")
+        actual = read_csr_matrix_blocks(path)
+        expected = kpoint_density_to_real_space(entries, tuple(actual))
+        expected_by_spin[spin] = expected
+        if set(actual) != set(expected):
+            raise ValueError(
+                f"{path}: R-block set differs from the expected DMR blocks"
+            )
+        for key in actual:
+            error = float(np.max(np.abs(np.asarray(actual[key]) - expected[key])))
+            if error > block_tolerance:
+                raise ValueError(
+                    f"{path}: R={key} differs from expected DMR by {error:g}"
+                )
+    max_block_error = 0.0
+    for spin, blocks in expected_by_spin.items():
+        actual = read_csr_matrix_blocks(files[spin])
+        for key, matrix in blocks.items():
+            max_block_error = max(
+                max_block_error,
+                float(np.max(np.abs(np.asarray(actual[key]) - matrix))),
+            )
+    return PEDADMRValidation(
+        field=report.field,
+        max_hermiticity_error=report.max_hermiticity_error,
+        max_trace_error=report.max_trace_error,
+        max_p0_idempotency_error=report.max_p0_idempotency_error,
+        max_block_error=max_block_error,
+        electron_numbers=report.electron_numbers,
+    )
+
+
 def suggest_peda_dmr_r_blocks(
     job: str | Path,
     *,
@@ -1591,6 +1752,7 @@ def write_peda_state_dmr(
     r_blocks: Optional[Sequence[tuple[int, int, int]]] = None,
     precision: int = 8,
     sparse_threshold: float = 1e-10,
+    imaginary_tolerance: float = 1e-8,
 ) -> dict[int, Path]:
     """Write pEDA density matrices as ABACUS DMR files.
 
@@ -1610,6 +1772,9 @@ def write_peda_state_dmr(
             single Gamma point this defaults to ``((0, 0, 0),)``.
         precision: Text precision passed to the CSR writer.
         sparse_threshold: Entries below this magnitude are omitted.
+        imaginary_tolerance: Maximum allowed imaginary component.  ABACUS
+            stores collinear DM(R) as real matrices and discards the imaginary
+            part during its k-to-R transform.
 
     Returns:
         Mapping from one-based spin index to the written file path.
@@ -1623,6 +1788,8 @@ def write_peda_state_dmr(
         raise ValueError("at least one pEDA k-point state is required")
     if field not in {"p0", "p_ab", "p_ts"}:
         raise ValueError(f"unknown pEDA state field: {field}")
+    if not np.isfinite(imaginary_tolerance) or imaginary_tolerance < 0.0:
+        raise ValueError("imaginary_tolerance must be a finite non-negative number")
 
     spin_sets = {tuple(sorted(state.channels)) for state in states}
     if len(spin_sets) != 1:
@@ -1658,6 +1825,7 @@ def write_peda_state_dmr(
 
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
+    validate_peda_dmr_states(states, field=field)
     result: dict[int, Path] = {}
     for spin in spins:
         kpoint_entries: list[tuple[tuple[float, float, float], float, np.ndarray]] = []
@@ -1671,10 +1839,24 @@ def write_peda_state_dmr(
                 (
                     state.direct,
                     state.weight,
-                    np.asarray(_peda_channel_matrix(channel, field)),
+                    _abacus_dmr_matrix(_peda_channel_matrix(channel, field)),
                 )
             )
         blocks = kpoint_density_to_real_space(kpoint_entries, normalized_blocks)
+        imaginary = max(
+            (float(np.max(np.abs(np.asarray(matrix).imag))) for matrix in blocks.values()),
+            default=0.0,
+        )
+        if imaginary > imaginary_tolerance:
+            raise ValueError(
+                f"spin {spin} DMR contains an imaginary component {imaginary:g}, "
+                "but ABACUS collinear init_chg=dm reads real DM(R); include "
+                "time-reversed k-points or use a compatible real density"
+            )
+        blocks = {
+            key: np.asarray(matrix).real
+            for key, matrix in blocks.items()
+        }
         path = output / f"dmrs{spin}_nao.csr"
         write_csr_matrix_blocks(
             path,
@@ -1686,4 +1868,159 @@ def write_peda_state_dmr(
             sparse_threshold=sparse_threshold,
         )
         result[spin] = path
+    # Read the just-written CSR back through the same parser used for ABACUS
+    # outputs.  This catches truncation, row-pointer and complex-token errors
+    # before a calculation is submitted.
+    validate_peda_dmr_files(
+        states,
+        result,
+        field=field,
+        block_tolerance=max(1e-7, 2.0 * float(sparse_threshold)),
+    )
+    return result
+
+
+def write_peda_state_wfc(
+    states: Sequence[PEDAOrbitalState],
+    output_dir: str | Path,
+    *,
+    gamma_only: bool,
+    precision: int = 16,
+) -> dict[tuple[int, int], Path]:
+    """Write P0 occupied orbitals in the ABACUS LCAO wavefunction format.
+
+    LTS 3.10 can turn stored LCAO orbitals into band-decomposed charge
+    densities with ``calculation get_pchg``.  Writing the occupied pEDA
+    fragment orbitals as a wavefunction therefore provides an exact
+    ABACUS-side density conversion without requiring ``init_chg dm``.  Empty
+    bands are included so that the file spans the full-system NAO dimension.
+
+    Args:
+        states: pEDA states at one or more k-points.  Each state must expose
+            ``channels[spin].basis.occupied``.
+        output_dir: Directory in which the ``WFC_NAO_*`` files are written.
+        gamma_only: Whether the parent calculation used the Gamma-only LCAO
+            algorithm.
+        precision: Number of digits used for the coefficients.
+
+    Returns:
+        Mapping from ``(k-point index, spin)`` to the written file.
+
+    Raises:
+        ValueError: If the states use inconsistent k-points, spins or basis
+            dimensions, or if a Gamma calculation contains complex
+            coefficients.
+    """
+
+    if not states:
+        raise ValueError("at least one pEDA state is required to write WFC files")
+    if precision <= 0:
+        raise ValueError("precision must be positive")
+    if len(states) != 1 and gamma_only:
+        raise ValueError("a Gamma-only WFC export requires exactly one k-point")
+
+    spin_sets = {tuple(sorted(state.channels)) for state in states}
+    if len(spin_sets) != 1:
+        raise ValueError("all pEDA states must have the same spin channels")
+    spins = list(next(iter(spin_sets)))
+    nspin = len(spins)
+    if nspin not in (1, 2):
+        raise ValueError(f"WFC export supports nspin=1 or 2, got {nspin}")
+
+    dimensions: set[int] = set()
+    for state in states:
+        for spin in spins:
+            occupied = np.asarray(state.channels[spin].basis.occupied)
+            if occupied.ndim != 2 or occupied.shape[0] <= 0 or occupied.shape[1] <= 0:
+                raise ValueError(
+                    f"pEDA channel spin={spin} at k-point {state.index} has invalid "
+                    "occupied orbital coefficients"
+                )
+            dimensions.add(int(occupied.shape[0]))
+    if len(dimensions) != 1:
+        raise ValueError("pEDA states use different full-system basis dimensions")
+    nlocal = dimensions.pop()
+
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    result: dict[tuple[int, int], Path] = {}
+
+    def write_file(
+        path: Path,
+        *,
+        state: PEDAOrbitalState,
+        spin: int,
+        kpoint_index: int,
+    ) -> None:
+        occupied = np.asarray(state.channels[spin].basis.occupied)
+        coefficients = np.zeros((nlocal, nlocal), dtype=occupied.dtype)
+        coefficients[:, : occupied.shape[1]] = occupied
+        if gamma_only:
+            imaginary = float(np.max(np.abs(coefficients.imag))) if coefficients.size else 0.0
+            magnitude = float(np.max(np.abs(coefficients))) if coefficients.size else 0.0
+            if imaginary > 1e-8 * max(magnitude, 1.0):
+                raise ValueError(
+                    f"Gamma pEDA WFC coefficients for spin {spin} are complex; "
+                    "use gamma_only=0 for this state"
+                )
+            coefficients = coefficients.real
+
+        with path.open("w", encoding="utf-8", newline="\n") as handle:
+            if gamma_only:
+                handle.write(f"{nlocal} (number of bands)\n")
+                handle.write(f"{nlocal} (number of orbitals)\n")
+            else:
+                handle.write(f"{kpoint_index} (index of k points)\n")
+                handle.write(
+                    " ".join(f"{float(value):.16e}" for value in state.direct) + "\n"
+                )
+                handle.write(f"{nlocal} (number of bands)\n")
+                handle.write(f"{nlocal} (number of orbitals)\n")
+
+            for band in range(nlocal):
+                occupation = 0.0
+                if band < occupied.shape[1]:
+                    if gamma_only:
+                        occupation = 1.0 if nspin == 2 else 2.0
+                    else:
+                        occupation = state.weight * (1.0 if nspin == 2 else 2.0)
+                handle.write(f"{band + 1} (band)\n")
+                handle.write(f"{0.0:.16e} (Ry)\n")
+                handle.write(f"{occupation:.16e} (Occupations)\n")
+                for position in range(nlocal):
+                    value = coefficients[position, band]
+                    if np.iscomplexobj(coefficients):
+                        token = (
+                            f"{float(value.real):.{precision}e} "
+                            f"{float(value.imag):.{precision}e}"
+                        )
+                    else:
+                        token = f"{float(value):.{precision}e}"
+                    handle.write(" " + token)
+                    if position % 5 == 4:
+                        handle.write("\n")
+                if nlocal % 5:
+                    handle.write("\n")
+
+    if gamma_only:
+        state = states[0]
+        if not np.allclose(state.direct, 0.0, atol=1e-6):
+            raise ValueError("a Gamma-only WFC export requires a Gamma k-point")
+        for spin in spins:
+            path = output / f"WFC_NAO_GAMMA{spin}.txt"
+            write_file(path, state=state, spin=spin, kpoint_index=1)
+            result[(1, spin)] = path
+        return result
+
+    for spin in spins:
+        for position, state in enumerate(states, start=1):
+            file_index = position + (spin - 1) * len(states)
+            path = output / f"WFC_NAO_K{file_index}.txt"
+            write_file(
+                path,
+                state=state,
+                spin=spin,
+                kpoint_index=file_index,
+            )
+            result[(position, spin)] = path
     return result
