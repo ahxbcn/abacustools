@@ -78,6 +78,49 @@ H2                      1.3                 0.2                 0.0
 """
 
 
+DIRECT_CONSTRAINED_RELAX_LOG = """
+DIRECT COORDINATES
+    atom                   x                   y                   z
+F1                      0.0                 0.0                 0.0
+H1                      0.0                 0.0                 0.0
+
+ STEP OF RELAXATION : 1
+ TOTAL-FORCE (eV/Angstrom)
+------------------------------------------------------------------------------------------
+                         F1         2.0000000000         0.0000000000         0.0000000000
+                         H1         0.0100000000         0.0200000000         0.0300000000
+------------------------------------------------------------------------------------------
+ Largest gradient in force is 2.000000 eV/A.
+ final etot is -1.000000 eV
+DIRECT COORDINATES
+    atom                   x                   y                   z
+F1                      0.0200000000         0.0                 0.0
+H1                      0.0                  0.1000000000         0.0
+"""
+
+
+CELL_RELAX_DIRECT_LOG = """
+lattice constant (Angstrom) = 1.0
+LATTICE VECTORS: (CARTESIAN COORDINATES)
+4.0 0.0 0.0
+0.0 4.0 0.0
+0.0 0.0 4.0
+DIRECT COORDINATES
+    atom                   x                   y                   z
+H1                      0.1000000000         0.0                 0.0
+
+ STEP OF RELAXATION : 1
+ final etot is -1.000000 eV
+LATTICE VECTORS: (CARTESIAN COORDINATES)
+5.0 0.0 0.0
+0.0 5.0 0.0
+0.0 0.0 5.0
+DIRECT COORDINATES
+    atom                   x                   y                   z
+H1                      0.1000000000         0.0                 0.0
+"""
+
+
 CELL_RELAX_LOG = """
  STEP OF RELAXATION : 1
 ----------------------------------------------------------------
@@ -192,6 +235,32 @@ def _job_with_log(
     log = output / name
     log.write_text(text, encoding="utf-8")
     return job, log
+
+
+def _write_constrained_stru(job: Path) -> None:
+    """Write a two-atom job structure with one fixed terminal atom."""
+    (job / "STRU").write_text(
+        "ATOMIC_SPECIES\n"
+        "F 19.0 F.upf\n"
+        "H 1.008 H.upf\n\n"
+        "LATTICE_CONSTANT\n"
+        "1.8897261255\n\n"
+        "LATTICE_VECTORS\n"
+        "10.0 0.0 0.0\n"
+        "0.0 10.0 0.0\n"
+        "0.0 0.0 10.0\n\n"
+        "ATOMIC_POSITIONS\n"
+        "Direct\n\n"
+        "F #label\n"
+        "0.0 #magnetism\n"
+        "1 #number of atoms\n"
+        "0.0 0.0 0.0 m 0 0 0\n\n"
+        "H #label\n"
+        "0.0 #magnetism\n"
+        "1 #number of atoms\n"
+        "0.0 0.0 0.0 m 1 1 1\n",
+        encoding="utf-8",
+    )
 
 
 def _monitor(job: Path, calculation: str, *, progress: dict | None = None, **overrides):
@@ -357,6 +426,57 @@ class TestStepHistories(unittest.TestCase):
         self.assertAlmostEqual(with_cell[0]["rms_displacement"], 0.3, places=6)
         self.assertEqual(with_cell[0]["max_displacement_atom"], 1)
         self.assertIsNone(without_cell[0]["max_displacement_atom"])
+
+    def test_direct_coordinates_and_fixed_atoms_are_included(self) -> None:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log") as stream:
+            stream.write(DIRECT_CONSTRAINED_RELAX_LOG)
+            stream.flush()
+            history = read_relaxation_history(
+                stream.name,
+                lattice=Lattice.cubic(10.0),
+                moves=[(False, False, False), (True, True, True)],
+            )
+
+        self.assertAlmostEqual(history[0]["max_force"], 0.03)
+        self.assertEqual(history[0]["force_atom"], 2)
+        self.assertEqual(history[0]["force_atom_label"], "H1")
+        self.assertEqual(history[0]["force_component"], "z")
+        # F1 moved 0.2 A, but it is fixed; H1 contributes the reported 1.0 A.
+        self.assertAlmostEqual(history[0]["max_displacement"], 1.0)
+        self.assertAlmostEqual(history[0]["rms_displacement"], 1.0)
+        self.assertEqual(history[0]["max_displacement_atom_label"], "H1")
+
+    def test_cell_relax_uses_the_cell_of_each_direct_block(self) -> None:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log") as stream:
+            stream.write(CELL_RELAX_DIRECT_LOG)
+            stream.flush()
+            history = read_relaxation_history(
+                stream.name, lattice=Lattice.cubic(4.0)
+            )
+
+        # The cell grew from 4 A to 5 A while the fractional coordinate stayed
+        # at 0.1, so the atom moved 0.1 A in Cartesian space.
+        self.assertAlmostEqual(history[0]["max_displacement"], 0.1)
+        self.assertAlmostEqual(history[0]["rms_displacement"], 0.1)
+        self.assertEqual(history[0]["max_displacement_atom_label"], "H1")
+
+    def test_partial_force_block_waits_for_all_constraint_rows(self) -> None:
+        text = (
+            "STEP OF RELAXATION : 1\n"
+            "TOTAL-FORCE (eV/Angstrom)\n"
+            "H1 0.1 0.0 0.0\n"
+            "Largest gradient in force is 0.1 eV/A.\n"
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log") as stream:
+            stream.write(text)
+            stream.flush()
+            history = read_relaxation_history(
+                stream.name,
+                moves=[(True, True, True), (False, False, False)],
+            )
+
+        self.assertIsNone(history[0]["max_force"])
+        self.assertEqual(history[0]["forces"], [[0.1, 0.0, 0.0]])
 
 
 class TestJobLattice(unittest.TestCase):
@@ -661,6 +781,43 @@ class TestMonitorReports(unittest.TestCase):
             self.assertIn("max_disp(A)", output)
             self.assertIn("disp_atom", output)
             self.assertIn("Ga1z", output)
+
+    def test_relax_applies_fixed_atoms_to_forces_and_displacements(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            job, _ = _job_with_log(
+                Path(temporary),
+                "running_relax.log",
+                DIRECT_CONSTRAINED_RELAX_LOG,
+                calculation="relax",
+                inputs={"force_thr_ev": 0.05},
+            )
+            _write_constrained_stru(job)
+
+            code, output = _monitor(job, "relax")
+            self.assertEqual(code, 0)
+            self.assertIn(
+                "constraints: fixed atoms=1, fixed components=3, movable atoms=1",
+                output,
+            )
+            self.assertIn("H1z", output)
+            self.assertIn("1.00000000", output)
+
+            code, output = _monitor(job, "relax", json=True)
+            payload = json.loads(output)
+            self.assertEqual(code, 0)
+            self.assertEqual(
+                payload["constraints"],
+                {
+                    "fixed_atoms": 1,
+                    "fixed_components": 3,
+                    "movable_atoms": 1,
+                    "movable_components": 3,
+                },
+            )
+            self.assertAlmostEqual(payload["steps"][0]["max_force"], 0.03)
+            self.assertAlmostEqual(
+                payload["steps"][0]["max_displacement"], 1.0, places=6
+            )
 
     def test_relax_criteria_fall_back_to_the_log_threshold(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

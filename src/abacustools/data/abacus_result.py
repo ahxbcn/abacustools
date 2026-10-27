@@ -272,21 +272,46 @@ def _step_patterns(profile: Any, text: str) -> tuple[str, ...]:
 
 def _force_extremes(
     block: List[List[float]],
+    moves: Optional[Sequence[Sequence[bool]]] = None,
 ) -> Optional[tuple[float, int, str]]:
-    """Return the magnitude, one-based atom index and component of the largest force."""
+    """Return the largest movable force component and its atom and direction.
+
+    Without movement flags this keeps the historical atom-vector magnitude.
+    With flags it follows the ABACUS threshold convention, comparing the
+    largest Cartesian component that is allowed to move and ignoring the
+    components constrained by ``STRU``.
+    """
     if not block:
         return None
     vectors = np.asarray(block, dtype=float)
-    magnitudes = np.sqrt((vectors * vectors).sum(axis=1))
-    index = int(magnitudes.argmax())
-    axis = int(np.abs(vectors[index]).argmax())
-    return float(magnitudes[index]), index + 1, "xyz"[axis]
+    if vectors.ndim != 2 or vectors.shape[1] != 3:
+        return None
+    if moves is None:
+        magnitudes = np.sqrt((vectors * vectors).sum(axis=1))
+        index = int(magnitudes.argmax())
+        axis = int(np.abs(vectors[index]).argmax())
+        return float(magnitudes[index]), index + 1, "xyz"[axis]
+    flags = np.ones(vectors.shape, dtype=bool)
+    if len(moves) != len(block):
+        # A live log can expose a partially written force table. Wait until
+        # the block has one row per atom before applying the constraints.
+        return None
+    flags = np.asarray(moves, dtype=bool)
+    if flags.shape != vectors.shape:
+        return None
+    if not flags.any():
+        return None
+    allowed = np.where(flags, np.abs(vectors), -np.inf)
+    index, axis = np.unravel_index(int(allowed.argmax()), allowed.shape)
+    return float(allowed[index, axis]), int(index) + 1, "xyz"[int(axis)]
 
 
 def _atom_label(labels: List[str], atom: int) -> Optional[str]:
     """Return the log label of a one-based atom index, such as ``H1``."""
     if 0 < atom <= len(labels):
-        label = labels[atom - 1].strip()
+        label = re.sub(
+            r"^(?:tauc_|taud_)", "", labels[atom - 1].strip(), flags=re.IGNORECASE
+        )
         if label:
             return label
     return None
@@ -310,6 +335,7 @@ def read_relaxation_history(
     version: Optional[str] = None,
     *,
     lattice: Any = None,
+    moves: Optional[Sequence[Sequence[bool]]] = None,
 ) -> List[Dict[str, Any]]:
     """Read per-ionic-step geometry-optimization metrics from an ABACUS log.
 
@@ -327,7 +353,9 @@ def read_relaxation_history(
     Angstrom, and ``max_displacement_atom`` names the atom that moved the
     most.  Those metrics need the cell to unfold the periodic wrapping that
     ABACUS applies after every ionic step, so they are reported only when a
-    pymatgen ``lattice`` is given.
+    pymatgen ``lattice`` is given. Both Cartesian and direct coordinate blocks
+    are understood. When ``moves`` is supplied, fixed force components and
+    fixed displacement components are excluded from the reported extremes.
 
     Args:
         log_file: ABACUS running log.
@@ -336,6 +364,10 @@ def read_relaxation_history(
             displacements.  Pass the result of
             :func:`abacustools.io.stru.periodic_lattice`; without it the
             displacement metrics are omitted.
+        moves: Per-atom x/y/z movement flags from ``STRU``. A ``False`` flag
+            excludes that component from the force and displacement metrics.
+            A partially written block with a different atom count is treated
+            as unavailable.
     """
     path = Path(log_file)
     text = path.read_text(encoding="utf-8", errors="replace")
@@ -349,41 +381,54 @@ def read_relaxation_history(
 
     # Coordinates only feed the periodic displacement metrics; without a
     # lattice the blocks are never used, so do not pay for parsing them.
-    initial_positions: Optional[List[List[float]]] = None
-    positions: Dict[int, List[List[float]]] = {}
+    initial_geometry = None
+    geometries: Dict[
+        int, tuple[List[Optional[str]], List[List[float]], List[List[float]]]
+    ] = {}
     if lattice is not None:
-        initial_positions, positions = _collect_coordinate_steps(
-            lines, profile, step_patterns
+        initial_geometry, geometries = _collect_coordinate_steps(
+            lines, profile, step_patterns, lattice
         )
-    previous_positions = initial_positions
+    previous_positions = None if initial_geometry is None else initial_geometry[1]
     for item in [records[step] for step in sorted(records)]:
-        current_positions = positions.get(item["step"])
-        if current_positions is None:
+        geometry = geometries.get(item["step"])
+        if geometry is None:
             previous_positions = None
             continue
+        labels, current_positions, current_cell = geometry
+        current_lattice = _step_lattice(current_cell, lattice)
         displacement = _displacement_metrics(
-            previous_positions, current_positions, lattice
+            previous_positions, current_positions, current_lattice, moves
         )
         if displacement is not None:
             rms, maximum, atom = displacement
             item["rms_displacement"] = rms
             item["max_displacement"] = maximum
             item["max_displacement_atom"] = atom
+            item["max_displacement_atom_label"] = _atom_label(labels, atom)
         previous_positions = current_positions
 
     for step, (labels, block) in force_blocks.items():
-        extremes = _force_extremes(block)
+        extremes = _force_extremes(block, moves)
         if extremes is None:
+            if moves is not None:
+                item = records[step]
+                item["max_force"] = None
+                item["force_atom"] = None
+                item["force_component"] = None
+                item["force_atom_label"] = None
+            item = records[step]
+            item["forces"] = block
             continue
         magnitude, atom, component = extremes
         item = records[step]
-        if item["max_force"] is None:
+        if moves is not None or item["max_force"] is None:
             item["max_force"] = magnitude
         item["force_atom"] = atom
         item["force_component"] = component
         item["force_atom_label"] = _atom_label(labels, atom)
         displacement_atom = item.get("max_displacement_atom")
-        if displacement_atom is not None:
+        if displacement_atom is not None and item.get("max_displacement_atom_label") is None:
             item["max_displacement_atom_label"] = _atom_label(labels, displacement_atom)
         item["forces"] = block
 
@@ -715,48 +760,38 @@ def _collect_ionic_steps(
     return records, force_blocks, stress_blocks
 
 
-def _parse_coordinate_block(
-    lines: List[str], start: int, unit_to_angstrom: float
-) -> List[List[float]]:
-    """Read Cartesian coordinates following one log coordinate header."""
-    coordinates: List[List[float]] = []
-    started = False
-    for line in _lines_after(lines, start):
-        parts = line.split()
-        values: Optional[List[float]] = None
-        if len(parts) >= 4:
-            try:
-                values = [_as_float(value) for value in parts[1:4]]
-            except ValueError:
-                pass
-        if values is None and len(parts) >= 3:
-            try:
-                values = [_as_float(value) for value in parts[:3]]
-            except ValueError:
-                pass
-        if values is not None:
-            coordinates.append([value * unit_to_angstrom for value in values])
-            started = True
-            continue
-        if started:
-            break
-    return coordinates
-
-
 def _collect_coordinate_steps(
     lines: List[str],
     profile: Any,
     step_patterns: tuple[str, ...],
-) -> tuple[Optional[List[List[float]]], Dict[int, List[List[float]]]]:
-    """Collect the initial and per-step Cartesian structures from a log."""
+    lattice: Any,
+) -> tuple[
+    Optional[tuple[List[Optional[str]], List[List[float]], List[List[float]]]],
+    Dict[int, tuple[List[Optional[str]], List[List[float]], List[List[float]]]],
+]:
+    """Collect labelled Cartesian structures and cells from a log.
+
+    ABACUS prints either Cartesian or direct coordinates. Direct blocks are
+    converted with the lattice vectors active at that point of the log, which
+    also follows the changing cell of a ``cell-relax`` run.
+    """
     step_res = _compiled(step_patterns)
     gate = _gate(
         (),
-        step_patterns + (_COORDINATE_HEADER_RE.pattern,),
+        step_patterns
+        + (
+            _COORDINATE_HEADER_RE.pattern,
+            _DIRECT_COORDINATE_HEADER_RE.pattern,
+            _LATTICE_VECTOR_HEADER_RE.pattern,
+        ),
     )
     current_step: Optional[int] = None
-    initial_positions: Optional[List[List[float]]] = None
-    positions: Dict[int, List[List[float]]] = {}
+    initial_geometry = None
+    geometries: Dict[
+        int, tuple[List[Optional[str]], List[List[float]], List[List[float]]]
+    ] = {}
+    lattice_constant = _lattice_constant_angstrom(lines[:512])
+    active_cell = np.asarray(lattice.matrix, dtype=float)
 
     for index, line in enumerate(lines):
         if gate.search(line.lower()) is None:
@@ -765,26 +800,49 @@ def _collect_coordinate_steps(
         if step is not None:
             current_step = int(step)
             continue
-        header = _COORDINATE_HEADER_RE.search(line)
-        if header is None:
+        if _LATTICE_VECTOR_HEADER_RE.search(line) is not None:
+            block = _parse_matrix_block(lines, index)
+            if block is not None and lattice_constant is not None:
+                active_cell = np.asarray(block, dtype=float) * lattice_constant
             continue
-        unit = 1.0 if header.group(1) is None else _as_float(header.group(1))
-        coordinates = _parse_coordinate_block(
-            lines, index, unit * BOHR_TO_ANG
-        )
+        direct = _DIRECT_COORDINATE_HEADER_RE.match(line) is not None
+        header = _COORDINATE_HEADER_RE.search(line)
+        if not direct and header is None:
+            continue
+        labels, coordinates = _parse_coordinate_rows(lines, index)
         if not coordinates:
             continue
-        if current_step is None:
-            initial_positions = coordinates
+        if direct:
+            cartesian = np.asarray(coordinates, dtype=float) @ active_cell
         else:
-            positions[current_step] = coordinates
-    return initial_positions, positions
+            unit = 1.0 if header.group(1) is None else _as_float(header.group(1))
+            cartesian = np.asarray(coordinates, dtype=float) * unit * BOHR_TO_ANG
+        geometry = (labels, cartesian.tolist(), active_cell.tolist())
+        if current_step is None:
+            initial_geometry = geometry
+        else:
+            geometries[current_step] = geometry
+    return initial_geometry, geometries
+
+
+def _step_lattice(cell: Optional[List[List[float]]], fallback: Any) -> Any:
+    """Return a lattice for one coordinate block, reusing the fallback cell."""
+    if cell is None:
+        return fallback
+    matrix = np.asarray(cell, dtype=float)
+    fallback_matrix = np.asarray(fallback.matrix, dtype=float)
+    if matrix.shape == fallback_matrix.shape and np.allclose(matrix, fallback_matrix):
+        return fallback
+    from pymatgen.core import Lattice
+
+    return Lattice(matrix)
 
 
 def _displacement_metrics(
     previous: Optional[List[List[float]]],
     current: List[List[float]],
     lattice: Any = None,
+    moves: Optional[Sequence[Sequence[bool]]] = None,
 ) -> Optional[tuple[float, float, int]]:
     """Return the atomic RMS and maximum displacement between structures.
 
@@ -802,16 +860,29 @@ def _displacement_metrics(
     current_cartesian = np.asarray(current, dtype=float)
     previous_fractional = lattice.get_fractional_coords(previous_cartesian)
     current_fractional = lattice.get_fractional_coords(current_cartesian)
-    distances = np.array(
-        [
-            lattice.get_distance_and_image(first, second)[0]
-            for first, second in zip(previous_fractional, current_fractional)
-        ]
-    )
+    displacements = []
+    for first, second in zip(previous_fractional, current_fractional):
+        _, image = lattice.get_distance_and_image(first, second)
+        delta_fractional = np.asarray(second) + np.asarray(image) - np.asarray(first)
+        displacements.append(delta_fractional @ lattice.matrix)
+    displacements = np.asarray(displacements, dtype=float)
+    flags = np.ones(displacements.shape, dtype=bool)
+    if moves is not None:
+        if len(moves) != len(current):
+            return None
+        flags = np.asarray(moves, dtype=bool)
+        if flags.shape != displacements.shape:
+            return None
+    if not flags.any():
+        return None
+    allowed = np.where(flags, displacements, 0.0)
+    per_atom = np.sqrt(np.sum(allowed**2, axis=1))
+    movable_atoms = flags.any(axis=1)
+    atom = int(np.argmax(np.where(movable_atoms, per_atom, -np.inf)))
     return (
-        float(np.sqrt(np.mean(distances**2))),
-        float(np.max(distances)),
-        int(np.argmax(distances)) + 1,  # one-based, as in _force_extremes
+        float(np.sqrt(np.mean(per_atom[movable_atoms] ** 2))),
+        float(per_atom[atom]),
+        atom + 1,  # one-based, as in _force_extremes
     )
 
 

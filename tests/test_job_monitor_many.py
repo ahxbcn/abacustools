@@ -66,6 +66,70 @@ class TestJobMonitorMany(unittest.TestCase):
             self.assertAlmostEqual(result["max_force"], 0.02)
             self.assertAlmostEqual(result["max_stress"], 1.0)
 
+    def test_summary_applies_fixed_atoms_to_geometry_metrics(self) -> None:
+        from abacustools.io.stru import AbacusATOM, AbacusSTRU
+
+        with tempfile.TemporaryDirectory() as temporary:
+            job = Path(temporary) / "relax"
+            job.mkdir()
+            AbacusSTRU(
+                cell=[[10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]],
+                atoms=[
+                    AbacusATOM(
+                        label="F",
+                        element="F",
+                        coord=(0.0, 0.0, 0.0),
+                        move=(False, False, False),
+                    ),
+                    AbacusATOM(
+                        label="H",
+                        element="H",
+                        coord=(0.0, 0.0, 0.0),
+                        move=(True, True, True),
+                    ),
+                ],
+            ).write(str(job / "STRU"))
+            (job / "INPUT").write_text(
+                "INPUT_PARAMETERS\ncalculation relax\nsuffix ABACUS\n",
+                encoding="utf-8",
+            )
+            output = job / "OUT.ABACUS"
+            output.mkdir()
+            log = output / "running_relax.log"
+            log.write_text(
+                "DIRECT COORDINATES\n"
+                "F1 0.0 0.0 0.0\n"
+                "H1 0.0 0.0 0.0\n"
+                "STEP OF RELAXATION : 1\n"
+                "TOTAL-FORCE (eV/Angstrom)\n"
+                "F1 2.0 0.0 0.0\n"
+                "H1 0.01 0.02 0.03\n"
+                "--------------------\n"
+                "DIRECT COORDINATES\n"
+                "F1 0.02 0.0 0.0\n"
+                "H1 0.0 0.1 0.0\n",
+                encoding="utf-8",
+            )
+            validation = JobValidation(
+                True, [], {"calculation": "relax", "stru_file": "STRU"}
+            )
+            # A transferred job can lack its resources even though its log is
+            # still monitorable, so the status carries no log path here.
+            status = JobStatus("invalid", {}, None)
+            with patch(
+                "abacustools.commands.job.monitor_many.validate_job",
+                return_value=validation,
+            ), patch(
+                "abacustools.commands.job.monitor_many.status_job",
+                return_value=status,
+            ):
+                result = _summary(job, [job])
+
+        self.assertAlmostEqual(result["max_force"], 0.03)
+        self.assertAlmostEqual(result["max_displacement"], 1.0, places=6)
+        self.assertEqual(result["max_displacement_atom_label"], "H1")
+        self.assertEqual(result["log"], str(log))
+
     def test_json_once_reports_all_jobs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

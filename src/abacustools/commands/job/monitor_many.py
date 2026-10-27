@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from abacustools.core.job import JobStatus, JobValidation, status_job, validate_job
-from abacustools.data.abacus_result import read_relaxation_history
+from abacustools.data.abacus_result import find_job_log, read_relaxation_history
 
 from .monitor import (
     _format_displacement_site,
@@ -18,6 +18,7 @@ from .monitor import (
     _job_directory,
     _print_table,
     _structure_lattice,
+    _structure_moves,
 )
 from abacustools.core.render import cli_output
 
@@ -68,6 +69,8 @@ def _summary(job: Path, jobs: list[Path]) -> dict[str, Any]:
     validation: JobValidation = validate_job(job)
     status: JobStatus = status_job(job, validation)
     calculation = str(validation.inputs.get("calculation", "scf")).lower()
+    ionic = calculation in {"relax", "cell-relax", "cell_relax", "md"}
+    log = status.log or find_job_log(job, ionic=ionic)
     item: dict[str, Any] = {
         "job": str(job.absolute()),
         "name": _job_name(job, jobs),
@@ -83,11 +86,18 @@ def _summary(job: Path, jobs: list[Path]) -> dict[str, Any]:
         "max_displacement_atom": None,
         "max_displacement_atom_label": None,
         "relaxation_steps": None,
-        "log": None if status.log is None else str(status.log),
+        "log": None if log is None else str(log),
     }
-    if _is_relaxation(calculation) and status.log is not None:
+    if _is_relaxation(calculation) and log is not None:
+        moves = (
+            _structure_moves(job, validation.inputs)
+            if calculation in {"relax", "cell-relax", "cell_relax"}
+            else None
+        )
         history = read_relaxation_history(
-            status.log, lattice=_structure_lattice(job, validation.inputs)
+            log,
+            lattice=_structure_lattice(job, validation.inputs),
+            moves=moves,
         )
         if history:
             latest = history[-1]

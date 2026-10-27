@@ -157,13 +157,16 @@ def _task_type(calculation: str) -> str:
 
 
 def _read_history(
-    task: str, log: Path, lattice: Any = None
+    task: str,
+    log: Path,
+    lattice: Any = None,
+    moves: Optional[list[tuple[bool, bool, bool]]] = None,
 ) -> list[dict[str, Any]]:
     """Read the step history matching one monitoring mode."""
     if task == "md":
         return read_md_history(log)
     if task in {"relax", "cell-relax"}:
-        return read_relaxation_history(log, lattice=lattice)
+        return read_relaxation_history(log, lattice=lattice, moves=moves)
     return read_scf_history(log)
 
 
@@ -304,6 +307,24 @@ def _structure_moves(
     return [tuple(bool(flag) for flag in move) for move in structure.moves]
 
 
+def _constraint_summary(
+    moves: Optional[list[tuple[bool, bool, bool]]],
+) -> Optional[dict[str, int]]:
+    """Summarize the fixed and movable atomic degrees of freedom."""
+    if moves is None:
+        return None
+    fixed_atoms = sum(1 for move in moves if not any(move))
+    movable_atoms = len(moves) - fixed_atoms
+    fixed_components = sum(1 for move in moves for flag in move if not flag)
+    movable_components = len(moves) * 3 - fixed_components
+    return {
+        "fixed_atoms": fixed_atoms,
+        "fixed_components": fixed_components,
+        "movable_atoms": movable_atoms,
+        "movable_components": movable_components,
+    }
+
+
 def _structure_lattice(job: Path, inputs: dict[str, Any]):
     """Return the periodic lattice of the job's STRU, when it can be read."""
     structure = _job_structure(job, inputs)
@@ -323,6 +344,7 @@ def _payload(
     task: str,
     inputs: dict[str, Any],
     history: list[dict[str, Any]],
+    moves: Optional[list[tuple[bool, bool, bool]]] = None,
 ) -> dict[str, Any]:
     """Build the report of one monitoring update."""
     payload: dict[str, Any] = {
@@ -343,6 +365,9 @@ def _payload(
         ],
     }
     if task in {"relax", "cell-relax"}:
+        constraints = _constraint_summary(moves)
+        if constraints is not None:
+            payload["constraints"] = constraints
         payload["criteria"] = _convergence_criteria(inputs, log, task)
     elif task == "scf":
         payload["criteria"] = _scf_criteria(inputs)
@@ -371,6 +396,18 @@ def _print_criteria(criteria: dict[str, Any]) -> None:
     for key in ("relax_method", "relax_nmax", "relax_cg_thr"):
         if key in criteria:
             cli_output(f"  {key}: {criteria[key]}")
+
+
+def _print_constraints(constraints: Optional[dict[str, int]]) -> None:
+    """Print the fixed and movable atomic degrees of freedom."""
+    if constraints is None:
+        return
+    cli_output(
+        "constraints: "
+        f"fixed atoms={constraints['fixed_atoms']}, "
+        f"fixed components={constraints['fixed_components']}, "
+        f"movable atoms={constraints['movable_atoms']}"
+    )
 
 
 def _print_md_settings(settings: dict[str, Any]) -> None:
@@ -466,6 +503,7 @@ def _print_report(
         return
     _print_header(payload)
     if task in {"relax", "cell-relax"}:
+        _print_constraints(payload.get("constraints"))
         _print_criteria(payload["criteria"])
     elif task == "md":
         _print_md_settings(payload["md"])
@@ -822,7 +860,7 @@ def run(args: argparse.Namespace) -> int:
     plot = _plot_path(args.plot, job, task)
     moves = (
         _structure_moves(job, validation.inputs)
-        if plot is not None and task in {"relax", "cell-relax"}
+        if task in {"relax", "cell-relax"}
         else None
     )
     status = status_job(job, validation)
@@ -832,7 +870,12 @@ def run(args: argparse.Namespace) -> int:
         read_normal_end(log) if log is not None else False,
     )
     history = (
-        _read_history(task, log, _structure_lattice(job, validation.inputs))
+        _read_history(
+            task,
+            log,
+            _structure_lattice(job, validation.inputs),
+            moves,
+        )
         if log is not None
         else []
     )
@@ -844,6 +887,7 @@ def run(args: argparse.Namespace) -> int:
         task,
         validation.inputs,
         history,
+        moves,
     )
 
     if args.csv:

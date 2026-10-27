@@ -626,13 +626,17 @@ An SCF calculation shows the current electronic progress, and
 `--scf-steps` adds the energy, energy change and density error of every SCF
 iteration. A `relax` calculation prints its convergence criteria first and
 then every ionic step with the step number, total energy, energy change, the
-largest force, and the atom it belongs to, written as its log label plus the
-Cartesian component such as `H1x` for the `x` component of atom `H1`. Each
-relaxation step also reports the atomic RMS displacement, the maximum atomic
-displacement from the preceding structure, and the atom that moved the most,
-in Angstrom; the displacements are taken as periodic minimum images, which
-needs the cell of the job, so they are left empty when the `STRU` of the job
-cannot be read. A
+largest force component allowed to move, and the atom it belongs to, written
+as its log label plus the Cartesian component such as `H1x` for the `x`
+component of atom `H1`. Components fixed by the movement flags in `STRU` are
+left out of the force extreme, and the report gives the fixed-atom and
+fixed-component counts. Each relaxation step also reports the atomic RMS
+displacement, the maximum atomic displacement from the preceding structure,
+and the atom that moved the most, in Angstrom; only movable atoms and
+directions contribute. Both Cartesian and direct coordinate blocks are read,
+and a `cell-relax` run follows the changing cell printed with those blocks.
+The displacements are taken as periodic minimum images, so they are left empty
+when the `STRU` of the job cannot be read. A
 `cell-relax` calculation adds the largest stress with its Voigt component. An
 `md` calculation prints the total, potential and kinetic energy, the
 temperature and the pressure of every MD step, together with the settings of
