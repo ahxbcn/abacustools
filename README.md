@@ -842,6 +842,32 @@ evaluated as the occupied-band sum up to the Fermi level, independently of the
 plotting grid. This is an ABACUS-NAO COHP/COOP implementation and is not a
 standard LOBSTER pCOHP projection.
 
+An approximate QTAIM bond-critical-point search is available for total-density
+cubes and the valence density of an ABACUS job:
+
+```text
+abacustools postprocess qtaim -j JOB
+abacustools postprocess qtaim -j JOB --core-radius 0.4 --cutoff 3.5
+abacustools postprocess qtaim -j JOB --density all_electron.cube --json
+```
+
+The command samples the minimum-image segment of every atom pair within
+`--cutoff` (4.0 Angstrom by default), takes density minima outside spherical
+core-exclusion regions as seeds, and refines them by a three-dimensional
+Newton search for `grad(rho) = 0`. A point is reported only when its Hessian
+has the `(3,-1)` BCP signature and it remains outside every core sphere.
+The report contains the BCP position, `rho`, gradient, Hessian eigenvalues,
+Laplacian and ellipticity in atomic units. `--core-radius` defaults to 0.3
+Angstrom; `auto` uses the largest UPF non-local-projector cutoff as a more
+conservative radius.
+
+This is deliberately an approximate QTAIM mode. Norm-conserving ABACUS
+pseudopotentials normally write a valence pseudo-density, so the missing core
+density is excluded from the search rather than reconstructed. Use
+`--density` with an all-electron or validated core-augmented cube for
+publication-quality QTAIM. The command does not compute ring/cage critical
+points, bond paths, atomic basins or basin-integrated properties.
+
 An ABACUS LCAO wavefunction can be exported to the Molden format, for example
 to visualize the orbitals in Molden, Multiwfn or Avogadro:
 

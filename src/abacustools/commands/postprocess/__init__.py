@@ -1,4 +1,5 @@
 """The ``abacustools postprocess`` command family."""
+
 from __future__ import annotations
 
 from . import bader as bader_command
@@ -12,6 +13,7 @@ from . import hirshfeld as hirshfeld_command
 from . import mayer as mayer_command
 from . import md as md_command
 from . import molden as molden_command
+from . import qtaim as qtaim_command
 from . import result as result_command
 from . import traj as traj_command
 
@@ -40,5 +42,6 @@ def register_parser(subparsers) -> None:
     mayer_command.register_parser(postprocess_subparsers)
     md_command.register_parser(postprocess_subparsers)
     molden_command.register_parser(postprocess_subparsers)
+    qtaim_command.register_parser(postprocess_subparsers)
     result_command.register_parser(postprocess_subparsers)
     traj_command.register_parser(postprocess_subparsers)
