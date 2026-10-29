@@ -22,7 +22,7 @@ toolkit for DFT calculations with [ABACUS](https://abacus.deepmodeling.com/).
   - `abacustools mp ...` — the Materials Project spelling of
     `abacustools database --database mp`.
   - `abacustools postprocess ...` — `result`, `band`, `dos`, `cohp`, `mayer`,
-    `bader`, `chg`, `ddec`, `md`, `molden`.
+    `bader`, `hirshfeld`, `chg`, `ddec`, `md`, `molden`, `traj`.
   - `abacustools workflow ...` — multi-step workflows (elastic, phonon, ...).
 
 ## Environment setup
@@ -69,6 +69,12 @@ src/abacustools/
   menu/              # interactive multi-level menu (argparse reflection)
 tests/               # pytest suite (test_*.py); tests/fixtures/ holds
                      # optional reference structures, skipped when absent
+docs/                # plain Markdown user, command, reference, and API docs
+  index.md           # documentation landing page and navigation
+  getting-started.md
+  python-api.md
+  commands/          # one page per command family
+  reference/         # version profiles and other cross-command references
 skills/              # ABACUS guidance packages; the LTS/develop output-file
                      # names live in skills/abacus-job-files/references/
                      # output-files.md
@@ -79,6 +85,27 @@ Layering: `commands/` may import `data/`, `io/`, and `core/`; `data/`, `io/`,
 thin — argument parsing and rendering only. A helper used by more than one
 command module lives in `data/`, `io/`, or `core/` (for example the job
 readers in `core/job.py`), never in a sibling command module.
+
+## Documentation layout
+
+The root `README.md` is the short project landing page: overview, installation,
+quick-start examples, development commands, and links into `docs/`. Do not grow
+it into a complete user manual.
+
+Detailed documentation is plain Markdown under `docs/`:
+
+- command-family pages live in `docs/commands/<family>.md`;
+- cross-command references live in `docs/reference/`;
+- user-facing Python/ASE interfaces live in `docs/python-api.md`;
+- every documentation page must be reachable from `docs/index.md`;
+- relative links between docs pages and the root `README.md` must remain valid.
+
+Documentation must describe the checked-out code. The argparse tree is the
+authoritative source for command names and options, so verify a change with
+`abacustools <family> --help` and `abacustools <family> <command> --help`.
+Keep detailed argument lists and command behavior in the matching docs page;
+only update `README.md` when the high-level project overview or quick start
+changes.
 
 ## Reading ABACUS output (the version adapter layer)
 
@@ -146,7 +173,8 @@ touching the resolver.
      code (0 on success).
 3. Register the module in `commands/<family>/__init__.py`.
 4. Add `tests/test_<name>.py`.
-5. Document the command in `README.md`.
+5. Document the command in `docs/commands/<family>.md` and link it from
+   `docs/index.md` when a new family page is added.
 
 The CLI surface has two more touch points: `postprocess` carries the pinned
 aliases `post`/`pp` (`tests/test_main.py`), so keep new aliases out unless a
@@ -162,7 +190,7 @@ to `_LAZY_EXPORTS` in `src/abacustools/__init__.py` so it stays importable as
 - Register it in `integrations/databases/__init__.py`; commands select a
   database by name and never import a concrete provider.
 - Ship the search/download field or key tables as package data, add cases
-  in `tests/test_databases.py`, and document the database in `README.md`.
+  in `tests/test_databases.py`, and document the database in `docs/commands/databases.md`.
 
 New commands appear in the interactive menu automatically: `abacustools/menu/`
 reflects the argparse tree, so keep argument definitions declarative and avoid
@@ -295,5 +323,6 @@ menu-specific branching in command modules.
       outputs are read or written).
 - [ ] The test run adds no new failures and no new skips beyond the
       pre-existing optional-package and fixture skips.
-- [ ] CLI changes are reflected in `README.md`.
+- [ ] CLI changes are reflected in the matching `docs/commands/*.md` page
+      and remain consistent with argparse help.
 - [ ] No generated or large files staged.
