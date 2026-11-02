@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from abacustools.core.render import cli_output
 
 
 def register_parser(subparsers) -> None:
@@ -64,7 +65,7 @@ def run(args: argparse.Namespace) -> int:
         structure = AbacusSTRU.read(args.filename, fmt=args.input_format)
         if structure is None:
             raise RuntimeError(f"failed to read structure: {args.filename}")
-        print(structure)
+        cli_output(structure)
         return 0
 
     from abacustools.io.stru import convert_structure
@@ -79,5 +80,5 @@ def run(args: argparse.Namespace) -> int:
         empty2x=args.empty2x,
         direct=direct,
     )
-    print(f"converted {args.filename} -> {args.output}")
+    cli_output(f"converted {args.filename} -> {args.output}")
     return 0

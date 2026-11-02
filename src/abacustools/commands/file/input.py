@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 
 from abacustools.io.abacus import ReadInput, WriteInput
+from abacustools.core.render import cli_output
 
 
 def _input_file(value: str) -> Path:
@@ -35,15 +36,15 @@ def register_parser(subparsers) -> None:
 
 def run(args: argparse.Namespace) -> int:
     """Run the ``file input`` command."""
-    print(f"process input file: {args.filename}")
+    cli_output(f"process input file: {args.filename}")
     inputs = ReadInput(args.filename)
     if args.set:
         param, value = args.set
         param = param.lower()
         if param in inputs:
-            print(f"Modifying {param} from {inputs[param]} to {value}")
+            cli_output(f"Modifying {param} from {inputs[param]} to {value}")
         else:
-            print(f"Setting new parameter {param} to {value}")
+            cli_output(f"Setting new parameter {param} to {value}")
         inputs[param] = value
 
     WriteInput(inputs, args.filename)

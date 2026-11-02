@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence, Union
 
 from abacustools.core.config import CONFIG
+from abacustools.data.abacus_json import read_abacus_json
 
 
 PathLike = Union[str, Path]
@@ -323,11 +324,31 @@ def detect_version_from_text(text: str) -> Optional[VersionProfile]:
     return None
 
 
+def _profile_from_version_string(version: Any) -> Optional[VersionProfile]:
+    """Resolve a version string such as ``v3.11.0-beta10`` to a profile."""
+    if not isinstance(version, str) or not version.strip():
+        return None
+    return _lookup(version, *_registry())
+
+
 def detect_version(job_dir: Optional[PathLike]) -> Optional[VersionProfile]:
-    """Detect the ABACUS profile from the logs of one job directory."""
+    """Detect the ABACUS profile for one job directory.
+
+    The machine-readable ``abacus.json`` job summary written below the job
+    root wins when present and states its version; the ``OUT.*``/local
+    ``running_*.log`` banners are the fallback.  A job with neither
+    readable artefact gets ``None``.
+    """
     if job_dir is None:
         return None
     job = Path(job_dir)
+    summary = read_abacus_json(job)
+    if summary is not None:
+        general = summary.get("general_info")
+        if isinstance(general, dict):
+            profile = _profile_from_version_string(general.get("version"))
+            if profile is not None:
+                return profile
     candidates = sorted(job.glob("OUT.*/running_*.log"))
     candidates += sorted(job.glob("running_*.log"))
     for log in candidates:

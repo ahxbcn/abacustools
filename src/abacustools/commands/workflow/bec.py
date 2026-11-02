@@ -29,6 +29,7 @@ from .common import (
     write_abacus_job,
     write_manifest,
 )
+from abacustools.core.render import cli_output
 
 
 _DIRECTIONS = ("x", "y", "z")
@@ -244,11 +245,11 @@ def prepare(args: argparse.Namespace) -> int:
     task_names = _displacement_names(atom_indices, directions, args.disp_type)
     clear_generated_jobs(job, task_names, override=args.override)
 
-    print(f"  job: {job}")
-    print(f"  atoms: {', '.join(str(index + 1) for index in atom_indices)}")
-    print(f"  directions: {' '.join(directions)}")
-    print(f"  displacement: {stepsize} Angstrom ({args.disp_type})")
-    print(f"  k-point mesh: {' '.join(str(value) for value in kpoint[:3])}")
+    cli_output(f"  job: {job}")
+    cli_output(f"  atoms: {', '.join(str(index + 1) for index in atom_indices)}")
+    cli_output(f"  directions: {' '.join(directions)}")
+    cli_output(f"  displacement: {stepsize} Angstrom ({args.disp_type})")
+    cli_output(f"  k-point mesh: {' '.join(str(value) for value in kpoint[:3])}")
 
     bec_inputs = deepcopy(inputs)
     bec_inputs.pop("kspacing", None)
@@ -260,7 +261,7 @@ def prepare(args: argparse.Namespace) -> int:
             job, structure, bec_inputs, stru_filename, job / "bec_org",
             kpoint, kpoint_model, args.use_k_continuity, args.abacus_command,
         )
-        print("  prepared bec_org")
+        cli_output("  prepared bec_org")
 
     for index in atom_indices:
         for direction in directions:
@@ -277,7 +278,7 @@ def prepare(args: argparse.Namespace) -> int:
                     args.use_k_continuity,
                     args.abacus_command,
                 )
-                print(f"  prepared {name}")
+                cli_output(f"  prepared {name}")
             if args.disp_type in {"b", "c"}:
                 name = f"bec_disp_atom{index}_{direction}_back"
                 _write_bec_inputs(
@@ -291,7 +292,7 @@ def prepare(args: argparse.Namespace) -> int:
                     args.use_k_continuity,
                     args.abacus_command,
                 )
-                print(f"  prepared {name}")
+                cli_output(f"  prepared {name}")
 
     write_manifest(
         job,
@@ -307,7 +308,7 @@ def prepare(args: argparse.Namespace) -> int:
         suffix="ABACUS",
         use_k_continuity=bool(args.use_k_continuity),
     )
-    print(f"  generated calculations: {len(task_names)}")
+    cli_output(f"  generated calculations: {len(task_names)}")
     return 0
 
 
@@ -452,14 +453,14 @@ def postprocess(args: argparse.Namespace) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 
-    print(f"  job: {job}")
-    print("  Born effective charge tensors (e):")
+    cli_output(f"  job: {job}")
+    cli_output("  Born effective charge tensors (e):")
     for atom in atoms:
-        print(f"    atom {atom['index']} ({atom['label']}):")
+        cli_output(f"    atom {atom['index']} ({atom['label']}):")
         for direction, row in zip(_DIRECTIONS, atom["bec_tensor"]):
             values = "-" if row is None else " ".join(f"{value: .8f}" for value in row)
-            print(f"      {direction}: {values}")
-    print(f"  results: {output}")
+            cli_output(f"      {direction}: {values}")
+    cli_output(f"  results: {output}")
     return 0
 
 

@@ -12,6 +12,7 @@ from abacustools.core.input_prep import (
     parse_input_value,
 )
 from abacustools.core.submission import write_batch_config
+from abacustools.core.render import cli_output
 
 
 def _pairs(values, *, value_type=float) -> dict:
@@ -167,9 +168,9 @@ def run(args: argparse.Namespace) -> int:
         folder_syntax=args.folder_syntax,
         overwrite=args.override,
     ).run()
-    print("Prepared ABACUS jobs:")
+    cli_output("Prepared ABACUS jobs:")
     for job in jobs:
-        print(f"  {job.path}  (source: {job.source})")
+        cli_output(f"  {job.path}  (source: {job.source})")
     if jobs:
         submission = write_batch_config(
             jobs[0].path.parent,
@@ -179,7 +180,7 @@ def run(args: argparse.Namespace) -> int:
             abacus_command=args.abacus_command,
         )
         if submission is not None:
-            print(
+            cli_output(
                 f"  batch config: {jobs[0].path.parent / submission['config_file']}"
                 f"  ({submission['job_count']} jobs)"
             )

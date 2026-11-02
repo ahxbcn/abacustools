@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +18,7 @@ from .common import (
     provider_options,
     selected_database,
 )
+from abacustools.core.render import cli_output
 
 
 def register_parser(subparsers, *, default_database=None) -> None:
@@ -95,7 +95,7 @@ def run(args: argparse.Namespace) -> int:
         database = selected_database(args)
         options = provider_options(args, database)
     except DATABASE_ERRORS as error:
-        print(f"error: {error}", file=sys.stderr)
+        cli_output(f"error: {error}", stderr=True)
         return 1
 
     records: list[dict[str, Any]] = []
@@ -103,10 +103,10 @@ def run(args: argparse.Namespace) -> int:
         try:
             structure = database.fetch(identifier, api_key=args.api_key, **options)
         except FATAL_DOWNLOAD_ERRORS as error:
-            print(f"error: {error}", file=sys.stderr)
+            cli_output(f"error: {error}", stderr=True)
             return 1
         except DATABASE_ERRORS + (LookupError, OSError) as error:
-            print(f"error: {identifier}: {error}", file=sys.stderr)
+            cli_output(f"error: {identifier}: {error}", stderr=True)
             records.append({"database": database.name, "id": identifier, "error": str(error)})
             continue
         destination = structure_path(
@@ -121,7 +121,7 @@ def run(args: argparse.Namespace) -> int:
         records.append(record)
 
     if args.json:
-        print(json.dumps(records, indent=2, sort_keys=True))
+        cli_output(json.dumps(records, indent=2, sort_keys=True))
     else:
         Console().print(download_table(records))
     return 0 if all("error" not in record for record in records) else 1

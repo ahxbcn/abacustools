@@ -11,6 +11,7 @@ from abacustools.data.hirshfeld import (
     hirshfeld_i_charges,
     read_reference_densities,
 )
+from abacustools.core.render import cli_output
 
 
 def _job_directory(value: str) -> Path:
@@ -129,13 +130,13 @@ def run(args: argparse.Namespace) -> int:
             mixing=args.mixing,
         )
         if args.json:
-            print(json.dumps(_hirshfeld_i_report(result), indent=2))
+            cli_output(json.dumps(_hirshfeld_i_report(result), indent=2))
             return 0
-        print(
+        cli_output(
             f"Hirshfeld-I charges: {result.job} "
             f"(grid {result.grid[0]}x{result.grid[1]}x{result.grid[2]})"
         )
-        print(
+        cli_output(
             f"  references: {result.reference_source}; "
             f"{result.iterations} iterations, "
             f"{'converged' if result.converged else 'NOT converged'}"
@@ -143,11 +144,11 @@ def run(args: argparse.Namespace) -> int:
         for index, (element, charge, population) in enumerate(
             zip(result.elements, result.charges, result.populations), start=1
         ):
-            print(
+            cli_output(
                 f"  atom {index:3d} {element:3s} q={charge:9.5f} e  "
                 f"N={population:9.5f} e"
             )
-        print(f"  total charge: {result.charges.sum():.5f} e")
+        cli_output(f"  total charge: {result.charges.sum():.5f} e")
         return 0
 
     result = hirshfeld_charges(
@@ -158,18 +159,18 @@ def run(args: argparse.Namespace) -> int:
     )
 
     if args.json:
-        print(json.dumps(_hirshfeld_report(result), indent=2))
+        cli_output(json.dumps(_hirshfeld_report(result), indent=2))
         return 0
 
-    print(f"Hirshfeld charges: {result.job} (grid {result.grid[0]}x{result.grid[1]}x{result.grid[2]})")
+    cli_output(f"Hirshfeld charges: {result.job} (grid {result.grid[0]}x{result.grid[1]}x{result.grid[2]})")
     for index, (element, charge, volume) in enumerate(
         zip(result.elements, result.charges, result.volumes), start=1
     ):
         line = f"  atom {index:3d} {element:3s} q={charge:9.5f} e  V={volume:9.3f} A^3"
         if result.cm5 is not None:
             line += f"  q_CM5={result.cm5[index - 1]:9.5f} e"
-        print(line)
-    print(f"  total charge: {result.charges.sum():.5f} e")
+        cli_output(line)
+    cli_output(f"  total charge: {result.charges.sum():.5f} e")
     return 0
 
 

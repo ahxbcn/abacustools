@@ -21,6 +21,7 @@ from .common import (
     write_abacus_job,
     write_manifest,
 )
+from abacustools.core.render import cli_output
 _ROOT = "fdstress"
 _EQUILIBRIUM_TASK = f"{_ROOT}/equilibrium"
 _DEFAULT_COMPONENTS = ("11", "12", "13", "22", "23", "33")
@@ -210,7 +211,7 @@ def postprocess(args: argparse.Namespace) -> int:
         output = job / output
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    print(f"  results: {output}")
+    cli_output(f"  results: {output}")
     return 0
 
 

@@ -22,6 +22,7 @@ from .common import (
     write_abacus_job,
     write_manifest,
 )
+from abacustools.core.render import cli_output
 
 
 def _register_prepare_arguments(parser: argparse.ArgumentParser) -> None:
@@ -80,9 +81,9 @@ def prepare(args: argparse.Namespace) -> int:
     scf_inputs["calculation"] = "scf"
     scf_inputs["out_chg"] = 1
     generated_names = ("full_system", "subsys1", "subsys2")
-    print(f"  job: {job}")
-    print(f"  subsystem 1 atom indices: {', '.join(str(i + 1) for i in subsystem1)}")
-    print(f"  subsystem 2 atom indices: {', '.join(str(i + 1) for i in subsystem2)}")
+    cli_output(f"  job: {job}")
+    cli_output(f"  subsystem 1 atom indices: {', '.join(str(i + 1) for i in subsystem1)}")
+    cli_output(f"  subsystem 2 atom indices: {', '.join(str(i + 1) for i in subsystem2)}")
 
     clear_generated_jobs(job, generated_names, override=args.override)
 
@@ -101,7 +102,7 @@ def prepare(args: argparse.Namespace) -> int:
             stru_filename=stru_filename,
             kpoint=kpoint_file,
         )
-        print(f"  prepared {name}")
+        cli_output(f"  prepared {name}")
 
     write_manifest(
         job,
@@ -130,7 +131,7 @@ def postprocess(args: argparse.Namespace) -> int:
     job = Path(args.job).absolute()
     if not job.is_dir():
         raise RuntimeError(f"job directory does not exist: {job}")
-    print(f"  job: {job}")
+    cli_output(f"  job: {job}")
     task_names = ("full_system", "subsys1", "subsys2")
     read_manifest(job, "chgdiff", task_names)
     full = _read_total_charge_density(job / "full_system", args.version)
@@ -145,7 +146,7 @@ def postprocess(args: argparse.Namespace) -> int:
         output = job / output
     output.parent.mkdir(parents=True, exist_ok=True)
     difference.save_cube(output)
-    print(f"  charge-density difference: {output}")
+    cli_output(f"  charge-density difference: {output}")
     return 0
 
 

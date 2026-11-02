@@ -1,3 +1,4 @@
+from __future__ import annotations
 from pydantic import BaseModel
 from typing import List, Tuple, Union, Dict, Any, Optional, Literal, overload
 import copy
@@ -400,7 +401,8 @@ class AbacusATOM(BaseModel):
         If angle1 or angle2 is None, then this value will not write to STRU file.
         """
         if isinstance(mag, (list, tuple)):
-            assert len(mag) == 3, f"Magnetic moment tuple must have three components, got {mag}."
+            if len(mag) != 3:
+                raise ValueError(f"Magnetic moment tuple must have three components, got {mag}.")
         elif isinstance(mag, np.ndarray):
             mag = mag.tolist()
         elif isinstance(mag, (int, float, type(None))):
@@ -466,7 +468,8 @@ class AbacusATOM(BaseModel):
             else:
                 natom += 1
         unique_types[-1].natom = natom
-        assert sum([atype.natom for atype in unique_types]) == len(atom_list), "Sum of unique atom types' natom does not equal to total number of atoms."
+        if sum(atype.natom for atype in unique_types) != len(atom_list):
+            raise ValueError("Sum of unique atom types' natom does not equal to total number of atoms.")
         return unique_types
 
     @staticmethod
@@ -699,7 +702,8 @@ class AbacusSTRU:
         self._atoms = atoms
         self.dpks = dpks
         if isinstance(self.cell, np.ndarray):
-            assert self.cell.ndim == 2 and self.cell.shape == (3,3), "Cell numpy array must be two-dimensional with shape (3,3)."
+            if self.cell.ndim != 2 or self.cell.shape != (3, 3):
+                raise ValueError("Cell numpy array must be two-dimensional with shape (3,3).")
             self.cell = [tuple(self.cell[i].tolist()) for i in range(3)]
         self.metadata = {
             "lattice_constant": 1.0,
@@ -878,7 +882,8 @@ class AbacusSTRU:
 
     @atom_mags.setter
     def atom_mags(self, mags:List[Optional[Union[float,Tuple[float,float,float]]]]):
-        assert len(mags) == len(self._atoms), f"Length of mags is {len(mags)}, which is not equal to the atom number ({len(self._atoms)})"
+        if len(mags) != len(self._atoms):
+            raise ValueError(f"Length of mags is {len(mags)}, which is not equal to the atom number ({len(self._atoms)})")
         for i, imag in enumerate(mags):
             self._atoms[i].atommag = imag
 
@@ -886,21 +891,25 @@ class AbacusSTRU:
     @cell.setter
     def cell(self, value: Union[List[Tuple[float,float,float]], np.ndarray]):
         if isinstance(value, np.ndarray):
-            assert value.ndim == 2 and value.shape == (3,3), "Cell numpy array must be two-dimensional with shape (3,3)."
+            if value.ndim != 2 or value.shape != (3, 3):
+                raise ValueError("Cell numpy array must be two-dimensional with shape (3,3).")
             value = [tuple(value[i].tolist()) for i in range(3)]
         else:
-            assert len(value) == 3 and all(len(vec) == 3 for vec in value), "Cell must be a list of three 3D vectors."
+            if len(value) != 3 or not all(len(vec) == 3 for vec in value):
+                raise ValueError("Cell must be a list of three 3D vectors.")
         self._cell = value
     
     @coords.setter
     def coords(self, value: List[Tuple[float,float,float]]):
-        assert len(value) == self.natoms, "Number of coordinates must match number of atoms."
+        if len(value) != self.natoms:
+            raise ValueError("Number of coordinates must match number of atoms.")
         for i in range(self.natoms):
             self._atoms[i].coord = value[i]
     
     @coords_direct.setter
     def coords_direct(self, value: List[Tuple[float,float,float]]):
-        assert len(value) == self.natoms, "Number of coordinates must match number of atoms."
+        if len(value) != self.natoms:
+            raise ValueError("Number of coordinates must match number of atoms.")
         cart_coords = Unitcell(self.cell).frac_to_cart(value, wrap=False)
         for i in range(self.natoms):
             self._atoms[i].coord = cart_coords[i]
@@ -908,23 +917,30 @@ class AbacusSTRU:
     @pps.setter
     def pps(self, value: List[str]):
         """set the pseudopotential for each atom"""
-        assert len(value) == len(self._atoms), f"length is not equal: {len(value)} / {len(self._atoms)}"
+        if len(value) != len(self._atoms):
+            raise ValueError("pseudopotential list must have one entry per atom: "
+                f"{len(value)} / {len(self._atoms)}")
         for i, iv in enumerate(value):
             self._atoms[i].pp = iv
     
     @orbs.setter
     def orbs(self, value: List[str]):
         """set the orbital for each atom"""
-        assert len(value) == len(self._atoms), f"length is not equal: {len(value)} / {len(self._atoms)}"
+        if len(value) != len(self._atoms):
+            raise ValueError("orbital list must have one entry per atom: "
+                f"{len(value)} / {len(self._atoms)}")
         for i, iv in enumerate(value):
             self._atoms[i].orb = iv
     
     @moves.setter
     def moves(self, value: List[Tuple[bool,bool,bool]]):
         """set the move for each atom"""
-        assert len(value) == len(self._atoms), f"length is not equal: {len(value)} / {len(self._atoms)}"
+        if len(value) != len(self._atoms):
+            raise ValueError("move list must have one entry per atom: "
+                f"{len(value)} / {len(self._atoms)}")
         for i, iv in enumerate(value):
-            assert len(iv) == 3, f"move must be a tuple of three bools, got {iv}"
+            if len(iv) != 3:
+                raise ValueError(f"move must be a tuple of three bools, got {iv}")
             self._atoms[i].move = [bool(iv[0]), bool(iv[1]), bool(iv[2])]
 
     def set_pp(self, pp_dict: Dict[str, str], key_type:Literal["element","label"]="element"):
@@ -986,7 +1002,8 @@ class AbacusSTRU:
             key_type (str): If masses is a dictionary, this specifies whether to use the element symbol or label as the key. Default is "element".
         """
         if isinstance(masses, list):
-            assert len(masses) == len(self._atoms), f"Length of masses list ({len(masses)}) does not match number of atoms ({len(self._atoms)})."
+            if len(masses) != len(self._atoms):
+                raise ValueError(f"Length of masses list ({len(masses)}) does not match number of atoms ({len(self._atoms)}).")
             for i, mass in enumerate(masses):
                 self._atoms[i].mass = mass
         elif isinstance(masses, dict):
@@ -1275,7 +1292,8 @@ class AbacusSTRU:
             AbacusSTRU: An AbacusSTRU object representing the structure.
         """
         from ase import Atoms
-        assert isinstance(ase_stru, Atoms), "Input structure must be an ASE Atoms object."
+        if not isinstance(ase_stru, Atoms):
+            raise TypeError("Input structure must be an ASE Atoms object.")
         _warn_conversion_losses(_ase_conversion_losses(ase_stru), "ASE", "STRU")
         cell = ase_stru.get_cell().tolist()
         atom_list = []
@@ -1323,7 +1341,8 @@ class AbacusSTRU:
             AbacusSTRU: An AbacusSTRU object representing the structure.
         """
         from pymatgen.core import Structure
-        assert isinstance(pymatgen_stru, Structure), "Input structure must be a Pymatgen Structure object."
+        if not isinstance(pymatgen_stru, Structure):
+            raise TypeError("Input structure must be a Pymatgen Structure object.")
         cell = pymatgen_stru.lattice.matrix.tolist()
         atom_list = []
         for site in pymatgen_stru.sites:
@@ -1352,7 +1371,8 @@ class AbacusSTRU:
             AbacusSTRU: An AbacusSTRU object representing the structure.
         """
         from dpdata import System
-        assert isinstance(dpdata_stru, System), "Input structure must be a DPData System object."
+        if not isinstance(dpdata_stru, System):
+            raise TypeError("Input structure must be a DPData System object.")
         data = dpdata_stru.data
         coords = data['coords'][index]
         atom_list = []
@@ -1380,7 +1400,8 @@ class AbacusSTRU:
             AbacusSTRU: An AbacusSTRU object representing the structure.
         """
         from phonopy.structure.atoms import PhonopyAtoms
-        assert isinstance(phonopy_stru, PhonopyAtoms), "Input structure must be a Phonopy Atoms object."
+        if not isinstance(phonopy_stru, PhonopyAtoms):
+            raise TypeError("Input structure must be a Phonopy Atoms object.")
         cell = phonopy_stru.cell.tolist()
         symbols = list(phonopy_stru.symbols)
         masses = phonopy_stru.masses
@@ -1525,7 +1546,8 @@ class AbacusSTRU:
         """
         subset_atoms = []
         for idx in indices:
-            assert idx >= 0 and idx < self.natoms
+            if not 0 <= idx < self.natoms:
+                raise ValueError(f"atom index {idx} is outside the structure (0..{self.natoms - 1})")
             subset_atoms.append(self._atoms[idx])
         
         return AbacusSTRU(self.cell, subset_atoms, self.dpks, self.metadata)
@@ -1547,8 +1569,10 @@ class AbacusSTRU:
             >>> stru_super.write("STRU_2x2x2", fmt="stru")
         """
         nrep = np.array(nrep, dtype=int)
-        assert nrep.shape == (3,), "nrep must be a list/tuple/array of 3 integers"
-        assert all(n > 0 for n in nrep), "All replication factors must be positive integers"
+        if nrep.shape != (3,):
+            raise ValueError("nrep must be a list/tuple/array of 3 integers")
+        if not all(n > 0 for n in nrep):
+            raise ValueError("All replication factors must be positive integers")
         
         # Build new cell
         new_cell = [
@@ -2001,18 +2025,22 @@ def write_stru_file(
     4. The order of coord/move/magmom/velocity/angle1/angle2/constrain/lambda_ should be the same as coord list.
     '''
     # check parameters
-    assert len(label) == len(atom_number), "label and atom_number length mismatch"
+    if len(label) != len(atom_number):
+        raise ValueError("label and atom_number length mismatch")
     natoms = sum(atom_number)
-    assert len(coord) == natoms, "coord length mismatch with atom_number"
+    if len(coord) != natoms:
+        raise ValueError("coord length mismatch with atom_number")
     for key, lst in [("pp",pp),("mass",mass),("magmom_global",magmom_global),
                      ("orb",orb),("paw",paw),("pp_type",pp_type)]:
         if lst is not None:
-            assert len(lst) == len(label), f"{key} length mismatch with label"
+            if len(lst) != len(label):
+                raise ValueError(f"{key} length mismatch with label")
     for key, lst in [("move",move),("magmom",magmom),("velocity",velocity),
                      ("angle1",angle1),("angle2",angle2),("constrain",constrain),("lambda_",lambda_),
                      ("force",force)]:
         if lst is not None:
-            assert len(lst) == natoms, f"{key} length mismatch with natoms"
+            if len(lst) != natoms:
+                raise ValueError(f"{key} length mismatch with natoms")
     
     cc = ""
     #write species
@@ -2144,11 +2172,14 @@ def write_poscar(
         velocities (Optional[List[Tuple[float,float,float]]]): Cartesian velocities in Angstrom/fs, written as the velocity block of an MD-style POSCAR. Default is None.
     '''
     # check parameters
-    assert len(label) == len(coord), "label and coord length mismatch"
+    if len(label) != len(coord):
+        raise ValueError("label and coord length mismatch")
     if move:
-        assert len(move) == len(coord), "move length mismatch with coord"
+        if len(move) != len(coord):
+            raise ValueError("move length mismatch with coord")
     if velocities:
-        assert len(velocities) == len(coord), "velocities length mismatch with coord"
+        if len(velocities) != len(coord):
+            raise ValueError("velocities length mismatch with coord")
     
     # find unique labels and their counts
     unique_labels = [label[0]]
@@ -2211,7 +2242,8 @@ def get_total_property(stru_data: Dict[str, Any],
     if len(stru_data.get(prop) or []) == 0:
         return []
     else:
-        assert len(stru_data[prop]) == len(stru_data['atom_number'])
+        if len(stru_data[prop]) != len(stru_data['atom_number']):
+            raise ValueError(f"per-atom property {prop!r} must have one entry per atom")
         for item, count in zip(stru_data[prop], stru_data['atom_number']):
             result.extend([item] * count)
 

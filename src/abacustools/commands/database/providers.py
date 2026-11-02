@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 
 from rich.console import Console
 from rich.markup import escape
@@ -17,6 +16,7 @@ from abacustools.integrations.databases import (
 )
 
 from .common import DATABASE_ERRORS
+from abacustools.core.render import cli_output
 
 
 def register_parser(subparsers) -> None:
@@ -92,17 +92,17 @@ def run(args: argparse.Namespace) -> int:
         else:
             records = _bundled_records()
     except DATABASE_ERRORS as error:
-        print(f"error: {error}", file=sys.stderr)
+        cli_output(f"error: {error}", stderr=True)
         return 1
     if args.json:
-        print(json.dumps(records, indent=2, sort_keys=True))
+        cli_output(json.dumps(records, indent=2, sort_keys=True))
         return 0
     source = optimade_catalogue_source()
     Console().print(_table(records))
     if args.refresh:
-        print("live index: https://providers.optimade.org/providers.json")
-        print("index entries are meta-databases; use --base-url for their implementations")
+        cli_output("live index: https://providers.optimade.org/providers.json")
+        cli_output("index entries are meta-databases; use --base-url for their implementations")
     else:
-        print(f"catalogue: {source['source']} (retrieved {source['retrieved']})")
-    print("query one with 'abacustools database search -d NAME ...'")
+        cli_output(f"catalogue: {source['source']} (retrieved {source['retrieved']})")
+    cli_output("query one with 'abacustools database search -d NAME ...'")
     return 0

@@ -1,4 +1,5 @@
 """The ``abacustools job`` command family."""
+from __future__ import annotations
 
 from . import checkinput as checkinput_command
 from . import monitor as monitor_command

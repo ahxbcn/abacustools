@@ -1,3 +1,4 @@
+from __future__ import annotations
 from typing import Optional, Sequence, Tuple, Union, Literal
 import os
 import struct
@@ -441,19 +442,24 @@ class Grid:
                  origin: Optional[np.ndarray] = np.zeros(3),
                  
                  ):
-        assert data.ndim == 3, "Data should be a 3D numpy array"
-        assert cell.shape == (3,3), "Cell should be a 3x3 numpy array"
+        if data.ndim != 3:
+            raise ValueError("Data should be a 3D numpy array")
+        if cell.shape != (3, 3):
+            raise ValueError("Cell should be a 3x3 numpy array")
         
         if atom_positions is not None:
-            assert atom_positions.ndim == 2 and atom_positions.shape[1] == 3, "Atom positions should be a Nx3 numpy array"
+            if atom_positions.ndim != 2 or atom_positions.shape[1] != 3:
+                raise ValueError("Atom positions should be a Nx3 numpy array")
 
             if atom_types is not None:
-                assert len(atom_types) == atom_positions.shape[0], "Atom types should be a list of length N"
+                if len(atom_types) != atom_positions.shape[0]:
+                    raise ValueError("Atom types should be a list of length N")
             else:
                 atom_types = [0] * atom_positions.shape[0]  # Default type if not provided
                 
             if atom_charges is not None:
-                assert len(atom_charges) == atom_positions.shape[0], "Atom charges should be a list of length N"
+                if len(atom_charges) != atom_positions.shape[0]:
+                    raise ValueError("Atom charges should be a list of length N")
             else:
                 atom_charges = [0.0] * atom_positions.shape[0]  # Default charge if not provided
         else:
@@ -461,7 +467,8 @@ class Grid:
             atom_types = []
             atom_charges = []
                 
-        assert origin.shape == (3,), "Origin should be a 1D numpy array of length 3"
+        if origin.shape != (3,):
+            raise ValueError("Origin should be a 1D numpy array of length 3")
         
         self._data_dict = {
             'data': data,
@@ -478,7 +485,8 @@ class Grid:
     
     @data.setter
     def data(self, value: np.ndarray):
-        assert value.shape == self._data_dict['data'].shape, "New data must have the same shape as the original data"
+        if value.shape != self._data_dict['data'].shape:
+            raise ValueError("New data must have the same shape as the original data")
         self._data_dict['data'] = value
 
     @property
@@ -569,7 +577,8 @@ class Grid:
             data_factor (float): Factor to multiply the data values (e.g., to convert units).
             box_factor (float): Factor to multiply the cell vectors (e.g., to convert units).
         """
-        assert os.path.isfile(cube_file), f"{cube_file} does not exist"
+        if not os.path.isfile(cube_file):
+            raise FileNotFoundError(f"{cube_file} does not exist")
         
         with open(cube_file, 'r') as f:
             lines = f.readlines()
@@ -640,7 +649,8 @@ class Grid:
         Returns:
             Grid: A new Grid object representing the supercell.
         """
-        assert len(sc) == 3 and all(isinstance(x, int) and x > 0 for x in sc), "Supercell size should be a tuple of three positive integers"
+        if len(sc) != 3 or not all(isinstance(x, int) and x > 0 for x in sc):
+            raise ValueError("Supercell size should be a tuple of three positive integers")
         
         new_data = np.tile(self.data, sc)
         new_cell = self.cell * np.array(sc)[:, None]

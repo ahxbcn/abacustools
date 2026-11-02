@@ -1,4 +1,5 @@
 """Tests for configured physical constants and unit conversions."""
+from __future__ import annotations
 
 from abacustools.core.config import CONFIG
 from abacustools.core.constant import (

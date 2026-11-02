@@ -6,7 +6,7 @@ import argparse
 import csv
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 from abacustools.core.job import status_job, validate_job
 from abacustools.data.abacus_result import (
@@ -18,6 +18,7 @@ from abacustools.data.abacus_result import (
     read_scf_history,
 )
 from abacustools.io.stru import AbacusSTRU, periodic_lattice
+from abacustools.core.render import cli_output
 
 
 ENERGY_UNIT = "eV"
@@ -66,12 +67,13 @@ _CSV_FIELDS = {
     "relax": [
         "step", "energy", "energy_change",
         "max_force", "force_atom", "force_component", "rms_displacement",
-        "max_displacement", "converged",
+        "max_displacement", "max_displacement_atom", "converged",
     ],
     "cell-relax": [
         "step", "energy", "energy_change",
         "max_force", "force_atom", "force_component",
         "rms_displacement", "max_displacement",
+        "max_displacement_atom",
         "max_stress", "stress_component", "converged",
     ],
     "md": ["step", "energy", "potential", "kinetic", "temperature", "pressure"],
@@ -155,13 +157,16 @@ def _task_type(calculation: str) -> str:
 
 
 def _read_history(
-    task: str, log: Path, lattice: Any = None
+    task: str,
+    log: Path,
+    lattice: Any = None,
+    moves: Optional[list[tuple[bool, bool, bool]]] = None,
 ) -> list[dict[str, Any]]:
     """Read the step history matching one monitoring mode."""
     if task == "md":
         return read_md_history(log)
     if task in {"relax", "cell-relax"}:
-        return read_relaxation_history(log, lattice=lattice)
+        return read_relaxation_history(log, lattice=lattice, moves=moves)
     return read_scf_history(log)
 
 
@@ -203,6 +208,15 @@ def _format_force_site(atom: Any, component: Any, label: Any = None) -> str:
     return f"{site}{component}" if component else site
 
 
+def _format_displacement_site(item: Mapping[str, Any]) -> str:
+    """Format the atom that moved the most, as a label or a 1-based index."""
+    label = item.get("max_displacement_atom_label")
+    if label:
+        return str(label)
+    atom = item.get("max_displacement_atom")
+    return "-" if atom is None else str(int(atom))
+
+
 def _print_table(header: list[str], rows: list[list[str]]) -> None:
     """Print a header and its rows aligned on the widest cell of every column."""
     widths = [len(title) for title in header]
@@ -210,7 +224,7 @@ def _print_table(header: list[str], rows: list[list[str]]) -> None:
         for index, cell in enumerate(row):
             widths[index] = max(widths[index], len(cell))
     for line in [header, *rows]:
-        print("  ".join(cell.rjust(width) for cell, width in zip(line, widths)))
+        cli_output("  ".join(cell.rjust(width) for cell, width in zip(line, widths)))
 
 
 def _convergence_criteria(inputs: dict[str, Any], log: Optional[Path], task: str) -> dict[str, Any]:
@@ -293,6 +307,24 @@ def _structure_moves(
     return [tuple(bool(flag) for flag in move) for move in structure.moves]
 
 
+def _constraint_summary(
+    moves: Optional[list[tuple[bool, bool, bool]]],
+) -> Optional[dict[str, int]]:
+    """Summarize the fixed and movable atomic degrees of freedom."""
+    if moves is None:
+        return None
+    fixed_atoms = sum(1 for move in moves if not any(move))
+    movable_atoms = len(moves) - fixed_atoms
+    fixed_components = sum(1 for move in moves for flag in move if not flag)
+    movable_components = len(moves) * 3 - fixed_components
+    return {
+        "fixed_atoms": fixed_atoms,
+        "fixed_components": fixed_components,
+        "movable_atoms": movable_atoms,
+        "movable_components": movable_components,
+    }
+
+
 def _structure_lattice(job: Path, inputs: dict[str, Any]):
     """Return the periodic lattice of the job's STRU, when it can be read."""
     structure = _job_structure(job, inputs)
@@ -312,6 +344,7 @@ def _payload(
     task: str,
     inputs: dict[str, Any],
     history: list[dict[str, Any]],
+    moves: Optional[list[tuple[bool, bool, bool]]] = None,
 ) -> dict[str, Any]:
     """Build the report of one monitoring update."""
     payload: dict[str, Any] = {
@@ -332,6 +365,9 @@ def _payload(
         ],
     }
     if task in {"relax", "cell-relax"}:
+        constraints = _constraint_summary(moves)
+        if constraints is not None:
+            payload["constraints"] = constraints
         payload["criteria"] = _convergence_criteria(inputs, log, task)
     elif task == "scf":
         payload["criteria"] = _scf_criteria(inputs)
@@ -341,33 +377,45 @@ def _payload(
 
 
 def _print_header(payload: dict[str, Any]) -> None:
-    print(f"job: {payload['job']}")
-    print(f"state: {payload['state']}")
+    cli_output(f"job: {payload['job']}")
+    cli_output(f"state: {payload['state']}")
     if payload["log"]:
-        print(f"log: {payload['log']}")
-    print(f"calculation: {payload['task']}")
+        cli_output(f"log: {payload['log']}")
+    cli_output(f"calculation: {payload['task']}")
 
 
 def _print_criteria(criteria: dict[str, Any]) -> None:
-    print("convergence criteria:")
+    cli_output("convergence criteria:")
     if not criteria:
-        print("  -")
+        cli_output("  -")
         return
     if "force_thr_ev" in criteria:
-        print(f"  force_thr_ev: {_format_metric(criteria['force_thr_ev'])} {FORCE_UNIT}")
+        cli_output(f"  force_thr_ev: {_format_metric(criteria['force_thr_ev'])} {FORCE_UNIT}")
     if "stress_thr" in criteria:
-        print(f"  stress_thr: {_format_metric(criteria['stress_thr'])} {STRESS_UNIT}")
+        cli_output(f"  stress_thr: {_format_metric(criteria['stress_thr'])} {STRESS_UNIT}")
     for key in ("relax_method", "relax_nmax", "relax_cg_thr"):
         if key in criteria:
-            print(f"  {key}: {criteria[key]}")
+            cli_output(f"  {key}: {criteria[key]}")
+
+
+def _print_constraints(constraints: Optional[dict[str, int]]) -> None:
+    """Print the fixed and movable atomic degrees of freedom."""
+    if constraints is None:
+        return
+    cli_output(
+        "constraints: "
+        f"fixed atoms={constraints['fixed_atoms']}, "
+        f"fixed components={constraints['fixed_components']}, "
+        f"movable atoms={constraints['movable_atoms']}"
+    )
 
 
 def _print_md_settings(settings: dict[str, Any]) -> None:
     if "md_type" in settings:
-        print(f"md_type: {settings['md_type']}")
+        cli_output(f"md_type: {settings['md_type']}")
     for key in ("md_nstep", "md_dt", "md_tfirst", "md_tlast", "md_pfirst", "md_plast"):
         if key in settings:
-            print(f"{key}: {settings[key]}")
+            cli_output(f"{key}: {settings[key]}")
 
 
 def _print_scf_steps(history: list[dict[str, Any]]) -> None:
@@ -380,18 +428,18 @@ def _print_scf_steps(history: list[dict[str, Any]]) -> None:
         ]
         for item in history
     ]
-    _print_table(["step", "energy(eV)", "dE(eV)", "drho"], rows)
+    _print_table(["step", "E(eV)", "dE(eV)", "drho"], rows)
 
 
 def _print_geometry_steps(task: str, history: list[dict[str, Any]]) -> None:
     header = [
-        "step", "energy(eV)", "dE(eV)",
-        "max_force(eV/A)", "force_atom/component",
-        "rms_displacement(A)", "max_displacement(A)",
+        "step", "E(eV)", "dE(eV)",
+        "Fmax(eV/A)", "F atom/comp",
+        "rms_disp(A)", "max_disp(A)", "disp_atom",
     ]
     if task == "cell-relax":
-        header += ["max_stress(kBar)", "stress_component"]
-    header.append("converged")
+        header += ["Smax(kBar)", "S comp"]
+    header.append("conv")
     rows = []
     for item in history:
         row = [
@@ -406,6 +454,7 @@ def _print_geometry_steps(task: str, history: list[dict[str, Any]]) -> None:
             ),
             _format_metric(item["rms_displacement"]),
             _format_metric(item["max_displacement"]),
+            _format_displacement_site(item),
         ]
         if task == "cell-relax":
             row += [
@@ -420,11 +469,11 @@ def _print_geometry_steps(task: str, history: list[dict[str, Any]]) -> None:
 def _print_md_steps(history: list[dict[str, Any]]) -> None:
     header = [
         "step",
-        "energy(eV)",
-        "potential(eV)",
-        "kinetic(eV)",
-        f"temperature({TEMPERATURE_UNIT})",
-        f"pressure({PRESSURE_UNIT})",
+        "E(eV)",
+        "Epot(eV)",
+        "Ekin(eV)",
+        f"T({TEMPERATURE_UNIT})",
+        f"P({PRESSURE_UNIT})",
     ]
     rows = [
         [
@@ -450,20 +499,21 @@ def _print_report(
     """Print one monitoring update."""
     task = payload["task"]
     if task == "scf" and not scf_steps:
-        print(plain_status)
+        cli_output(plain_status)
         return
     _print_header(payload)
     if task in {"relax", "cell-relax"}:
+        _print_constraints(payload.get("constraints"))
         _print_criteria(payload["criteria"])
     elif task == "md":
         _print_md_settings(payload["md"])
     history = payload["steps"]
     if not history:
-        print("no steps found yet")
+        cli_output("no steps found yet")
         return
     steps, hidden = _tail_steps(history, tail)
     if hidden:
-        print(f"showing the last {len(steps)} of {len(history)} steps")
+        cli_output(f"showing the last {len(steps)} of {len(history)} steps")
     if task == "scf":
         _print_scf_steps(steps)
     elif task == "md":
@@ -810,7 +860,7 @@ def run(args: argparse.Namespace) -> int:
     plot = _plot_path(args.plot, job, task)
     moves = (
         _structure_moves(job, validation.inputs)
-        if plot is not None and task in {"relax", "cell-relax"}
+        if task in {"relax", "cell-relax"}
         else None
     )
     status = status_job(job, validation)
@@ -820,7 +870,12 @@ def run(args: argparse.Namespace) -> int:
         read_normal_end(log) if log is not None else False,
     )
     history = (
-        _read_history(task, log, _structure_lattice(job, validation.inputs))
+        _read_history(
+            task,
+            log,
+            _structure_lattice(job, validation.inputs),
+            moves,
+        )
         if log is not None
         else []
     )
@@ -832,6 +887,7 @@ def run(args: argparse.Namespace) -> int:
         task,
         validation.inputs,
         history,
+        moves,
     )
 
     if args.csv:
@@ -839,7 +895,7 @@ def run(args: argparse.Namespace) -> int:
     if plot is not None:
         _write_plot(plot, task, history, payload.get("criteria", {}), moves)
     if args.json:
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        cli_output(json.dumps(payload, indent=2, sort_keys=True))
         return 1 if state in {"invalid", "failed"} else 0
 
     progress = " ".join(
@@ -854,8 +910,8 @@ def run(args: argparse.Namespace) -> int:
         plain_status=f"{status.state}: {progress}".rstrip(),
     )
     if args.csv:
-        print(f"step history: {args.csv}")
+        cli_output(f"step history: {args.csv}")
     if plot is not None:
-        print(f"step history plot: {plot}")
+        cli_output(f"step history plot: {plot}")
 
     return 1 if state in {"invalid", "failed"} else 0

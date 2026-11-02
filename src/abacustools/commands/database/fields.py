@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 
 from rich.console import Console
 from rich.table import Table
 
 from .common import DATABASE_ERRORS, selected_database
+from abacustools.core.render import cli_output
 
 
 def register_parser(subparsers) -> None:
@@ -36,15 +36,15 @@ def run(args: argparse.Namespace) -> int:
         database = selected_database(args)
         fields = database.fields()
     except DATABASE_ERRORS as error:
-        print(f"error: {error}", file=sys.stderr)
+        cli_output(f"error: {error}", stderr=True)
         return 1
 
     records = [{"key": key, "description": description} for key, description in fields]
     if args.json:
-        print(json.dumps(records, indent=2, sort_keys=True))
+        cli_output(json.dumps(records, indent=2, sort_keys=True))
         return 0
     if not records:
-        print(f"database {database.name!r} does not document property keys")
+        cli_output(f"database {database.name!r} does not document property keys")
         return 0
     table = Table(header_style="bold", title=f"{database.name}: {database.description}")
     table.add_column("key", style="cyan", no_wrap=True)
@@ -52,5 +52,5 @@ def run(args: argparse.Namespace) -> int:
     for record in records:
         table.add_row(record["key"], record["description"])
     Console().print(table)
-    print(f"{len(records)} keys; filter on them with 'database search -d {database.name} --where KEY OP VALUE'")
+    cli_output(f"{len(records)} keys; filter on them with 'database search -d {database.name} --where KEY OP VALUE'")
     return 0

@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from abacustools.core.job import as_json, validate_job
+from abacustools.core.render import cli_output
 
 
 def _job_directory(value: str) -> Path:
@@ -29,10 +30,10 @@ def run(args: argparse.Namespace) -> int:
     """Validate one ABACUS job directory."""
     report = validate_job(args.job, strict=args.strict)
     if args.json:
-        print(json.dumps(as_json(report), indent=2, sort_keys=True))
+        cli_output(json.dumps(as_json(report), indent=2, sort_keys=True))
     else:
-        print(f"job: {Path(args.job).absolute()}")
-        print(f"valid: {'yes' if report.valid else 'no'}")
+        cli_output(f"job: {Path(args.job).absolute()}")
+        cli_output(f"valid: {'yes' if report.valid else 'no'}")
         for issue in report.issues:
-            print(f"{issue.level}: {issue.code}: {issue.message}")
+            cli_output(f"{issue.level}: {issue.code}: {issue.message}")
     return 0 if report.valid else 1

@@ -18,6 +18,7 @@ from .common import (
     write_abacus_job,
     write_manifest,
 )
+from abacustools.core.render import cli_output
 
 
 def _register_prepare_arguments(parser: argparse.ArgumentParser) -> None:
@@ -75,17 +76,17 @@ def prepare(args: argparse.Namespace) -> int:
     if any(index < 1 for index in args.index):
         raise ValueError("atom indices must be greater than zero")
     subsys_a_indices = sorted(set(index - 1 for index in args.index))
-    print(f"  subsystem atom indices: {', '.join(str(index + 1) for index in subsys_a_indices)}")
+    cli_output(f"  subsystem atom indices: {', '.join(str(index + 1) for index in subsys_a_indices)}")
 
     for job in args.job:
         job = Path(job).absolute()
         if not job.is_dir():
             raise RuntimeError(f"job directory does not exist: {job}")
-        print(f"  job: {job}")
+        cli_output(f"  job: {job}")
 
         inputs, stru_filename, stru = read_job_structure(job)
         if inputs.get("basis_type", "pw") != "lcao":
-            print(
+            cli_output(
                 "BSSE correction generally needs the LCAO basis type. "
                 f"Current basis type: {inputs.get('basis_type')}"
             )
@@ -112,25 +113,25 @@ def prepare(args: argparse.Namespace) -> int:
                 kpoint=kpoint_file,
             )
 
-        print("  writing full-system calculation")
+        cli_output("  writing full-system calculation")
         write_job("full_system", stru)
 
-        print("  writing A + ghost B calculation")
+        cli_output("  writing A + ghost B calculation")
         stru_a_ghost_b = deepcopy(stru)
         for index in subsys_b_indices:
             stru_a_ghost_b.atoms[index].label += "_empty"
         write_job("subsys_a_ghost_b", stru_a_ghost_b)
 
-        print("  writing ghost A + B calculation")
+        cli_output("  writing ghost A + B calculation")
         stru_ghost_a_b = deepcopy(stru)
         for index in subsys_a_indices:
             stru_ghost_a_b.atoms[index].label += "_empty"
         write_job("subsys_ghost_a_b", stru_ghost_a_b)
 
-        print("  writing subsystem A calculation")
+        cli_output("  writing subsystem A calculation")
         write_job("subsys_a", stru.create_subset(subsys_a_indices))
 
-        print("  writing subsystem B calculation")
+        cli_output("  writing subsystem B calculation")
         write_job("subsys_b", stru.create_subset(subsys_b_indices))
 
         write_manifest(
@@ -152,7 +153,7 @@ def postprocess(args: argparse.Namespace) -> int:
     job = Path(args.job).absolute()
     if not job.is_dir():
         raise RuntimeError(f"job directory does not exist: {job}")
-    print(f"  job: {job}")
+    cli_output(f"  job: {job}")
     job_names = [
         "full_system",
         "subsys_a_ghost_b",
@@ -204,7 +205,7 @@ def postprocess(args: argparse.Namespace) -> int:
                 - ghost["vdw_energy"]
                 + reference["vdw_energy"]
             )
-            print(
+            cli_output(
                 f"  corrected {ghost_name} DFT-D energy: "
                 f"{ghost['vdw_energy']:.10f} -> {reference['vdw_energy']:.10f} eV"
             )
@@ -212,7 +213,7 @@ def postprocess(args: argparse.Namespace) -> int:
                 ghost_a_b_energy = corrected_energy
             else:
                 ghost_b_a_energy = corrected_energy
-        print("  applied LTS 3.10.1 DFT-D ghost-atom correction")
+        cli_output("  applied LTS 3.10.1 DFT-D ghost-atom correction")
 
     e_orig_interaction = (
         jobs["full system"]["energy"]
@@ -223,9 +224,9 @@ def postprocess(args: argparse.Namespace) -> int:
         jobs["full system"]["energy"] - ghost_a_b_energy - ghost_b_a_energy
     )
     bsse_correction = e_corr_interaction - e_orig_interaction
-    print(f"  Original interaction energy: {e_orig_interaction:.8f} eV")
-    print(f"  BSSE-corrected interaction energy: {e_corr_interaction:.8f} eV")
-    print(f"  BSSE correction: {bsse_correction:.8f} eV")
+    cli_output(f"  Original interaction energy: {e_orig_interaction:.8f} eV")
+    cli_output(f"  BSSE-corrected interaction energy: {e_corr_interaction:.8f} eV")
+    cli_output(f"  BSSE correction: {bsse_correction:.8f} eV")
     return 0
 
 def register_parser(subparsers) -> None:

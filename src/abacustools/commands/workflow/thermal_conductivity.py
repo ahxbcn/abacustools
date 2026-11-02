@@ -46,6 +46,7 @@ from .common import (
     write_abacus_job,
     write_manifest,
 )
+from abacustools.core.render import cli_output
 
 
 _WORKFLOW = "thermal_conductivity"
@@ -364,7 +365,7 @@ def prepare(args: argparse.Namespace) -> int:
                     str(task_path / kpoint_file),
                     kpoint_model,
                 )
-            print(f"  prepared {item['task']}")
+            cli_output(f"  prepared {item['task']}")
 
     submission = generate_workflow_submission(
         job,
@@ -390,19 +391,19 @@ def prepare(args: argparse.Namespace) -> int:
         manifest["submission"] = submission
     write_manifest(job, _WORKFLOW, **manifest)
 
-    print(f"  job: {job}")
-    print(f"  fc3 supercell: {' '.join(str(value) for value in supercell_fc3)}")
+    cli_output(f"  job: {job}")
+    cli_output(f"  fc3 supercell: {' '.join(str(value) for value in supercell_fc3)}")
     if separate_fc2:
-        print(f"  fc2 supercell: {' '.join(str(value) for value in supercell_fc2)}")
+        cli_output(f"  fc2 supercell: {' '.join(str(value) for value in supercell_fc2)}")
     else:
-        print("  fc2 supercell: shared with fc3")
-    print(f"  fc3 displacement step: {args.displacement_stepsize_fc3} Angstrom")
-    print(f"  fc2 displacement step: {stepsize_fc2} Angstrom")
-    print(f"  generated calculations: {len(task_names)}")
-    print(f"  phono3py dataset: {job / _PHONO3PY_FILE}")
+        cli_output("  fc2 supercell: shared with fc3")
+    cli_output(f"  fc3 displacement step: {args.displacement_stepsize_fc3} Angstrom")
+    cli_output(f"  fc2 displacement step: {stepsize_fc2} Angstrom")
+    cli_output(f"  generated calculations: {len(task_names)}")
+    cli_output(f"  phono3py dataset: {job / _PHONO3PY_FILE}")
     if submission is not None:
-        print(f"  submission type: {submission['type']}")
-        print(f"  workflow script: {submission['workflow_script']}")
+        cli_output(f"  submission type: {submission['type']}")
+        cli_output(f"  workflow script: {submission['workflow_script']}")
     return 0
 
 
@@ -603,19 +604,19 @@ def postprocess(args: argparse.Namespace) -> int:
     output.write_text(json.dumps(jsonable(result), indent=2) + "\n", encoding="utf-8")
 
     header = "  ".join(f"{name:>10}" for name in ("T(K)", *_KAPPA_COMPONENTS))
-    print(f"  job: {job}")
-    print(f"  method: {result['method']}")
-    print(f"  mesh: {' '.join(str(value) for value in mesh)}")
-    print(f"  temperatures: {temperatures[0]:g} - {temperatures[-1]:g} K")
-    print("  lattice thermal conductivity (W/m-K)")
-    print(f"  {header}")
+    cli_output(f"  job: {job}")
+    cli_output(f"  method: {result['method']}")
+    cli_output(f"  mesh: {' '.join(str(value) for value in mesh)}")
+    cli_output(f"  temperatures: {temperatures[0]:g} - {temperatures[-1]:g} K")
+    cli_output("  lattice thermal conductivity (W/m-K)")
+    cli_output(f"  {header}")
     for index, temperature in enumerate(temperatures):
         values = "  ".join(
             f"{components[name][index]:10.4f}" for name in _KAPPA_COMPONENTS
         )
-        print(f"  {temperature:10.1f}  {values}")
-    print(f"  plot: {plot_path}")
-    print(f"  results: {output}")
+        cli_output(f"  {temperature:10.1f}  {values}")
+    cli_output(f"  plot: {plot_path}")
+    cli_output(f"  results: {output}")
     return 0
 
 

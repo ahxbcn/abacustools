@@ -11,6 +11,7 @@ from abacustools.core.input_prep import (
     available_resource_libraries,
 )
 from abacustools.core.resource_switch import ResourceSwitchResult, switch_job_library
+from abacustools.core.render import cli_output
 
 
 def _job_directory(value: str) -> Path:
@@ -71,22 +72,22 @@ def register_parser(subparsers) -> None:
 
 
 def _print_result(result: ResourceSwitchResult) -> None:
-    print(f"job: {result.job.absolute()}")
+    cli_output(f"job: {result.job.absolute()}")
     library = result.library or "configured default"
     if result.variant:
         library += f" (variant {result.variant})"
-    print(f"library: {library}")
-    print(f"basis: {result.basis}")
+    cli_output(f"library: {library}")
+    cli_output(f"basis: {result.basis}")
     for element, filename in sorted(result.pseudopotentials.items()):
-        print(f"pseudopotential {element}: {filename}")
+        cli_output(f"pseudopotential {element}: {filename}")
     for element, filename in sorted(result.orbitals.items()):
-        print(f"orbital {element}: {filename}")
+        cli_output(f"orbital {element}: {filename}")
     if result.dry_run:
-        print("dry run: nothing was written")
+        cli_output("dry run: nothing was written")
     for name in result.installed:
-        print(f"installed: {name}")
+        cli_output(f"installed: {name}")
     for name in result.removed:
-        print(f"removed: {name}")
+        cli_output(f"removed: {name}")
 
 
 def run(args: argparse.Namespace) -> int:
@@ -108,8 +109,8 @@ def run(args: argparse.Namespace) -> int:
             if args.json:
                 results.append({"job": str(Path(job).absolute()), "error": str(error)})
             else:
-                print(f"job: {Path(job).absolute()}")
-                print(f"error: {error}")
+                cli_output(f"job: {Path(job).absolute()}")
+                cli_output(f"error: {error}")
             continue
         results.append(result)
         if not args.json:
@@ -119,5 +120,5 @@ def run(args: argparse.Namespace) -> int:
             result.as_json() if isinstance(result, ResourceSwitchResult) else result
             for result in results
         ]
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        cli_output(json.dumps(payload, indent=2, sort_keys=True))
     return status

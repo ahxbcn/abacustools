@@ -155,6 +155,106 @@ def test_read_dos_from_job(tmp_path):
     )
 
 
+def _develop_dos_text(dos_values, istep=1):
+    rows = "\n".join(
+        f"{-1.0 + 1.0 * point:.6f} {value:.6f} {value:.6f} {value:.6f} {value:.6f}"
+        for point, value in enumerate(dos_values)
+    )
+    return (
+        f"{istep}    # ionic step\n3 # number of points\n"
+        "#  energy(eV)         dos     dos_int  dos_smear(1/eV)  dos_smear_int\n"
+        f"{rows}\n"
+    )
+
+
+def test_read_dos_from_job_develop_nao_files(tmp_path):
+    output = _job_with_output(tmp_path)
+    (output / "doss1g1_nao.txt").write_text(_develop_dos_text([0.1, 0.2, 0.3]))
+    (output / "doss2g1_nao.txt").write_text(_develop_dos_text([0.4, 0.5, 0.6]))
+
+    result = read_dos_from_job(tmp_path)
+
+    np.testing.assert_allclose(result["energy"], [-1.0, 0.0, 1.0])
+    np.testing.assert_allclose(
+        result["data"], [[0.1, 0.4], [0.2, 0.5], [0.3, 0.6]]
+    )
+
+
+def test_read_dos_from_job_develop_pw_single_spin(tmp_path):
+    # PW with nspin 1 writes one spinless dos.txt on this branch
+    output = _job_with_output(tmp_path)
+    (output / "dos.txt").write_text(_develop_dos_text([0.1, 0.2, 0.3]))
+
+    result = read_dos_from_job(tmp_path)
+
+    np.testing.assert_allclose(result["data"], [[0.1], [0.2], [0.3]])
+
+
+def test_read_dos_from_job_develop_last_ionic_step(tmp_path):
+    output = _job_with_output(tmp_path)
+    # a relaxation run names one file per ionic step
+    (output / "doss1g1_nao.txt").write_text(_develop_dos_text([0.1, 0.2, 0.3], istep=1))
+    (output / "doss1g2_nao.txt").write_text(_develop_dos_text([0.2, 0.3, 0.4], istep=2))
+    # with out_app_flag 1 the spin-2 channel appends one block per step
+    (output / "doss2_nao.txt").write_text(
+        _develop_dos_text([0.7, 0.8, 0.9], istep=1)
+        + _develop_dos_text([0.9, 1.0, 1.1], istep=2)
+    )
+
+    result = read_dos_from_job(tmp_path)
+
+    np.testing.assert_allclose(result["data"][:, 0], [0.2, 0.3, 0.4])
+    np.testing.assert_allclose(result["data"][:, 1], [0.9, 1.0, 1.1])
+
+
+def _develop_pdos_text(atoms, spin_values):
+    """Build one develop-branch PDOS file; atoms are (atom_index, species,
+    channels-per-point multipliers) and spin_values holds the base
+    up-or-down values."""
+    rows = []
+    for atom_index, species, multipliers in atoms:
+        for point, value in enumerate(spin_values):
+            fields = [f"{-1.0 + 1.0 * point:.6f}", f"{atom_index}", species]
+            fields += [f"{value * factor:.6f}" for factor in multipliers]
+            rows.append("  ".join(fields))
+    return (
+        "# istep: 1\n# npoints: 3\n"
+        "# energy(eV)  atom  species  pdos(1/eV), columns: s(m=0) p(m=0,+1,-1)\n"
+        + "\n".join(rows)
+        + "\n"
+    )
+
+
+def test_read_pdos_from_job_develop_nao_files(tmp_path):
+    output = _job_with_output(tmp_path)
+    up_atoms = [(1, "H", [1.0]), (2, "O", [1.0, 2.0, 3.0, 4.0])]
+    down_atoms = [(1, "H", [10.0]), (2, "O", [10.0, 20.0, 30.0, 40.0])]
+    (output / "pdoss1g1_nao.txt").write_text(
+        _develop_pdos_text(up_atoms, [0.1, 0.2, 0.3])
+    )
+    (output / "pdoss2g1_nao.txt").write_text(
+        _develop_pdos_text(down_atoms, [0.4, 0.5, 0.6])
+    )
+
+    result = read_pdos_from_job(tmp_path)
+
+    np.testing.assert_allclose(result["energy"], [-1.0, 0.0, 1.0])
+    metadata = [
+        (orbital["atom_index"], orbital["species"], orbital["l"], orbital["m"])
+        for orbital in result["orbitals"]
+    ]
+    assert metadata == [
+        (1, "H", 0, 0),
+        (2, "O", 0, 0),
+        (2, "O", 1, 0),
+        (2, "O", 1, 1),
+        (2, "O", 1, 2),
+    ]
+    # each orbital pairs the up and down columns of the two spin files
+    np.testing.assert_allclose(result["orbitals"][0]["data"], [[0.1, 4.0], [0.2, 5.0], [0.3, 6.0]])
+    np.testing.assert_allclose(result["orbitals"][4]["data"], [[0.4, 16.0], [0.8, 20.0], [1.2, 24.0]])
+
+
 def test_read_pdos_from_job(tmp_path):
     output = _job_with_output(tmp_path)
     (output / "PDOS").write_text(

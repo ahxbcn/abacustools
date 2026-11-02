@@ -1,4 +1,5 @@
 """Optional integrations with external calculation engines and databases."""
+from __future__ import annotations
 
 from .abacuslite import (
     AbacusLiteUnavailableError,

@@ -458,6 +458,9 @@ def _magnetic_space_group_label(bns_number: Optional[str]) -> Optional[str]:
     if not bns_number or "." not in str(bns_number):
         return None
     try:
+        # Importing pymatgen.core first avoids the circular import that
+        # maggroups triggers when it is the first pymatgen module loaded.
+        import pymatgen.core  # noqa: F401
         from pymatgen.symmetry.maggroups import MAGSYMM_DATA
 
         first, second = str(bns_number).split(".", 1)

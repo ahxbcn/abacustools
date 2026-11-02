@@ -1,4 +1,4 @@
-"""Read ABACUS molecular-dynamics trajectories.
+"""Read ABACUS ionic trajectories (molecular dynamics and relaxation).
 
 ABACUS appends one block per dumped step to ``OUT.<suffix>/MD_dump`` holding
 the cell and the atomic positions together with, depending on ``dump_force``,
@@ -17,6 +17,15 @@ The per-step ``STRU_MD_*`` files that ``out_stru 1`` writes are read as a
 fallback: the LTS branch keeps them in the job directory, the develop branch in
 a directory per step below ``OUT.<suffix>``. The energy, temperature and
 pressure of the running log are attached to the frame of the same step.
+
+Geometry optimizations are read from the per-step structures that
+``out_stru`` writes: ``STRU_ION<step>_D`` on the 3.10 LTS branch and
+``STRU<step>`` on the develop branch. When those files are missing, the
+per-step coordinates, cell, forces and stress printed in the
+``running_relax.log``/``running_cell-relax.log`` are used instead. The
+``TOTAL-FORCE`` and ``TOTAL-STRESS`` tables of the log also fill the frames of
+the per-step structures, which carry forces on the develop branch only, and
+the energy of every step is attached from the same log.
 """
 
 from __future__ import annotations
@@ -28,7 +37,12 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
-from abacustools.data.abacus_result import read_md_history
+from abacustools.core.constant import KBAR_TO_EV_PER_ANGSTROM3
+from abacustools.data.abacus_result import (
+    read_md_history,
+    read_relax_structures,
+    read_relaxation_history,
+)
 from abacustools.data.charge import output_directory
 from abacustools.io.abacus import ReadInput
 from abacustools.io.stru import AbacusSTRU
@@ -50,6 +64,7 @@ class TrajectoryFrame:
         forces: Forces in eV/Angstrom, or ``None`` when they were not dumped.
         velocities: Velocities in Angstrom/fs, or ``None``.
         virial: Virial in kBar, or ``None``.
+        stress: Stress tensor in kBar as ABACUS prints it, or ``None``.
         energy: Potential energy of the step in eV, from the running log.
         temperature: Temperature of the step in K, from the running log.
         pressure: Pressure of the step in kBar, from the running log.
@@ -62,6 +77,7 @@ class TrajectoryFrame:
     forces: Optional[np.ndarray] = None
     velocities: Optional[np.ndarray] = None
     virial: Optional[np.ndarray] = None
+    stress: Optional[np.ndarray] = None
     energy: Optional[float] = None
     temperature: Optional[float] = None
     pressure: Optional[float] = None
@@ -87,6 +103,37 @@ def _rows_of_floats(lines: Sequence[str], start: int, count: int) -> np.ndarray:
         fields = lines[start + offset].split()
         values.append([float(field) for field in fields[:3]])
     return np.asarray(values, dtype=float)
+
+
+def _frame_from_structure(step: int, structure: AbacusSTRU) -> TrajectoryFrame:
+    """Build a trajectory frame from one parsed ABACUS structure."""
+    velocities = None
+    if any(atom.velocity is not None for atom in structure.atoms):
+        velocities = np.asarray(
+            [
+                atom.velocity if atom.velocity is not None else (0.0, 0.0, 0.0)
+                for atom in structure.atoms
+            ],
+            dtype=float,
+        )
+    forces = None
+    if structure.atoms and all(atom.force is not None for atom in structure.atoms):
+        forces = np.asarray([atom.force for atom in structure.atoms], dtype=float)
+    return TrajectoryFrame(
+        step=step,
+        cell=np.asarray(structure.cell, dtype=float),
+        symbols=[str(element) for element in structure.elements],
+        positions=np.asarray(structure.coords, dtype=float),
+        forces=forces,
+        velocities=velocities,
+    )
+
+
+#: Per-step structures written by the relaxation driver, newest naming first.
+_RELAX_STEP_FILES = (
+    re.compile(r"^STRU_ION(\d+)_D$"),  # ABACUS 3.10 LTS
+    re.compile(r"^STRU(\d+)$"),        # ABACUS develop
+)
 
 
 def read_md_dump(path: Path) -> List[TrajectoryFrame]:
@@ -199,24 +246,7 @@ def _stru_md_frames(job: Path, outdir: Path) -> List[TrajectoryFrame]:
         structure = AbacusSTRU.read(str(path))
         if structure is None:
             continue
-        velocities = None
-        if any(atom.velocity is not None for atom in structure.atoms):
-            velocities = np.asarray(
-                [
-                    atom.velocity if atom.velocity is not None else (0.0, 0.0, 0.0)
-                    for atom in structure.atoms
-                ],
-                dtype=float,
-            )
-        frames.append(
-            TrajectoryFrame(
-                step=int(match.group(1)),
-                cell=np.asarray(structure.cell, dtype=float),
-                symbols=[str(element) for element in structure.elements],
-                positions=np.asarray(structure.coords, dtype=float),
-                velocities=velocities,
-            )
-        )
+        frames.append(_frame_from_structure(int(match.group(1)), structure))
     return sorted(frames, key=lambda frame: frame.step)
 
 
@@ -275,6 +305,149 @@ def read_trajectory(
     return frames
 
 
+def read_relax_trajectory(
+    job: Path,
+    *,
+    version: Optional[str] = None,
+    with_log: bool = True,
+) -> List[TrajectoryFrame]:
+    """Read the trajectory of an ABACUS relax or cell-relax job.
+
+    The frames come from the per-step structures ``out_stru`` writes, in step
+    order. When those files are missing the trajectory is rebuilt from the
+    coordinates that the running relaxation log prints for every ionic step.
+    The forces and stress of each step are attached from the ``TOTAL-FORCE``
+    and ``TOTAL-STRESS`` tables of the log, and so is the energy.
+
+    Args:
+        job: ABACUS job directory of a ``relax`` or ``cell-relax`` calculation.
+        version: ABACUS version hint for the running log.
+        with_log: Attach the energy of every step from the running log.  The
+            forces and stress are read from the log either way.
+
+    Returns:
+        The frames of the job, ordered by step.
+
+    Raises:
+        ValueError: If the job is not a relax or cell-relax calculation.
+        FileNotFoundError: If neither the per-step structures nor a usable
+            running log are available.
+    """
+    job = Path(job)
+    inputs = ReadInput(str(job / "INPUT"))
+    calculation = str(inputs.get("calculation", "scf")).lower()
+    if calculation not in {"relax", "cell-relax"}:
+        raise ValueError(
+            f"expected a relax or cell-relax job, got calculation={calculation!r}; "
+            "use 'postprocess md' for a molecular-dynamics trajectory"
+        )
+    outdir = output_directory(job, inputs)
+    log = outdir / f"running_{calculation}.log"
+    steps: Dict[int, Path] = {}
+    for path in sorted(outdir.glob("*")) if outdir.is_dir() else []:
+        if not path.is_file():
+            continue
+        for pattern in _RELAX_STEP_FILES:
+            match = pattern.match(path.name)
+            if match is not None:
+                steps[int(match.group(1))] = path
+                break
+    if steps:
+        frames = []
+        for step in sorted(steps):
+            structure = AbacusSTRU.read(str(steps[step]), fmt="stru")
+            if structure is None:
+                continue
+            frames.append(_frame_from_structure(step, structure))
+        if frames and log.is_file():
+            _attach_relax_log(frames, log, version, with_energy=with_log)
+        return frames
+
+    if not log.is_file():
+        raise FileNotFoundError(
+            f"no per-step structures in {outdir} and no {log.name}; enable "
+            "out_stru in INPUT so ABACUS writes STRU_ION<step>_D (LTS) or "
+            "STRU<step> (develop), or keep the running log"
+        )
+    cell, symbols = _job_structure_hint(job, inputs)
+    records = read_relax_structures(log, version, cell=cell, symbols=symbols)
+    if not records:
+        raise FileNotFoundError(
+            f"the running log {log} holds no per-step structure; enable out_stru "
+            "in INPUT so ABACUS writes the per-step structure files"
+        )
+    frames = [
+        TrajectoryFrame(
+            step=int(record["step"]),
+            cell=np.asarray(record["cell"], dtype=float),
+            symbols=list(record["symbols"]),
+            positions=np.asarray(record["positions"], dtype=float),
+            forces=_optional_array(record.get("forces")),
+            stress=_optional_array(record.get("stress")),
+            energy=record.get("energy") if with_log else None,
+        )
+        for record in records
+    ]
+    return frames
+
+
+def _optional_array(values: Any) -> Optional[np.ndarray]:
+    """Return ``values`` as a float array, or ``None`` when absent."""
+    if values is None:
+        return None
+    return np.asarray(values, dtype=float)
+
+
+def _attach_relax_log(
+    frames: Sequence[TrajectoryFrame],
+    log: Path,
+    version: Optional[str],
+    *,
+    with_energy: bool = True,
+) -> None:
+    """Fill the forces, stress and energy of the frames from a running log.
+
+    The per-step structures only carry forces on the develop branch, so the
+    forces of a frame that has none and the stress of every frame come from the
+    ``TOTAL-FORCE`` and ``TOTAL-STRESS`` tables of the log.
+    """
+    try:
+        history = {
+            int(record["step"]): record
+            for record in read_relaxation_history(log, version)
+        }
+    except (OSError, ValueError, KeyError, TypeError):
+        return
+    for frame in frames:
+        record = history.get(frame.step)
+        if record is None:
+            continue
+        if frame.forces is None and record.get("forces") is not None:
+            frame.forces = np.asarray(record["forces"], dtype=float)
+        if record.get("stress") is not None:
+            frame.stress = np.asarray(record["stress"], dtype=float)
+        if with_energy:
+            frame.energy = record.get("energy")
+
+
+def _job_structure_hint(
+    job: Path, inputs: Any
+) -> tuple[Optional[np.ndarray], Optional[List[str]]]:
+    """Return the cell and symbols of the job's input structure, if it exists."""
+    name = str(inputs.get("stru_file", "STRU"))
+    path = Path(name)
+    if not path.is_absolute():
+        path = job / path
+    if not path.is_file():
+        return None, None
+    structure = AbacusSTRU.read(str(path), fmt="stru")
+    if structure is None:
+        return None, None
+    return np.asarray(structure.cell, dtype=float), [
+        str(element) for element in structure.elements
+    ]
+
+
 def select_frames(
     frames: Sequence[TrajectoryFrame],
     *,
@@ -314,7 +487,10 @@ def frames_to_atoms(frames: Sequence[TrajectoryFrame]) -> List[Any]:
 
     Returns:
         One :class:`ase.Atoms` per frame, carrying the velocities and, when the
-        log or the dump provides them, the energy and the forces.
+        log or the dump provides them, the energy, the forces and the stress.
+        The stress of a frame is in kBar as ABACUS prints it; it is stored in
+        the ASE calculator in eV/Angstrom^3 and with the tension-positive sign
+        ASE uses.
     """
     from ase import Atoms
     from ase.calculators.singlepoint import SinglePointCalculator
@@ -334,6 +510,8 @@ def frames_to_atoms(frames: Sequence[TrajectoryFrame]) -> List[Any]:
             results["energy"] = float(frame.energy)
         if frame.forces is not None and frame.forces.shape == (frame.natoms, 3):
             results["forces"] = frame.forces
+        if frame.stress is not None and frame.stress.shape == (3, 3):
+            results["stress"] = -frame.stress * KBAR_TO_EV_PER_ANGSTROM3
         if results:
             atoms.calc = SinglePointCalculator(atoms, **results)
         structures.append(atoms)
@@ -367,3 +545,37 @@ def write_trajectory(
     path.parent.mkdir(parents=True, exist_ok=True)
     write(str(path), frames_to_atoms(frames), format=fmt)
     return path
+
+
+def _largest_finite(values: Sequence[Optional[float]]) -> Optional[float]:
+    """Return the largest finite value, or ``None`` when none qualifies."""
+    finite = np.asarray([value for value in values if value is not None], dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return None
+    return float(finite.max())
+
+
+def summarize_trajectory(frames: Sequence[TrajectoryFrame]) -> Dict[str, Any]:
+    """Summarise the contents of a trajectory.
+
+    Args:
+        frames: Frames of a trajectory.
+
+    Returns:
+        A report with the frame and atom counts, the first and last step, the
+        physical quantities the frames carry and the highest temperature.
+    """
+    return {
+        "frames": len(frames),
+        "atoms": frames[0].natoms if frames else 0,
+        "steps": [frames[0].step, frames[-1].step] if frames else [],
+        "has_forces": any(frame.forces is not None for frame in frames),
+        "has_velocities": any(frame.velocities is not None for frame in frames),
+        "has_virial": any(frame.virial is not None for frame in frames),
+        "has_stress": any(frame.stress is not None for frame in frames),
+        "has_energy": any(frame.energy is not None for frame in frames),
+        "highest_temperature": _largest_finite(
+            frame.temperature for frame in frames
+        ),
+    }

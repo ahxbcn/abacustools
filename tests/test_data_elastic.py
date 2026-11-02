@@ -22,6 +22,7 @@ from abacustools.data.elastic import (
     matrix_from_voigt,
     point_group_operations,
     project_tensor,
+    pymatgen_elastic_properties,
     stress_voigt,
     strain_matrix,
     symmetrize_elastic_tensor,
@@ -616,3 +617,30 @@ def test_elastic_moduli_use_the_voigt_average() -> None:
     assert result["shear_modulus"] == pytest.approx(44.0)
     assert result["young_modulus"] == pytest.approx(103.52941176470588)
     assert result["poisson_ratio"] == pytest.approx(0.17647058823529413)
+
+
+def test_pymatgen_elastic_properties_reports_derived_quantities() -> None:
+    """pymatgen evaluates the same tensor without replacing the custom fit."""
+    result = pymatgen_elastic_properties(
+        _cubic_tensor(),
+        AbacusSTRU.from_pymatgen(CUBIC),
+    )
+
+    assert result["available"] is True
+    assert result["engine"].endswith("ElasticTensor")
+    assert result["tensor_symmetry"] == {"major": True, "voigt": True}
+    properties = result["properties"]
+    assert properties["k_voigt"] == pytest.approx(96.33333333333333)
+    assert properties["g_voigt"] == pytest.approx(65.0)
+    assert properties["k_vrh"] == pytest.approx(96.33333333333334)
+    assert properties["g_vrh"] == pytest.approx(63.47478991596639)
+    assert properties["y_mod"] == pytest.approx(156.1321388978293)
+    assert properties["universal_anisotropy"] == pytest.approx(0.2462018448182306)
+    assert properties["homogeneous_poisson"] == pytest.approx(0.22987519221828848)
+
+    structure_properties = result["structure_properties"]
+    assert structure_properties["trans_v"] > 0.0
+    assert structure_properties["long_v"] > structure_properties["trans_v"]
+    assert structure_properties["debye_temperature"] > 0.0
+    assert result["structure_property_errors"] == {}
+    assert result["units"]["y_mod"] == "GPa"

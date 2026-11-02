@@ -1,6 +1,7 @@
 """
 ABACUS Numerical Atomic Orbitals (NAO) file handling.
 """
+from __future__ import annotations
 
 from typing import Dict, List, Any, Optional
 

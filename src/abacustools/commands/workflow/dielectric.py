@@ -44,6 +44,7 @@ from .common import (
     write_abacus_job,
     write_manifest,
 )
+from abacustools.core.render import cli_output
 
 
 _DEFAULT_NAME = "dielectric"
@@ -164,11 +165,11 @@ def prepare(args: argparse.Namespace) -> int:
         basis_type=str(prepared.get("basis_type", "lcao")),
     )
 
-    print(f"  job: {job}")
-    print(f"  prepared {name}")
-    print(f"  calculation: {prepared.get('calculation', 'scf')}")
-    print(f"  matrices: {', '.join(MATRIX_KEYWORDS)} (symmetry 0)")
-    print(
+    cli_output(f"  job: {job}")
+    cli_output(f"  prepared {name}")
+    cli_output(f"  calculation: {prepared.get('calculation', 'scf')}")
+    cli_output(f"  matrices: {', '.join(MATRIX_KEYWORDS)} (symmetry 0)")
+    cli_output(
         f"  run {name}/INPUT, copy the OUT.* matrices back, then run "
         f"'abacustools workflow dielectric postprocess -j {job}'"
     )
@@ -217,7 +218,7 @@ def _print_tensor(tensor: np.ndarray) -> None:
     as a signed zero would read as a small anisotropy.
     """
     for row in tensor:
-        print("    " + " ".join(f"{round(float(value), 8) + 0.0: .8f}" for value in row))
+        cli_output("    " + " ".join(f"{round(float(value), 8) + 0.0: .8f}" for value in row))
 
 
 def postprocess(args: argparse.Namespace) -> int:
@@ -237,7 +238,7 @@ def postprocess(args: argparse.Namespace) -> int:
     grid = [int(value) for value in args.grid]
     warning = omega_window_warning(omega)
     if warning:
-        print(f"  warning: {warning}")
+        cli_output(f"  warning: {warning}")
 
     summary = dielectric_tensor(
         workdir,
@@ -289,26 +290,26 @@ def postprocess(args: argparse.Namespace) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 
-    print(f"  job: {job}")
-    print(f"  task: {task.name}")
-    print(
+    cli_output(f"  job: {job}")
+    cli_output(f"  task: {task.name}")
+    cli_output(
         f"  occupied bands: {result['occ_band']}, "
         f"spin channels: {result['nspin']}"
     )
-    print(f"  grid: {' '.join(str(value) for value in grid)}")
-    print(
+    cli_output(f"  grid: {' '.join(str(value) for value in grid)}")
+    cli_output(
         f"  photon energy window: {omega[0]:g} - {omega[1]:g} eV "
         f"(step {result['domega_ev']:g} eV, broadening {result['eta_ev']:g} eV)"
     )
-    print(f"  dielectric tensor ({_TENSOR_UNIT}):")
+    cli_output(f"  dielectric tensor ({_TENSOR_UNIT}):")
     _print_tensor(tensor)
-    print(f"  isotropic average: {result['diagonal_mean']:.8f} ({_TENSOR_UNIT})")
+    cli_output(f"  isotropic average: {result['diagonal_mean']:.8f} ({_TENSOR_UNIT})")
     if not result["isotropic"]:
-        print(
+        cli_output(
             f"  anisotropy: diagonal spread {result['diagonal_spread']:.8f}, "
             f"largest off diagonal element {result['max_off_diagonal']:.8f}"
         )
-    print(f"  results: {output}")
+    cli_output(f"  results: {output}")
     return 0
 
 

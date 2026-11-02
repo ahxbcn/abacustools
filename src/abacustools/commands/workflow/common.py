@@ -6,6 +6,7 @@ import json
 import shutil
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
+from abacustools.core.render import cli_output
 
 
 def workflow_manifest_path(job: Path, workflow: str) -> Path:
@@ -116,7 +117,7 @@ def clear_generated_jobs(
         )
 
     for path in existing:
-        print(f"  removing old directory: {path}")
+        cli_output(f"  removing old directory: {path}")
         if path.is_dir() and not path.is_symlink():
             shutil.rmtree(path)
         else:

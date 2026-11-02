@@ -444,10 +444,10 @@ def status_job(job_dir: Path, validation: Optional[JobValidation] = None) -> Job
     if log is None:
         return JobStatus("incomplete", {}, None)
 
-    lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+    log_text = log.read_text(encoding="utf-8", errors="replace").lower()
     failed = any(
-        any(marker in line.lower() for marker in ("segmentation fault", "error in", "aborting"))
-        for line in lines
+        marker in log_text
+        for marker in ("segmentation fault", "error in", "aborting")
     )
     from abacustools.data.abacus_result import get_result_from_job
 

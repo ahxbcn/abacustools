@@ -22,6 +22,7 @@ from abacustools.data.symmetry import (
     site_symmetry_symbols,
 )
 from abacustools.io.stru import AbacusSTRU, normalize_structure_format
+from abacustools.core.render import cli_output
 
 
 def _structure_file(value: str) -> Path:
@@ -331,9 +332,9 @@ def _print_table(columns: list[str], rows: list[list[str]]) -> None:
         max([len(header)] + [len(row[index]) for row in rows])
         for index, header in enumerate(columns)
     ]
-    print("  " + " ".join(header.rjust(width) for header, width in zip(columns, widths)))
+    cli_output("  " + " ".join(header.rjust(width) for header, width in zip(columns, widths)))
     for row in rows:
-        print("  " + " ".join(value.rjust(width) for value, width in zip(row, widths)))
+        cli_output("  " + " ".join(value.rjust(width) for value, width in zip(row, widths)))
 
 
 def _dimensionality_text(dimension: dict[str, Any]) -> str:
@@ -466,86 +467,86 @@ def _print_report(result: dict[str, Any]) -> None:
     ordering = result["magnetic_ordering"]
     layer = result["layer_symmetry"]
     composition = result["composition"]
-    print(f"file: {result['file']}")
-    print(f"atoms: {result['natoms']} ({result['formula']})")
+    cli_output(f"file: {result['file']}")
+    cli_output(f"atoms: {result['natoms']} ({result['formula']})")
     for line in _composition_lines(composition):
-        print(line)
-    print("element counts: " + ", ".join(f"{key}={value}" for key, value in result["element_counts"].items()))
-    print("label counts: " + ", ".join(f"{key}={value}" for key, value in result["label_counts"].items()))
-    print("cell vectors (Angstrom):")
+        cli_output(line)
+    cli_output("element counts: " + ", ".join(f"{key}={value}" for key, value in result["element_counts"].items()))
+    cli_output("label counts: " + ", ".join(f"{key}={value}" for key, value in result["label_counts"].items()))
+    cli_output("cell vectors (Angstrom):")
     for vector in cell["vectors_angstrom"]:
-        print("  " + " ".join(f"{float(value): .8f}" for value in vector))
-    print(f"cell lengths (Angstrom): {_display_value(cell['lengths_angstrom'])}")
-    print(f"cell angles (degree): {_display_value(cell['angles_degree'])}")
-    print(f"cell volume (Angstrom^3): {_display_value(cell['volume_angstrom3'])}")
+        cli_output("  " + " ".join(f"{float(value): .8f}" for value in vector))
+    cli_output(f"cell lengths (Angstrom): {_display_value(cell['lengths_angstrom'])}")
+    cli_output(f"cell angles (degree): {_display_value(cell['angles_degree'])}")
+    cli_output(f"cell volume (Angstrom^3): {_display_value(cell['volume_angstrom3'])}")
     density = composition.get("density_g_cm3")
-    print(f"density (g/cm^3): {'-' if density is None else f'{density:.6f}'}")
-    print(f"dimensionality: {_dimensionality_text(result['dimensionality'])}")
+    cli_output(f"density (g/cm^3): {'-' if density is None else f'{density:.6f}'}")
+    cli_output(f"dimensionality: {_dimensionality_text(result['dimensionality'])}")
     if symmetry.get("available"):
-        print(
+        cli_output(
             "symmetry: "
             f"{symmetry['space_group_symbol']} (No. {symmetry['space_group_number']}), "
             f"{symmetry['crystal_system']}"
         )
-        print(f"symmetry operations: {symmetry['symmetry_operations']}")
+        cli_output(f"symmetry operations: {symmetry['symmetry_operations']}")
         schoenflies = symmetry.get("schoenflies")
-        print(
+        cli_output(
             f"point group: {symmetry['point_group']}"
             + (f" ({schoenflies})" if schoenflies else "")
         )
         if symmetry.get("bravais_lattice"):
             pearson = symmetry.get("pearson_symbol")
             suffix = f" (Pearson symbol {pearson})" if pearson else ""
-            print(f"Bravais lattice: {symmetry['bravais_lattice']}{suffix}")
-        print(f"inversion symmetry: {_yes_no(symmetry.get('inversion_symmetry'))}")
-        print(f"polar point group: {_yes_no(symmetry.get('polar_point_group'))}")
-        print(
+            cli_output(f"Bravais lattice: {symmetry['bravais_lattice']}{suffix}")
+        cli_output(f"inversion symmetry: {_yes_no(symmetry.get('inversion_symmetry'))}")
+        cli_output(f"polar point group: {_yes_no(symmetry.get('polar_point_group'))}")
+        cli_output(
             "symmetry accuracy: "
             f"symprec {symmetry['symprec']:g} Angstrom, "
             f"angle tolerance {symmetry['angle_tolerance']:g} degrees"
         )
     else:
-        print(f"symmetry: unavailable ({symmetry.get('error', 'unknown reason')})")
+        cli_output(f"symmetry: unavailable ({symmetry.get('error', 'unknown reason')})")
     if magnetic.get("available"):
         label = magnetic["label"] or "-"
-        print(
+        cli_output(
             "magnetic symmetry: "
             f"{label} (BNS {magnetic['bns_number']}, UNI {magnetic['uni_number']}), {magnetic['type']}"
         )
-        print(
+        cli_output(
             "magnetic operations: "
             f"{magnetic['operations']} "
             f"({magnetic['operations_with_time_reversal']} with time reversal)"
         )
     else:
-        print(f"magnetic symmetry: unavailable ({magnetic.get('error', 'unknown reason')})")
+        cli_output(f"magnetic symmetry: unavailable ({magnetic.get('error', 'unknown reason')})")
     if ordering.get("available"):
-        print(
+        cli_output(
             f"magnetic ordering: {ordering['ordering']}, net moment {ordering['net_moment']}, "
             f"{ordering['magnetic_sites']} magnetic sites "
             f"({ordering['unique_magnetic_sites']} unique)"
         )
     if layer.get("available"):
-        print(
+        cli_output(
             f"layer symmetry: {layer['symbol']} (No. {layer['number']}) "
             f"along {layer['direction']}, {layer['operations']} operations"
         )
     elif layer.get("requested_direction"):
-        print(f"layer symmetry: unavailable ({layer.get('error', 'unknown reason')})")
+        cli_output(f"layer symmetry: unavailable ({layer.get('error', 'unknown reason')})")
     coordination = result.get("coordination")
     if coordination is not None:
         for line in _coordination_lines(coordination):
-            print(line)
+            cli_output(line)
     # Without symmetry every atom is its own orbit and the table would only
     # repeat the per-atom table, which is the case for P1 and for structures
     # whose symmetry could not be analysed.
     positions = result["inequivalent_positions"]
     if len(positions) != result["natoms"]:
-        print("symmetry-inequivalent positions:")
+        cli_output("symmetry-inequivalent positions:")
         _print_table(*_inequivalent_table(positions))
     resources = result.get("resources")
     if resources:
-        print("resources:")
+        cli_output("resources:")
         _print_table(
             ["label", "pseudopotential", "orbital"],
             [
@@ -557,7 +558,7 @@ def _print_report(result: dict[str, Any]) -> None:
                 for label in result["label_counts"]
             ],
         )
-    print("atoms:")
+    cli_output("atoms:")
     _print_table(*_atom_table(result["atoms"], result.get("coordination")))
 
 
@@ -604,7 +605,7 @@ def _summary_row(summary: dict[str, Any]) -> list[str]:
 
 def _print_summary(summaries: list[dict[str, Any]]) -> None:
     """Print one row per structure with its main fields."""
-    print("cell lengths in Angstrom, angles in degree, volume in Angstrom^3")
+    cli_output("cell lengths in Angstrom, angles in degree, volume in Angstrom^3")
     _print_table(
         list(_SUMMARY_COLUMNS),
         [_summary_row(summary) for summary in summaries],
@@ -632,7 +633,7 @@ def run(args: argparse.Namespace) -> int:
             for path in paths
         ]
         if args.json:
-            print(json.dumps(summaries, indent=2, ensure_ascii=False))
+            cli_output(json.dumps(summaries, indent=2, ensure_ascii=False))
         else:
             _print_summary(summaries)
         return 0
@@ -647,7 +648,7 @@ def run(args: argparse.Namespace) -> int:
         min_vacuum=args.min_vacuum,
     )
     if args.json:
-        print(json.dumps(result, indent=2, ensure_ascii=False))
+        cli_output(json.dumps(result, indent=2, ensure_ascii=False))
     else:
         _print_report(result)
     return 0

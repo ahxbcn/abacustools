@@ -8,16 +8,19 @@ from pathlib import Path
 from typing import Any
 
 from abacustools.core.job import JobStatus, JobValidation, status_job, validate_job
-from abacustools.data.abacus_result import read_relaxation_history
+from abacustools.data.abacus_result import find_job_log, read_relaxation_history
 
 from .monitor import (
+    _format_displacement_site,
     _format_energy,
     _format_energy_change,
     _format_metric,
     _job_directory,
     _print_table,
     _structure_lattice,
+    _structure_moves,
 )
+from abacustools.core.render import cli_output
 
 
 def register_parser(subparsers) -> None:
@@ -66,6 +69,8 @@ def _summary(job: Path, jobs: list[Path]) -> dict[str, Any]:
     validation: JobValidation = validate_job(job)
     status: JobStatus = status_job(job, validation)
     calculation = str(validation.inputs.get("calculation", "scf")).lower()
+    ionic = calculation in {"relax", "cell-relax", "cell_relax", "md"}
+    log = status.log or find_job_log(job, ionic=ionic)
     item: dict[str, Any] = {
         "job": str(job.absolute()),
         "name": _job_name(job, jobs),
@@ -78,12 +83,21 @@ def _summary(job: Path, jobs: list[Path]) -> dict[str, Any]:
         "max_stress": status.progress.get("largest_stress"),
         "rms_displacement": None,
         "max_displacement": None,
+        "max_displacement_atom": None,
+        "max_displacement_atom_label": None,
         "relaxation_steps": None,
-        "log": None if status.log is None else str(status.log),
+        "log": None if log is None else str(log),
     }
-    if _is_relaxation(calculation) and status.log is not None:
+    if _is_relaxation(calculation) and log is not None:
+        moves = (
+            _structure_moves(job, validation.inputs)
+            if calculation in {"relax", "cell-relax", "cell_relax"}
+            else None
+        )
         history = read_relaxation_history(
-            status.log, lattice=_structure_lattice(job, validation.inputs)
+            log,
+            lattice=_structure_lattice(job, validation.inputs),
+            moves=moves,
         )
         if history:
             latest = history[-1]
@@ -96,6 +110,8 @@ def _summary(job: Path, jobs: list[Path]) -> dict[str, Any]:
                     "max_stress": latest["max_stress"],
                     "rms_displacement": latest["rms_displacement"],
                     "max_displacement": latest["max_displacement"],
+                    "max_displacement_atom": latest["max_displacement_atom"],
+                    "max_displacement_atom_label": latest["max_displacement_atom_label"],
                     "relaxation_steps": len(history),
                 }
             )
@@ -106,8 +122,8 @@ def _print_jobs(items: list[dict[str, Any]]) -> None:
     """Print one row per job."""
     header = [
         "job", "state", "calculation", "step",
-        "energy(eV)", "dE(eV)", "max_force(eV/A)",
-        "rms_displacement(A)", "max_displacement(A)", "max_stress(kBar)",
+        "E(eV)", "dE(eV)", "Fmax(eV/A)",
+        "rms_disp(A)", "max_disp(A)", "disp_atom", "Smax(kBar)",
     ]
     rows = [
         [
@@ -120,6 +136,7 @@ def _print_jobs(items: list[dict[str, Any]]) -> None:
             _format_metric(item["max_force"]),
             _format_metric(item.get("rms_displacement")),
             _format_metric(item.get("max_displacement")),
+            _format_displacement_site(item),
             _format_metric(item["max_stress"]),
         ]
         for item in items
@@ -129,7 +146,7 @@ def _print_jobs(items: list[dict[str, Any]]) -> None:
 
 def _print_items(items: list[dict[str, Any]], as_json: bool) -> None:
     if as_json:
-        print(json.dumps({"jobs": items}, indent=2, sort_keys=True))
+        cli_output(json.dumps({"jobs": items}, indent=2, sort_keys=True))
     else:
         _print_jobs(items)
 

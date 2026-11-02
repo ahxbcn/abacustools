@@ -28,6 +28,7 @@ from .common import (
     write_abacus_job,
     write_manifest,
 )
+from abacustools.core.render import cli_output
 
 
 _ORIGINAL_TASK = "vacancy_original_stru"
@@ -211,16 +212,16 @@ def prepare(args: argparse.Namespace) -> int:
         names += [f"{args.ref_dir}/{element}" for element in sorted({p["element"] for p in points})]
     clear_generated_jobs(job, names, override=args.override)
 
-    print(f"  job: {job}")
-    print(f"  supercell: {supercell[0]} {supercell[1]} {supercell[2]}")
-    print(f"  vacancy indices: {', '.join(str(index) for index in indices)}")
+    cli_output(f"  job: {job}")
+    cli_output(f"  supercell: {supercell[0]} {supercell[1]} {supercell[2]}")
+    cli_output(f"  vacancy indices: {', '.join(str(index) for index in indices)}")
 
     write_abacus_job(
         relax_inputs, supercell_structure, job, job / _ORIGINAL_TASK,
         stru_filename=stru_filename, kpoint=kpoint_file,
     )
     _write_final_scf(job, job / _ORIGINAL_TASK / "final_scf", scf_inputs, supercell_structure, kpoint_file)
-    print(f"  prepared {_ORIGINAL_TASK}")
+    cli_output(f"  prepared {_ORIGINAL_TASK}")
 
     for point in points:
         defect_structure = set_atom_empty(supercell_structure, point["index"] - 1)
@@ -229,7 +230,7 @@ def prepare(args: argparse.Namespace) -> int:
             stru_filename=stru_filename, kpoint=kpoint_file,
         )
         _write_final_scf(job, job / point["name"] / "final_scf", scf_inputs, defect_structure, kpoint_file)
-        print(f"  prepared {point['name']}")
+        cli_output(f"  prepared {point['name']}")
 
     if args.cal_reference:
         for element in sorted({point["element"] for point in points}):
@@ -240,7 +241,7 @@ def prepare(args: argparse.Namespace) -> int:
                 relax_inputs, crystal, job, ref_dir / element,
                 stru_filename=stru_filename, kpoint=kpoint_file,
             )
-            print(f"  prepared reference {element}")
+            cli_output(f"  prepared reference {element}")
 
     write_manifest(
         job,
@@ -313,7 +314,7 @@ def postprocess(args: argparse.Namespace) -> int:
     )
 
     original_energy = _read_energy(job / _ORIGINAL_TASK / "final_scf", args.version)
-    print(f"  original supercell energy: {original_energy:.8f} eV")
+    cli_output(f"  original supercell energy: {original_energy:.8f} eV")
 
     results = {}
     for point in points:
@@ -332,7 +333,7 @@ def postprocess(args: argparse.Namespace) -> int:
             "reference_atom_energy": reference_energies[element],
             "vacancy_formation_energy": formation_energy,
         }
-        print(f"  {name}: E_f = {formation_energy:.6f} eV")
+        cli_output(f"  {name}: E_f = {formation_energy:.6f} eV")
 
     output = Path(args.output)
     if not output.is_absolute():
@@ -353,8 +354,8 @@ def postprocess(args: argparse.Namespace) -> int:
         encoding="utf-8",
     )
 
-    print(f"  results: {output}")
-    print(f"  reference atom energies: {ref_file}")
+    cli_output(f"  results: {output}")
+    cli_output(f"  reference atom energies: {ref_file}")
     return 0
 
 

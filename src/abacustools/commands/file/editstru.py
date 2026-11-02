@@ -14,6 +14,11 @@ from abacustools.data.doping import (
     resolve_dopant_resources,
     substitute_atoms,
 )
+from abacustools.data.magnetism import (
+    build_magnetic_supercell,
+    magnetic_primitive,
+    magnetic_standard_cell,
+)
 from abacustools.data.structure import (
     build_slab,
     find_conventional,
@@ -28,8 +33,9 @@ from abacustools.data.structure import (
     symmetrize_structure,
     with_vacuum,
 )
-from abacustools.data.symmetry import crystallographic_symmetry
+from abacustools.data.symmetry import crystallographic_symmetry, magnetic_symmetry
 from abacustools.io.stru import AbacusSTRU
+from abacustools.core.render import cli_output
 
 
 def _structure_file(value: str) -> Path:
@@ -567,6 +573,107 @@ def _register_all_slabs(subparsers) -> None:
     )
 
 
+def _register_magnetic(subparsers) -> None:
+    """Register ``file editstru magnetic``."""
+    parser = subparsers.add_parser(
+        "magnetic",
+        help=(
+            "Build the commensurate magnetic cell of a propagation vector, or "
+            "reduce a magnetic structure to its primitive cell."
+        ),
+    )
+    _add_common_arguments(parser, "magnetic")
+    parser.add_argument(
+        "--k",
+        type=float,
+        nargs=3,
+        metavar=("K1", "K2", "K3"),
+        help=(
+            "Propagation vector in the reciprocal basis of the input cell. The "
+            "cell grows by the index of the translations with exp(2*pi*i*k.T)=1."
+        ),
+    )
+    parser.add_argument(
+        "--elements",
+        nargs="+",
+        metavar="ELEMENT",
+        help=(
+            "Elements that carry a moment; default: every element that already "
+            "has a non-zero moment in the input."
+        ),
+    )
+    parser.add_argument(
+        "--moment",
+        type=float,
+        metavar="MUB",
+        help=(
+            "Moment amplitude in Bohr magnetons; default: the amplitude already "
+            "stored on the magnetic atoms."
+        ),
+    )
+    parser.add_argument(
+        "--phase",
+        type=float,
+        default=0.0,
+        metavar="DEGREES",
+        help="Phase of the spin wave at the origin, default: 0.",
+    )
+    cell_choice = parser.add_mutually_exclusive_group()
+    cell_choice.add_argument(
+        "--primitive",
+        action="store_true",
+        help="Reduce the built cell to its primitive magnetic cell.",
+    )
+    cell_choice.add_argument(
+        "--standardize",
+        action="store_true",
+        help=(
+            "Write the standardized conventional cell of the magnetic space "
+            "group instead of the raw supercell."
+        ),
+    )
+    parser.add_argument(
+        "--from-moments",
+        action="store_true",
+        help=(
+            "Skip --k: take the moments already in the file and reduce the "
+            "structure to the primitive cell of their magnetic translation group."
+        ),
+    )
+    parser.add_argument(
+        "--max-denominator",
+        type=_positive_int,
+        default=12,
+        metavar="N",
+        help=(
+            "Largest denominator accepted for a component of k, default: 12. A "
+            "k that needs a larger one is treated as incommensurate."
+        ),
+    )
+    parser.add_argument(
+        "--allow-projection",
+        action="store_true",
+        help=(
+            "Write the collinear projection m*cos(2*pi*k.r + phase) when the "
+            "phases are not 0 or 180 degrees."
+        ),
+    )
+    parser.add_argument(
+        "--symprec",
+        type=_non_negative_float,
+        default=1e-5,
+        metavar="ANGSTROM",
+        help="Symmetry tolerance in Angstrom, default: 1e-5.",
+    )
+    parser.add_argument(
+        "--angle-tolerance",
+        type=float,
+        default=-1.0,
+        metavar="DEGREES",
+        help="Lattice angle tolerance in degrees, default: the spglib default.",
+    )
+
+
 def register_parser(subparsers) -> None:
     """Register the ``file editstru`` parser and its actions."""
     parser = subparsers.add_parser(
@@ -591,6 +698,7 @@ def register_parser(subparsers) -> None:
     _register_conventional(actions)
     _register_symmetrize(actions)
     _register_all_slabs(actions)
+    _register_magnetic(actions)
 
 
 def _formula(structure: AbacusSTRU) -> str:
@@ -754,19 +862,57 @@ def _run_action(args: argparse.Namespace) -> int:
                 "num_slabs": len(slabs),
                 "output_files": written_files,
             }
-            print(json.dumps(payload, indent=2, sort_keys=True))
+            cli_output(json.dumps(payload, indent=2, sort_keys=True))
         else:
-            print(f"  all-slabs: {args.filename}")
-            print(f"  Miller indices: {tuple(args.miller)}")
-            print(f"  Generated {len(slabs)} slab(s):")
+            cli_output(f"  all-slabs: {args.filename}")
+            cli_output(f"  Miller indices: {tuple(args.miller)}")
+            cli_output(f"  Generated {len(slabs)} slab(s):")
             for i, f in enumerate(written_files):
-                print(f"    [{i}] {f}")
+                cli_output(f"    [{i}] {f}")
         return 0
     
     substitution = None
+    magnetic = None
     if args.action == "substitute":
         edited, resources, substituted = _substitute(args, structure)
         substitution = (resources, substituted)
+    elif args.action == "magnetic":
+        if args.from_moments:
+            if args.k is not None:
+                raise RuntimeError("--from-moments and --k are mutually exclusive")
+            edited, magnetic = magnetic_primitive(
+                structure,
+                symprec=args.symprec,
+                angle_tolerance=args.angle_tolerance,
+            )
+        else:
+            if args.k is None:
+                raise RuntimeError("magnetic needs --k or --from-moments")
+            edited, magnetic = build_magnetic_supercell(
+                structure,
+                args.k,
+                elements=args.elements,
+                moment=args.moment,
+                phase=args.phase,
+                max_denominator=args.max_denominator,
+                allow_projection=args.allow_projection,
+            )
+            if args.primitive:
+                reduced, reduction = magnetic_primitive(
+                    edited,
+                    symprec=args.symprec,
+                    angle_tolerance=args.angle_tolerance,
+                )
+                magnetic["primitive"] = reduction
+                edited = reduced
+            elif args.standardize:
+                standardized, standard = magnetic_standard_cell(
+                    edited,
+                    symprec=args.symprec,
+                    angle_tolerance=args.angle_tolerance,
+                )
+                magnetic["standardized"] = standard
+                edited = standardized
     else:
         edited = _edited_structure(args, structure)
 
@@ -803,43 +949,102 @@ def _run_action(args: argparse.Namespace) -> int:
         resources, substituted = substitution
         payload.update(resources.as_dict())
         payload["substituted_atoms"] = [index + 1 for index in substituted]
+    if magnetic is not None:
+        payload["magnetic"] = magnetic
+        symmetry = magnetic_symmetry(
+            edited,
+            symprec=args.symprec,
+            angle_tolerance=args.angle_tolerance,
+        )
+        if symmetry.get("available"):
+            magnetic["magnetic_symmetry"] = {
+                key: symmetry[key]
+                for key in (
+                    "label",
+                    "bns_number",
+                    "uni_number",
+                    "type",
+                    "operations",
+                    "operations_with_time_reversal",
+                )
+            }
     if args.action == "symmetrize":
         payload["space_group"] = symmetry.get("space_group_symbol")
         payload["space_group_number"] = symmetry.get("space_group_number")
         payload["max_displacement_angstrom"] = _max_displacement(structure, edited)
         payload["cell_idealized"] = not args.keep_cell
     if args.json:
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        cli_output(json.dumps(payload, indent=2, sort_keys=True))
         return 0
-    print(f"  {args.action}: {args.filename} -> {output}")
-    print(f"  atoms: {payload['atoms_before']} -> {payload['atoms_after']}")
-    print(f"  formula: {payload['formula']}")
+    cli_output(f"  {args.action}: {args.filename} -> {output}")
+    cli_output(f"  atoms: {payload['atoms_before']} -> {payload['atoms_after']}")
+    cli_output(f"  formula: {payload['formula']}")
     if args.action in {"direct", "cartesian"}:
-        print(f"  coordinates: {args.action}")
+        cli_output(f"  coordinates: {args.action}")
     if substitution is not None:
         resources, substituted = substitution
         atoms = ", ".join(str(index + 1) for index in substituted)
-        print(f"  dopant: {resources.element} for {len(substituted)} atom(s): {atoms}")
-        print(f"  pseudopotential: {resources.pp or '-'}")
-        print(f"    why: {resources.pp_reason}")
-        print(f"  orbital: {resources.orb or '-'}")
-        print(f"    why: {resources.orb_reason}")
+        cli_output(f"  dopant: {resources.element} for {len(substituted)} atom(s): {atoms}")
+        cli_output(f"  pseudopotential: {resources.pp or '-'}")
+        cli_output(f"    why: {resources.pp_reason}")
+        cli_output(f"  orbital: {resources.orb or '-'}")
+        cli_output(f"    why: {resources.orb_reason}")
+    if magnetic is not None:
+        if args.from_moments:
+            cli_output(
+                "  magnetic: primitive cell of the moments in the input "
+                f"(volume / {magnetic['volume_factor']})"
+            )
+        else:
+            k_text = " ".join(f"{value:g}" for value in magnetic["reduced_k"])
+            cli_output(f"  k: ({k_text}), magnetic cell = {magnetic['index']} x input cell")
+            if "primitive" in magnetic:
+                cli_output(
+                    "  primitive magnetic cell: "
+                    f"{magnetic['primitive']['atoms_after']} atoms "
+                    f"(volume / {magnetic['primitive']['volume_factor']})"
+                )
+            if "standardized" in magnetic:
+                cli_output(
+                    "  standardized magnetic cell: "
+                    f"{magnetic['standardized']['atoms_after']} atoms "
+                    f"(volume x {magnetic['standardized']['volume_factor']:g})"
+                )
+        symmetry = magnetic.get("magnetic_symmetry")
+        if symmetry:
+            label = (
+                symmetry.get("label")
+                or symmetry.get("og_number")
+                or f"BNS {symmetry['bns_number']}"
+            )
+            cli_output(
+                f"  magnetic space group: {label} "
+                f"(BNS {symmetry['bns_number']}, UNI {symmetry['uni_number']}), "
+                f"{symmetry['type']}"
+            )
+        else:
+            cli_output("  magnetic space group: unavailable")
+        if any(not atom.pp for atom in edited.atoms):
+            cli_output(
+                "  note: ATOMIC_SPECIES has no pseudopotential; fill it in "
+                "before running ABACUS"
+            )
     if args.action == "symmetrize":
         number = payload["space_group_number"]
         symbol = payload["space_group"] or "unavailable"
         label = symbol if number is None else f"{symbol} (No. {number})"
-        print(f"  symmetry: {label}")
-        print(f"  max displacement: {payload['max_displacement_angstrom']:.6g} Angstrom")
+        cli_output(f"  symmetry: {label}")
+        cli_output(f"  max displacement: {payload['max_displacement_angstrom']:.6g} Angstrom")
         if not payload["cell_idealized"]:
-            print("  lattice: kept")
+            cli_output("  lattice: kept")
         if number == 1:
-            print(
+            cli_output(
                 "  note: no symmetry beyond P1 was found; "
                 "raise --symprec if the file should be more symmetric"
             )
     if payload["fixed_atoms"]:
-        print(f"  fixed atoms: {payload['fixed_atoms']} of {payload['atoms_after']}")
-    print(
+        cli_output(f"  fixed atoms: {payload['fixed_atoms']} of {payload['atoms_after']}")
+    cli_output(
         "  cell: "
         + " ".join(f"{value:.6f}" for value in payload["cell_lengths"])
         + " Angstrom"

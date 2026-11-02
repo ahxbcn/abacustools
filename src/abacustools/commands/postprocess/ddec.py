@@ -18,6 +18,7 @@ from abacustools.data.ddec import (
     read_pairs_file,
     select_pairs,
 )
+from abacustools.core.render import cli_output
 
 
 def _job_directory(value: str) -> Path:
@@ -225,7 +226,7 @@ def run(args: argparse.Namespace) -> int:
             threads=args.threads,
         )
     except DdecError as error:
-        print(f"DDEC analysis failed: {error}")
+        cli_output(f"DDEC analysis failed: {error}")
         return 1
 
     report = analysis.to_dict()
@@ -234,10 +235,10 @@ def run(args: argparse.Namespace) -> int:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(report, indent=2), encoding="utf-8")
         if not args.json:
-            print(f"Wrote DDEC report: {output}")
+            cli_output(f"Wrote DDEC report: {output}")
 
     if args.json:
-        print(json.dumps(report, indent=2))
+        cli_output(json.dumps(report, indent=2))
         return 0
 
     shown = select_pairs(

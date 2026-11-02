@@ -1,4 +1,5 @@
 """The ``abacustools file`` command family."""
+from __future__ import annotations
 
 from . import input as input_command
 from . import interface as interface_command
