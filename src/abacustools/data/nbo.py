@@ -61,7 +61,7 @@ class PeriodicNBOOptions:
 
 @dataclass(frozen=True)
 class AtomPopulation:
-    """NPA population and charge of one atom."""
+    """Atomic population and charge from the periodic population analysis."""
 
     index: int
     element: str
@@ -150,6 +150,7 @@ class PeriodicNBOAnalysis:
     donor_acceptor: tuple[DonorAcceptorInteraction, ...]
     data_files: tuple[str, ...]
     warnings: tuple[str, ...] = ()
+    population_method: str = "mulliken"
     unit_energy: str = "eV"
 
     def to_dict(self) -> dict[str, Any]:
@@ -184,6 +185,7 @@ class PeriodicNBOAnalysis:
             "basis_functions": self.basis_functions,
             "total_electrons": self.total_electrons,
             "occupancy_convention": self.occupancy_convention,
+            "population_method": self.population_method,
             "unit_energy": self.unit_energy,
             "atoms": [clean(item.__dict__) for item in self.atoms],
             "natural_orbitals": [clean(item.__dict__) for item in self.natural_orbitals],
@@ -640,6 +642,34 @@ def _normalise_atomic_component(
     return full / norm
 
 
+def _bond_occupancies(bond_order: float) -> tuple[float, float]:
+    """Return the electron occupations of one bonding/antibonding pair.
+
+    One Wiberg bond represents one bonding pair with a total of two electrons.
+    A bond order above one therefore saturates the bonding NBO and leaves the
+    antibonding NBO empty. A multiple bond needs more than one bonding pair;
+    the electron-count check at the analysis level reports when this simple
+    topology cannot represent it.
+
+    Args:
+        bond_order: Periodic Wiberg bond order.
+
+    Returns:
+        Occupations of the bonding and antibonding orbitals.
+    """
+
+    order = max(0.0, float(bond_order))
+    bond = min(2.0, 2.0 * min(1.0, order))
+    return bond, max(0.0, 2.0 - bond)
+
+
+def _valence_lone_pair_count(valence: float, incident_order: float) -> int:
+    """Estimate lone pairs from valence electrons not used in sigma bonds."""
+
+    nonbonding = max(0.0, float(valence) - max(0.0, float(incident_order)))
+    return max(0, int(round(nonbonding / 2.0)))
+
+
 def _search_nbos_from_population(
     structure: AbacusSTRU,
     ranges: Sequence[tuple[int, int]],
@@ -656,9 +686,11 @@ def _search_nbos_from_population(
 
     The pre-NAO natural orbitals supply the atomic hybrid space. Each periodic
     Wiberg bond determines a two-centre reduced density block whose leading
-    natural orbital is used as the bond shape, while the bond electron count is
-    taken as twice its Wiberg order. This avoids the ill-conditioned full AO
-    block while retaining the periodic pair and natural-orbital information.
+    natural orbital is used as the bond shape. Wiberg order controls the
+    bonding/antibonding topology, while occupations use an explicit
+    two-electron budget per bond and a valence-based lone-pair count. This is
+    an approximate ABACUS-native construction, not a standard NBO deletion
+    analysis.
     """
 
     nbas = natural.nbas
@@ -697,7 +729,7 @@ def _search_nbos_from_population(
     for atom in range(structure.natoms):
         nonbonding = max(
             0.0,
-            float(atom_populations[atom].population) - incident_orders[atom],
+            float(atom_populations[atom].valence_electrons) - incident_orders[atom],
         )
         coordination = int(round(incident_orders[atom]))
         labels = {1: "s", 2: "sp", 3: "sp2", 4: "sp3"}
@@ -797,7 +829,7 @@ def _search_nbos_from_population(
             ranges,
             zero_overlap,
         )
-        occupancy = min(2.0, max(0.0, 2.0 * bond_order))
+        occupancy, anti_occupancy = _bond_occupancies(bond_order)
         anti_values = trailing_full
         anti_first = anti_values[:first_size]
         anti_second = anti_values[first_size:]
@@ -853,7 +885,7 @@ def _search_nbos_from_population(
         anti = NBOWavefunction(
             index=len(wavefunctions) + 1,
             kind="antibond",
-            occupancy=max(0.0, 2.0 - occupancy),
+            occupancy=anti_occupancy,
             centers=((first, (0, 0, 0)), (second, image)),
             components=(
                 NBOComponent(
@@ -889,13 +921,27 @@ def _search_nbos_from_population(
         wavefunctions.append(anti)
         acceptors.append(anti)
 
-    for atom, (start, stop) in enumerate(ranges):
-        population = float(atom_populations[atom].population)
-        nonbonding = max(0.0, population - incident_orders[atom])
-        lone_pair_count = min(
-            int(round(nonbonding / 2.0)),
-            stop - start,
+    lone_pair_counts = {
+        atom: min(
+            _valence_lone_pair_count(
+                float(atom_populations[atom].valence_electrons),
+                incident_orders[atom],
+            ),
+            ranges[atom][1] - ranges[atom][0],
         )
+        for atom in range(structure.natoms)
+    }
+    total_electrons = sum(float(item.population) for item in atom_populations)
+    bond_electrons = sum(sum(_bond_occupancies(bond_order)) for *_rest, bond_order in pair_data)
+    remaining_electrons = max(0.0, total_electrons - bond_electrons)
+    lone_pair_slots = sum(lone_pair_counts.values())
+    lone_pair_occupancy = min(
+        2.0,
+        remaining_electrons / max(1, lone_pair_slots),
+    )
+
+    for atom, (start, stop) in enumerate(ranges):
+        lone_pair_count = lone_pair_counts[atom]
         pre_order = np.argsort(natural.pre_occupancies[start:stop])[::-1]
         for column in pre_order[:lone_pair_count]:
             vector = np.asarray(
@@ -916,7 +962,7 @@ def _search_nbos_from_population(
             orbital = NBOWavefunction(
                 index=len(wavefunctions) + 1,
                 kind="lone_pair",
-                occupancy=float(nonbonding / max(1, lone_pair_count)),
+                occupancy=float(lone_pair_occupancy),
                 centers=((atom, (0, 0, 0)),),
                 components=(component,),
                 hybridizations=(_hybridization(vector[start:stop], atom, shells, start),),
@@ -951,7 +997,7 @@ def _search_nbos_from_population(
             orbital = NBOWavefunction(
                 index=len(wavefunctions) + 1,
                 kind="rydberg",
-                occupancy=occupancy,
+                occupancy=0.0,
                 centers=((atom, (0, 0, 0)),),
                 components=(component,),
                 hybridizations=(_hybridization(vector[start:stop], atom, shells, start),),
@@ -1213,6 +1259,12 @@ def analyze_periodic_nbo(
         cutoff=options.cutoff,
         spin="total",
     )
+    atomic_population = analyze_population(
+        job_path,
+        method="mulliken",
+        cutoff=options.cutoff,
+        spin="total",
+    )
     atom_entries = [
         AtomPopulation(
             index=atom.index,
@@ -1221,7 +1273,7 @@ def analyze_periodic_nbo(
             charge=float(atom.charge or 0.0),
             valence_electrons=float(valence[atom.index - 1]),
         )
-        for atom in population.atoms
+        for atom in atomic_population.atoms
     ]
 
     search = _search_nbos_from_population(
@@ -1239,6 +1291,20 @@ def analyze_periodic_nbo(
 
     donor_acceptor: list[DonorAcceptorInteraction] = []
     warnings: list[str] = []
+    assigned_electrons = sum(item.occupancy for item in search.wavefunctions)
+    if abs(assigned_electrons - total_electrons) > 1.0e-4 * max(1.0, total_electrons):
+        warnings.append(
+            "the occupancy assignment does not reproduce the total electron count "
+            f"({assigned_electrons:.8f} vs {total_electrons:.8f}); the Wiberg "
+            "topology probably contains a multiple bond not represented by a "
+            "single bond/antibond pair"
+        )
+    if any(
+        item.occupancy < -1.0e-8 or item.occupancy > 2.0 + 1.0e-8 for item in search.wavefunctions
+    ):
+        warnings.append(
+            "one or more localized orbitals have an unphysical occupancy outside [0, 2]"
+        )
     if options.donor_acceptor and nspin == 1:
         fock_blocks = _load_raw_fock_blocks(output, kpoints, nspin, nbas, r_blocks)
         if fock_blocks is None:
@@ -1273,7 +1339,7 @@ def analyze_periodic_nbo(
         )
         for index in range(nbas)
     )
-    data_files = population.data_files
+    data_files = tuple(dict.fromkeys((*atomic_population.data_files, *population.data_files)))
     return PeriodicNBOAnalysis(
         job=str(job_path),
         nspin=nspin,
@@ -1288,6 +1354,7 @@ def analyze_periodic_nbo(
         donor_acceptor=tuple(donor_acceptor),
         data_files=data_files,
         warnings=tuple(warnings),
+        population_method="mulliken",
     )
 
 

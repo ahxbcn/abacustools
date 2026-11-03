@@ -1,4 +1,4 @@
-"""Process Periodic NBO and NPA results from an ABACUS LCAO job."""
+"""Process approximate Periodic NBO results from an ABACUS LCAO job."""
 
 from __future__ import annotations
 
@@ -118,10 +118,11 @@ def _print_analysis(
     )
     console.print(
         f"Electrons: {analysis.total_electrons:.8f}; "
+        f"population: {analysis.population_method}; "
         f"occupation convention: {analysis.occupancy_convention}"
     )
 
-    atoms = Table(title="Natural Population Analysis")
+    atoms = Table(title="Atomic populations (Mulliken)")
     atoms.add_column("#", justify="right")
     atoms.add_column("Element")
     atoms.add_column("Population (e)", justify="right")
@@ -230,8 +231,8 @@ def register_parser(subparsers) -> None:
     parser = subparsers.add_parser(
         "nbo",
         help=(
-            "Analyze Periodic NBO, NPA populations, lone pairs, bonds, "
-            "antibonds and donor-acceptor interactions from ABACUS LCAO output."
+            "Analyze approximate Periodic NBOs, Mulliken populations, lone pairs, "
+            "bonds, antibonds and donor-acceptor interactions from ABACUS LCAO output."
         ),
     )
     _register_arguments(parser)

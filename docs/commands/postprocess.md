@@ -386,8 +386,8 @@ crystallographic one - cannot be expanded; the analyzer says so and asks for a
 
 ## postprocess nbo
 
-Periodic NBO analysis is available for LCAO jobs that provide k-resolved
-density, overlap and Fock matrices:
+An approximate Periodic NBO analysis is available for LCAO jobs that provide
+k-resolved density, overlap and Fock matrices:
 
 ```bash
 abacustools postprocess nbo -j JOB
@@ -398,8 +398,11 @@ abacustools postprocess nbo -j JOB --threshold-one 1.8 --threshold-two 1.8
 The command constructs atom-centred natural-orbital blocks from the periodic
 density and overlap matrices, finds one-centre lone pairs, and builds periodic
 two-centre bond and antibond orbitals. Periodic atom pairs come from the Wiberg
-bond-order analysis and their electron occupations are calibrated as twice the
-Wiberg bond order. Results include populations, charges, NAO occupations, bond
+bond-order analysis. The Wiberg order controls the bonding topology, but it is
+not used directly as an orbital occupancy: each first-order bond/antibond pair
+receives a two-electron budget, and lone pairs are allocated from the valence
+electrons that remain. Rydberg candidates are reported with zero occupancy.
+Results include Mulliken atomic populations and charges, NAO occupations, bond
 centres and periodic images, occupancies, hybridisations and distances.
 Donor-acceptor interactions are evaluated from the real-space Fock matrix when
 it is available.
@@ -410,10 +413,14 @@ out_dmk 1 and out_hsk 1. For LTS write out_wfc_lcao 1 and out_mat_hs 1.
 The analysis supports nspin=1 and nspin=2; spin-resolved donor-acceptor
 perturbation is currently restricted to nspin=1.
 
-This ABACUS-native implementation is not a wrapper around the historical VASP
-NBO.out format. It uses the ABACUS numerical-orbital block and periodic Wiberg
-bond order to make the two-centre NBO construction stable without an external
-NBO executable.
+This ABACUS-native implementation is deliberately approximate and is not a
+wrapper around the historical VASP NBO.out format. It does not perform the
+full NBO deletion sequence, natural-population analysis, or a complete
+occupancy-weighted NAO orthogonalisation. The reported charges are Mulliken
+populations, not NPA charges. A multiple bond detected as one Wiberg pair, an
+electron-count mismatch, or an occupancy outside [0, 2] is reported as a
+warning; such a result should be checked against a standard NBO implementation
+before publication.
 
 ## postprocess bader
 
