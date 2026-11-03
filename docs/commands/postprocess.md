@@ -398,7 +398,9 @@ abacustools postprocess nbo -j JOB --threshold-one 1.8 --threshold-two 1.8
 The command constructs atom-centred natural-orbital blocks from the periodic
 density and overlap matrices, finds one-centre lone pairs, and builds periodic
 two-centre bond and antibond orbitals. Periodic atom pairs come from the Wiberg
-bond-order analysis. The Wiberg order controls the bonding topology, but it is
+bond-order analysis. Every periodic image of a pair inside the cutoff is
+expanded before constructing orbitals, which is required for high-coordination
+crystals such as rocksalt MgO. The Wiberg order controls the bonding topology, but it is
 not used directly as an orbital occupancy: each first-order bond/antibond pair
 receives a two-electron budget, and lone pairs are allocated from the valence
 electrons that remain. Rydberg candidates are reported with zero occupancy.

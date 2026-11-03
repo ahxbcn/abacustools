@@ -626,6 +626,40 @@ def _best_image(
     return best
 
 
+def _periodic_images_within_cutoff(
+    structure: AbacusSTRU,
+    first: int,
+    second: int,
+    cutoff: float,
+    r_shells: int,
+) -> list[tuple[tuple[int, int, int], float]]:
+    """Return every periodic image of an atom pair inside the cutoff.
+
+    A Wiberg pair value from the population analysis is integrated over the
+    periodic images of the same atom pair. A high-symmetry crystal such as MgO
+    therefore has several symmetry-equivalent nearest neighbours represented by
+    one pair entry. The NBO search must expand that entry before assigning one
+    bonding pair per neighbour.
+    """
+
+    lattice = np.asarray(structure.cell, dtype=float)
+    coords = np.asarray(structure.coords_direct, dtype=float)
+    tolerance = max(1.0e-8, 1.0e-8 * float(cutoff))
+    images: list[tuple[tuple[int, int, int], float]] = []
+    for image in product(range(-r_shells, r_shells + 1), repeat=3):
+        if first == second and image == (0, 0, 0):
+            continue
+        delta = coords[second] + np.asarray(image) - coords[first]
+        distance = float(np.linalg.norm(delta @ lattice))
+        if distance <= cutoff + tolerance:
+            images.append((image, distance))
+    images.sort(key=lambda item: item[1])
+    if not images:
+        image, distance = _best_image(structure, first, second, r_shells)
+        images.append((image, distance))
+    return images
+
+
 def _normalise_atomic_component(
     vector: np.ndarray,
     atom: int,
@@ -720,10 +754,19 @@ def _search_nbos_from_population(
     for bond in bond_orders:
         first = bond.atom1 - 1
         second = bond.atom2 - 1
-        image, distance = _best_image(structure, first, second, options.r_shells)
-        incident_orders[first] += float(bond.value)
-        incident_orders[second] += float(bond.value)
-        pair_data.append((first, second, image, distance, float(bond.value)))
+        images = _periodic_images_within_cutoff(
+            structure,
+            first,
+            second,
+            options.cutoff,
+            options.r_shells,
+        )
+        order_per_image = float(bond.value) / len(images)
+        for image, distance in images:
+            incident_orders[first] += order_per_image
+            if second != first:
+                incident_orders[second] += order_per_image
+            pair_data.append((first, second, image, distance, order_per_image))
 
     coordination_labels: dict[int, str | None] = {}
     for atom in range(structure.natoms):
@@ -1304,6 +1347,15 @@ def analyze_periodic_nbo(
     ):
         warnings.append(
             "one or more localized orbitals have an unphysical occupancy outside [0, 2]"
+        )
+    fractional_lone_pairs = [
+        item.occupancy for item in search.wavefunctions if item.kind == "lone_pair"
+    ]
+    if any(occupancy < 1.8 for occupancy in fractional_lone_pairs):
+        warnings.append(
+            "one-centre lone-pair occupations deviate substantially from a closed-shell "
+            "value of two electrons; ionic or multicentre bonding is not represented "
+            "quantitatively by this approximate construction"
         )
     if options.donor_acceptor and nspin == 1:
         fock_blocks = _load_raw_fock_blocks(output, kpoints, nspin, nbas, r_blocks)
