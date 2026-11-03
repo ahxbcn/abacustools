@@ -5,13 +5,15 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from abacustools.data.nbo import (
     NBOComponent,
     NBOWavefunction,
     PeriodicNBOAnalysis,
-    _bond_occupancies,
+    _generalized_pair_occupancies,
     _natural_minimum_basis_count,
+    _pair_budget_occupancies,
     _periodic_images_within_cutoff,
     _valence_lone_pair_count,
     kpoint_matrices_to_real_space,
@@ -41,12 +43,18 @@ def test_kpoint_matrices_can_skip_a_second_weight():
     assert np.allclose(blocks[(0, 0, 0)], np.diag([4.0, 0.0]))
 
 
-def test_bond_occupancies_conserve_one_two_electron_pair():
-    for order in (0.0, 0.37, 1.0, 1.46, 2.0, 3.0):
-        bond, anti = _bond_occupancies(order)
-        assert 0.0 <= bond <= 2.0
-        assert 0.0 <= anti <= 2.0
-        assert bond + anti == 2.0
+def test_generalized_pair_projection_returns_density_eigenvalues():
+    density = np.diag([1.6, 0.2])
+    overlap = np.eye(2)
+    high, low = _generalized_pair_occupancies(density, overlap)
+    assert high == pytest.approx(1.6)
+    assert low == pytest.approx(0.2)
+
+
+def test_pair_budget_occupancies_preserve_projected_split():
+    bond, anti = _pair_budget_occupancies(1.0, 1.6, 0.2)
+    assert bond + anti == pytest.approx(2.0)
+    assert bond / anti == pytest.approx(8.0)
 
 
 def test_h2o_valence_lone_pair_count():
@@ -104,3 +112,4 @@ def test_periodic_nbo_report_serialises_complex_coefficients():
     coefficients = report["wavefunctions"][0]["components"][0]["coefficients"]
     assert coefficients == [1.0, [0.0, 0.5]]
     assert report["population_method"] == "mulliken"
+    assert report["occupancy_method"] == "NHO density-matrix projection"

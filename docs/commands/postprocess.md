@@ -400,12 +400,14 @@ density and overlap matrices, finds one-centre lone pairs, and builds periodic
 two-centre bond and antibond orbitals. Periodic atom pairs come from the Wiberg
 bond-order analysis. Every periodic image of a pair inside the cutoff is
 expanded before constructing orbitals, which is required for high-coordination
-crystals such as rocksalt MgO. The Wiberg order controls the bonding topology, but it is
-not used directly as an orbital occupancy: each first-order bond/antibond pair
-receives a two-electron budget, and lone pairs are allocated from the valence
-electrons that remain. Rydberg candidates are reported with zero occupancy.
-Results include Mulliken atomic populations and charges, NAO occupations, bond
-centres and periodic images, occupancies, hybridisations and distances.
+crystals such as rocksalt MgO. For each atom pair, the periodic density matrix
+is projected into orthonormal natural-hybrid subspaces on the two atoms and the
+generalized two-orbital eigenproblem is solved. The projected density eigenvalues
+determine the bond/antibond splitting; the pair is then scaled to its
+two-electron Wiberg bond budget. One-centre natural hybrids provide lone pairs,
+and the remaining electron density is assigned to Rydberg candidates. Results
+include Mulliken atomic populations and charges, NAO occupations, bond centres
+and periodic images, occupancies, hybridisations and distances.
 Donor-acceptor interactions are evaluated from the real-space Fock matrix when
 it is available.
 

@@ -11,7 +11,7 @@ donor-acceptor interactions from the LCAO Fock matrix.
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass, replace
 from itertools import product
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
@@ -151,6 +151,7 @@ class PeriodicNBOAnalysis:
     data_files: tuple[str, ...]
     warnings: tuple[str, ...] = ()
     population_method: str = "mulliken"
+    occupancy_method: str = "NHO density-matrix projection"
     unit_energy: str = "eV"
 
     def to_dict(self) -> dict[str, Any]:
@@ -186,6 +187,7 @@ class PeriodicNBOAnalysis:
             "total_electrons": self.total_electrons,
             "occupancy_convention": self.occupancy_convention,
             "population_method": self.population_method,
+            "occupancy_method": self.occupancy_method,
             "unit_energy": self.unit_energy,
             "atoms": [clean(item.__dict__) for item in self.atoms],
             "natural_orbitals": [clean(item.__dict__) for item in self.natural_orbitals],
@@ -676,25 +678,74 @@ def _normalise_atomic_component(
     return full / norm
 
 
-def _bond_occupancies(bond_order: float) -> tuple[float, float]:
-    """Return the electron occupations of one bonding/antibonding pair.
+def _generalized_pair_occupancies(
+    density: np.ndarray,
+    overlap: np.ndarray,
+) -> tuple[float, float]:
+    """Project a two-orbital density block and return its occupations.
 
-    One Wiberg bond represents one bonding pair with a total of two electrons.
-    A bond order above one therefore saturates the bonding NBO and leaves the
-    antibonding NBO empty. A multiple bond needs more than one bonding pair;
-    the electron-count check at the analysis level reports when this simple
-    topology cannot represent it.
+    The density and overlap blocks are expressed in a pair of atom-centred
+    natural hybrids. Diagonalising the generalized eigenproblem gives the
+    occupations of the in-phase and out-of-phase combinations directly from
+    the density matrix, without using a Wiberg bond order as an occupation.
 
     Args:
-        bond_order: Periodic Wiberg bond order.
+        density: Two-orbital density block.
+        overlap: Two-orbital overlap block.
 
     Returns:
-        Occupations of the bonding and antibonding orbitals.
+        Bonding and antibonding occupations ordered from high to low.
     """
 
-    order = max(0.0, float(bond_order))
-    bond = min(2.0, 2.0 * min(1.0, order))
-    return bond, max(0.0, 2.0 - bond)
+    density = np.asarray(density, dtype=np.complex128)
+    overlap = np.asarray(overlap, dtype=np.complex128)
+    if density.shape != (2, 2) or overlap.shape != (2, 2):
+        raise PeriodicNBOError("pair density and overlap blocks must be 2x2")
+    hermitian_overlap = 0.5 * (overlap + overlap.conj().T)
+    values, vectors = np.linalg.eigh(hermitian_overlap)
+    scale = max(1.0, float(np.max(np.abs(values))))
+    if float(np.min(values)) <= 1.0e-9 * scale:
+        raise PeriodicNBOError("periodic pair hybrid metric is singular")
+    inverse = (vectors * (1.0 / np.sqrt(values))) @ vectors.conj().T
+    standard = inverse.conj().T @ density @ inverse
+    occupations = np.linalg.eigvalsh(0.5 * (standard + standard.conj().T))
+    order = np.argsort(occupations)[::-1]
+    high = float(np.clip(occupations[order[0]], 0.0, 2.0))
+    low = float(np.clip(occupations[order[1]], 0.0, 2.0))
+    return high, low
+
+
+def _pair_budget_occupancies(bond_order: float, high: float, low: float) -> tuple[float, float]:
+    """Scale a projected pair split to its periodic two-electron budget."""
+
+    budget = min(2.0, 2.0 * max(0.0, float(bond_order)))
+    total = max(1.0e-12, high + low)
+    return (
+        float(np.clip(budget * high / total, 0.0, 2.0)),
+        float(np.clip(budget * low / total, 0.0, 2.0)),
+    )
+
+
+def _remove_hybrid_direction(
+    subspace: np.ndarray,
+    hybrid: np.ndarray,
+    overlap: np.ndarray,
+) -> np.ndarray:
+    """Return the metric-orthonormal remainder of a hybrid subspace."""
+
+    if subspace.shape[1] <= 1:
+        return np.zeros((subspace.shape[0], 0), dtype=np.complex128)
+    norm = float(np.sqrt(max(0.0, float(np.real(hybrid.conj() @ overlap @ hybrid)))))
+    if norm <= 1.0e-12:
+        return subspace.copy()
+    unit = hybrid / norm
+    remainder = subspace - unit[:, None] * (unit.conj() @ overlap @ subspace)[None, :]
+    metric = remainder.conj().T @ overlap @ remainder
+    values, vectors = np.linalg.eigh(0.5 * (metric + metric.conj().T))
+    keep = values > 1.0e-9
+    if not np.any(keep):
+        return np.zeros((subspace.shape[0], 0), dtype=np.complex128)
+    return remainder @ (vectors[:, keep] * (1.0 / np.sqrt(values[keep])))
 
 
 def _valence_lone_pair_count(valence: float, incident_order: float) -> int:
@@ -716,15 +767,16 @@ def _search_nbos_from_population(
     atomic_numbers: Sequence[int],
     options: PeriodicNBOOptions,
 ) -> _SearchResult:
-    """Build NBOs from periodic Wiberg bond orders and pre-NAO hybrids.
+    """Build NBOs by projecting the periodic density into NHO subspaces.
 
-    The pre-NAO natural orbitals supply the atomic hybrid space. Each periodic
-    Wiberg bond determines a two-centre reduced density block whose leading
-    natural orbital is used as the bond shape. Wiberg order controls the
-    bonding/antibonding topology, while occupations use an explicit
-    two-electron budget per bond and a valence-based lone-pair count. This is
-    an approximate ABACUS-native construction, not a standard NBO deletion
-    analysis.
+    Each atom is first represented by an orthonormal natural-hybrid subspace
+    built from its pre-NAO minimal basis. The density block of every periodic
+    atom pair is then projected into the corresponding NHO subspaces and
+    diagonalised as a generalized two-orbital problem. Its eigenvalues give
+    the bond/antibond occupations directly. One-centre natural hybrids above
+    the valence lone-pair count provide the lone pairs. The remaining density
+    is assigned to Rydberg candidates so that the complete NBO set reproduces
+    the total electron count.
     """
 
     nbas = natural.nbas
@@ -732,22 +784,8 @@ def _search_nbos_from_population(
     overlaps = {
         key: np.asarray(value, dtype=np.complex128) for key, value in overlap_blocks.items()
     }
-    wavefunctions: list[NBOWavefunction] = []
-    donors: list[NBOWavefunction] = []
-    acceptors: list[NBOWavefunction] = []
-    used: dict[tuple[int, tuple[int, int, int]], list[np.ndarray]] = {}
-
-    minimal: dict[int, tuple[np.ndarray, np.ndarray]] = {}
-    for atom, (start, stop) in enumerate(ranges):
-        count = _natural_minimum_basis_count(
-            int(atomic_numbers[atom]),
-            int(round(float(atom_populations[atom].valence_electrons))),
-        )
-        count = min(count, stop - start)
-        order = np.argsort(natural.pre_occupancies[start:stop])[::-1][:count]
-        coefficients = natural.pre_transform[start:stop, start:stop][:, order]
-        weights = natural.pre_occupancies[start:stop][order]
-        minimal[atom] = (coefficients, weights)
+    zero_density = blocks[(0, 0, 0)]
+    zero_overlap = np.asarray(overlaps[(0, 0, 0)].real, dtype=float)
 
     incident_orders: dict[int, float] = {atom: 0.0 for atom in range(structure.natoms)}
     pair_data: list[tuple[int, int, tuple[int, int, int], float, float]] = []
@@ -768,159 +806,155 @@ def _search_nbos_from_population(
                 incident_orders[second] += order_per_image
             pair_data.append((first, second, image, distance, order_per_image))
 
-    coordination_labels: dict[int, str | None] = {}
-    for atom in range(structure.natoms):
-        nonbonding = max(
-            0.0,
-            float(atom_populations[atom].valence_electrons) - incident_orders[atom],
-        )
-        coordination = int(round(incident_orders[atom]))
-        labels = {1: "s", 2: "sp", 3: "sp2", 4: "sp3"}
-        coordination_labels[atom] = (
-            labels.get(coordination) if nonbonding <= 0.2 and coordination in labels else None
-        )
-
-    for first, second, image, distance, bond_order in pair_data:
-        first_basis, first_weights = minimal[first]
-        second_basis, second_weights = minimal[second]
-        first_count = first_basis.shape[1]
-        second_count = second_basis.shape[1]
-        first_range = ranges[first]
-        second_range = ranges[second]
-        zero_overlap = overlaps[(0, 0, 0)]
-        pair_overlap = np.block(
-            [
-                [
-                    zero_overlap[
-                        first_range[0] : first_range[1],
-                        first_range[0] : first_range[1],
-                    ],
-                    overlaps[image][
-                        first_range[0] : first_range[1],
-                        second_range[0] : second_range[1],
-                    ],
-                ],
-                [
-                    overlaps[tuple(-value for value in image)][
-                        second_range[0] : second_range[1],
-                        first_range[0] : first_range[1],
-                    ],
-                    zero_overlap[
-                        second_range[0] : second_range[1],
-                        second_range[0] : second_range[1],
-                    ],
-                ],
-            ]
-        )
-        zero_density = blocks[(0, 0, 0)]
-        pair_density = np.block(
-            [
-                [
-                    zero_density[
-                        first_range[0] : first_range[1],
-                        first_range[0] : first_range[1],
-                    ],
-                    blocks[image][
-                        first_range[0] : first_range[1],
-                        second_range[0] : second_range[1],
-                    ],
-                ],
-                [
-                    blocks[tuple(-value for value in image)][
-                        second_range[0] : second_range[1],
-                        first_range[0] : first_range[1],
-                    ],
-                    zero_density[
-                        second_range[0] : second_range[1],
-                        second_range[0] : second_range[1],
-                    ],
-                ],
-            ]
-        )
-        transform = np.zeros(
-            (
-                first_range[1] - first_range[0] + second_range[1] - second_range[0],
-                first_count + second_count,
+    lone_pair_counts = {
+        atom: min(
+            _valence_lone_pair_count(
+                float(atom_populations[atom].valence_electrons),
+                incident_orders[atom],
             ),
+            ranges[atom][1] - ranges[atom][0],
+        )
+        for atom in range(structure.natoms)
+    }
+
+    hybrid_coefficients: dict[int, np.ndarray] = {}
+    hybrid_occupancies: dict[int, np.ndarray] = {}
+    remaining_hybrids: dict[int, np.ndarray] = {}
+    for atom, (start, stop) in enumerate(ranges):
+        count = _natural_minimum_basis_count(
+            int(atomic_numbers[atom]),
+            int(round(float(atom_populations[atom].valence_electrons))),
+        )
+        count = min(count, stop - start)
+        raw = natural.pre_transform[start:stop, start : start + count]
+        metric = raw.conj().T @ zero_overlap[start:stop, start:stop] @ raw
+        values, vectors = np.linalg.eigh(0.5 * (metric + metric.conj().T))
+        if float(np.min(values)) <= 1.0e-10:
+            raise PeriodicNBOError(f"atom {atom + 1}: natural-hybrid overlap block is singular")
+        orthonormal = raw @ ((vectors * (1.0 / np.sqrt(values))) @ vectors.conj().T)
+        local_density = orthonormal.conj().T @ zero_density[start:stop, start:stop] @ orthonormal
+        occupations, hybrid_vectors = np.linalg.eigh(0.5 * (local_density + local_density.conj().T))
+        order = np.argsort(occupations)[::-1]
+        coefficients = np.zeros((nbas, count), dtype=np.complex128)
+        coefficients[start:stop] = orthonormal @ hybrid_vectors[:, order]
+        hybrid_coefficients[atom] = coefficients
+        hybrid_occupancies[atom] = np.clip(occupations[order], 0.0, 2.0)
+
+    wavefunctions: list[NBOWavefunction] = []
+    donors: list[NBOWavefunction] = []
+    acceptors: list[NBOWavefunction] = []
+    used: dict[tuple[int, tuple[int, int, int]], list[np.ndarray]] = {}
+    assigned_electrons = 0.0
+
+    for atom, (start, stop) in enumerate(ranges):
+        coefficient_block = hybrid_coefficients[atom]
+        for column in range(min(lone_pair_counts[atom], coefficient_block.shape[1])):
+            vector = coefficient_block[:, column]
+            occupancy = float(hybrid_occupancies[atom][column])
+            orbital = NBOWavefunction(
+                index=len(wavefunctions) + 1,
+                kind="lone_pair",
+                occupancy=occupancy,
+                centers=((atom, (0, 0, 0)),),
+                components=(
+                    NBOComponent(
+                        atom,
+                        (0, 0, 0),
+                        tuple(complex(x) for x in vector[start:stop]),
+                    ),
+                ),
+                hybridizations=(_hybridization(vector[start:stop], atom, shells, start),),
+            )
+            wavefunctions.append(orbital)
+            donors.append(orbital)
+            assigned_electrons += occupancy
+        remaining_hybrids[atom] = coefficient_block[:, lone_pair_counts[atom] :]
+
+    for first, second, image, distance, bond_order in sorted(
+        pair_data,
+        key=lambda item: (item[3], item[0], item[1], item[2]),
+    ):
+        first_hybrids = remaining_hybrids[first]
+        second_hybrids = remaining_hybrids[second]
+        if first_hybrids.shape[1] == 0:
+            first_hybrids = hybrid_coefficients[first]
+        if second_hybrids.shape[1] == 0:
+            second_hybrids = hybrid_coefficients[second]
+        negative_image = tuple(-value for value in image)
+        coupling = first_hybrids.conj().T @ blocks[negative_image] @ second_hybrids
+        left_vectors, _singular_values, right_vectors = np.linalg.svd(coupling, full_matrices=False)
+        if left_vectors.shape[1] == 0 or right_vectors.shape[0] == 0:
+            raise PeriodicNBOError(
+                f"atoms {first + 1}-{second + 1}: no natural hybrids are available"
+            )
+        first_hybrid = first_hybrids @ left_vectors[:, 0]
+        second_hybrid = second_hybrids @ right_vectors.conj().T[:, 0]
+        pair_density = np.asarray(
+            [
+                [
+                    first_hybrid.conj() @ zero_density @ first_hybrid,
+                    first_hybrid.conj() @ blocks[negative_image] @ second_hybrid,
+                ],
+                [
+                    second_hybrid.conj() @ blocks[image] @ first_hybrid,
+                    second_hybrid.conj() @ zero_density @ second_hybrid,
+                ],
+            ],
             dtype=np.complex128,
         )
-        transform[: first_range[1] - first_range[0], :first_count] = first_basis
-        transform[first_range[1] - first_range[0] :, first_count:] = second_basis
-        reduced_overlap = transform.conj().T @ pair_overlap @ transform
-        reduced_density = transform.conj().T @ pair_density @ transform
-        values, vectors = np.linalg.eigh(0.5 * (reduced_overlap + reduced_overlap.conj().T))
+        pair_overlap = np.asarray(
+            [
+                [
+                    first_hybrid.conj() @ zero_overlap @ first_hybrid,
+                    first_hybrid.conj() @ overlaps[negative_image] @ second_hybrid,
+                ],
+                [
+                    second_hybrid.conj() @ overlaps[image] @ first_hybrid,
+                    second_hybrid.conj() @ zero_overlap @ second_hybrid,
+                ],
+            ],
+            dtype=np.complex128,
+        )
+        high, low = _generalized_pair_occupancies(pair_density, pair_overlap)
+        bond_occupancy, anti_occupancy = _pair_budget_occupancies(bond_order, high, low)
+
+        hermitian_pair_overlap = 0.5 * (pair_overlap + pair_overlap.conj().T)
+        values, vectors = np.linalg.eigh(hermitian_pair_overlap)
         inverse = (vectors * (1.0 / np.sqrt(values))) @ vectors.conj().T
-        standard = inverse.conj().T @ reduced_density @ inverse
-        eigenvalues, eigenvectors = np.linalg.eigh(0.5 * (standard + standard.conj().T))
-        order = np.argsort(eigenvalues)[::-1]
-        leading_reduced = inverse @ eigenvectors[:, order[0]]
-        trailing_reduced = inverse @ eigenvectors[:, order[-1]]
-        leading_full = np.real_if_close(transform @ leading_reduced, tol=1000)
-        trailing_full = np.real_if_close(transform @ trailing_reduced, tol=1000)
-        first_size = first_range[1] - first_range[0]
-        first_vector = leading_full[:first_size]
-        second_vector = leading_full[first_size:]
-        first_vector = _normalise_atomic_component(
-            np.pad(first_vector, (first_range[0], nbas - first_range[1])),
-            first,
-            ranges,
-            zero_overlap,
-        )
-        second_vector = _normalise_atomic_component(
-            np.pad(second_vector, (second_range[0], nbas - second_range[1])),
-            second,
-            ranges,
-            zero_overlap,
-        )
-        occupancy, anti_occupancy = _bond_occupancies(bond_order)
-        anti_values = trailing_full
-        anti_first = anti_values[:first_size]
-        anti_second = anti_values[first_size:]
-        anti_first = _normalise_atomic_component(
-            np.pad(anti_first, (first_range[0], nbas - first_range[1])),
-            first,
-            ranges,
-            zero_overlap,
-        )
-        anti_second = _normalise_atomic_component(
-            np.pad(anti_second, (second_range[0], nbas - second_range[1])),
-            second,
-            ranges,
-            zero_overlap,
-        )
+        standard = inverse.conj().T @ pair_density @ inverse
+        pair_values, pair_vectors = np.linalg.eigh(0.5 * (standard + standard.conj().T))
+        order = np.argsort(pair_values)[::-1]
+        pair_components: list[tuple[np.ndarray, np.ndarray]] = []
+        for column in order[:2]:
+            reduced = inverse @ pair_vectors[:, column]
+            combined = first_hybrid * reduced[0] + second_hybrid * reduced[1]
+            first_component = combined[ranges[first][0] : ranges[first][1]]
+            second_component = combined[ranges[second][0] : ranges[second][1]]
+            pair_components.append((first_component, second_component))
+
+        bond_first, bond_second = pair_components[0]
+        anti_first, anti_second = pair_components[1]
         bond = NBOWavefunction(
             index=len(wavefunctions) + 1,
             kind="bond",
-            occupancy=occupancy,
+            occupancy=bond_occupancy,
             centers=((first, (0, 0, 0)), (second, image)),
             components=(
                 NBOComponent(
                     first,
                     (0, 0, 0),
-                    tuple(complex(x) for x in first_vector[first_range[0] : first_range[1]]),
+                    tuple(complex(x) for x in bond_first),
                 ),
                 NBOComponent(
                     second,
                     image,
-                    tuple(complex(x) for x in second_vector[second_range[0] : second_range[1]]),
+                    tuple(complex(x) for x in bond_second),
                 ),
             ),
             distance=distance,
             hybridizations=(
-                coordination_labels.get(first)
-                or _hybridization(
-                    first_vector[first_range[0] : first_range[1]],
-                    first,
-                    shells,
-                    first_range[0],
-                ),
-                coordination_labels.get(second)
-                or _hybridization(
-                    second_vector[second_range[0] : second_range[1]],
-                    second,
-                    shells,
-                    second_range[0],
-                ),
+                _hybridization(bond_first, first, shells, ranges[first][0]),
+                _hybridization(bond_second, second, shells, ranges[second][0]),
             ),
         )
         wavefunctions.append(bond)
@@ -934,93 +968,49 @@ def _search_nbos_from_population(
                 NBOComponent(
                     first,
                     (0, 0, 0),
-                    tuple(complex(x) for x in anti_first[first_range[0] : first_range[1]]),
+                    tuple(complex(x) for x in anti_first),
                 ),
                 NBOComponent(
                     second,
                     image,
-                    tuple(complex(x) for x in anti_second[second_range[0] : second_range[1]]),
+                    tuple(complex(x) for x in anti_second),
                 ),
             ),
             distance=distance,
             hybridizations=(
-                coordination_labels.get(first)
-                or _hybridization(
-                    anti_first[first_range[0] : first_range[1]],
-                    first,
-                    shells,
-                    first_range[0],
-                ),
-                coordination_labels.get(second)
-                or _hybridization(
-                    anti_second[second_range[0] : second_range[1]],
-                    second,
-                    shells,
-                    second_range[0],
-                ),
+                _hybridization(anti_first, first, shells, ranges[first][0]),
+                _hybridization(anti_second, second, shells, ranges[second][0]),
             ),
             paired_index=bond.index,
         )
         wavefunctions.append(anti)
         acceptors.append(anti)
-
-    lone_pair_counts = {
-        atom: min(
-            _valence_lone_pair_count(
-                float(atom_populations[atom].valence_electrons),
-                incident_orders[atom],
-            ),
-            ranges[atom][1] - ranges[atom][0],
+        assigned_electrons += bond_occupancy + anti_occupancy
+        remaining_hybrids[first] = _remove_hybrid_direction(
+            first_hybrids, first_hybrid, zero_overlap
         )
-        for atom in range(structure.natoms)
-    }
-    total_electrons = sum(float(item.population) for item in atom_populations)
-    bond_electrons = sum(sum(_bond_occupancies(bond_order)) for *_rest, bond_order in pair_data)
-    remaining_electrons = max(0.0, total_electrons - bond_electrons)
-    lone_pair_slots = sum(lone_pair_counts.values())
-    lone_pair_occupancy = min(
-        2.0,
-        remaining_electrons / max(1, lone_pair_slots),
-    )
+        remaining_hybrids[second] = _remove_hybrid_direction(
+            second_hybrids, second_hybrid, zero_overlap
+        )
+        used.setdefault((first, (0, 0, 0)), []).append(first_hybrid)
+        used.setdefault((second, image), []).append(second_hybrid)
 
+    rydberg_candidates: list[tuple[int, int, np.ndarray, float]] = []
     for atom, (start, stop) in enumerate(ranges):
-        lone_pair_count = lone_pair_counts[atom]
-        pre_order = np.argsort(natural.pre_occupancies[start:stop])[::-1]
-        for column in pre_order[:lone_pair_count]:
-            vector = np.asarray(
-                natural.pre_transform[start:stop, start + column],
-                dtype=np.complex128,
-            )
-            vector = _normalise_atomic_component(
-                np.pad(vector, (start, nbas - stop)),
-                atom,
-                ranges,
-                overlap_blocks[(0, 0, 0)].real,
-            )
-            component = NBOComponent(
-                atom,
-                (0, 0, 0),
-                tuple(complex(x) for x in vector[start:stop]),
-            )
-            orbital = NBOWavefunction(
-                index=len(wavefunctions) + 1,
-                kind="lone_pair",
-                occupancy=float(lone_pair_occupancy),
-                centers=((atom, (0, 0, 0)),),
-                components=(component,),
-                hybridizations=(_hybridization(vector[start:stop], atom, shells, start),),
-            )
-            wavefunctions.append(orbital)
-            donors.append(orbital)
-
-    for atom, (start, stop) in enumerate(ranges):
-        added = 0
-        order = np.argsort(natural.pre_occupancies[start:stop])[::-1]
-        for offset in order:
-            occupancy = float(natural.pre_occupancies[start + offset])
-            if occupancy < options.rydberg_threshold:
-                continue
-            if occupancy >= options.one_center_threshold:
+        count = min(
+            _natural_minimum_basis_count(
+                int(atomic_numbers[atom]),
+                int(round(float(atom_populations[atom].valence_electrons))),
+            ),
+            stop - start,
+        )
+        offsets = list(range(count, stop - start))
+        offsets.sort(
+            key=lambda offset: float(natural.pre_occupancies[start + offset]), reverse=True
+        )
+        for offset in offsets[: options.maximum_rydberg_per_atom]:
+            weight = float(natural.pre_occupancies[start + offset])
+            if weight < options.rydberg_threshold:
                 continue
             vector = np.asarray(
                 natural.pre_transform[start:stop, start + offset],
@@ -1030,26 +1020,93 @@ def _search_nbos_from_population(
                 np.pad(vector, (start, nbas - stop)),
                 atom,
                 ranges,
-                overlap_blocks[(0, 0, 0)].real,
+                zero_overlap,
             )
-            component = NBOComponent(
-                atom,
-                (0, 0, 0),
-                tuple(complex(x) for x in vector[start:stop]),
-            )
-            orbital = NBOWavefunction(
-                index=len(wavefunctions) + 1,
-                kind="rydberg",
-                occupancy=0.0,
-                centers=((atom, (0, 0, 0)),),
-                components=(component,),
-                hybridizations=(_hybridization(vector[start:stop], atom, shells, start),),
-            )
-            wavefunctions.append(orbital)
-            acceptors.append(orbital)
-            added += 1
-            if added >= options.maximum_rydberg_per_atom:
+            rydberg_candidates.append((atom, offset, vector, weight))
+
+    total_electrons = sum(float(item.population) for item in atom_populations)
+    residual = max(0.0, total_electrons - assigned_electrons)
+    rydberg_occupancies = np.zeros(len(rydberg_candidates), dtype=float)
+    if rydberg_candidates and residual > 1.0e-10:
+        weights = np.asarray([item[3] for item in rydberg_candidates], dtype=float)
+        weights = np.clip(weights, 1.0e-8, None)
+        remaining = residual
+        active = np.ones(len(weights), dtype=bool)
+        for _iteration in range(len(weights) + 1):
+            if remaining <= 1.0e-10 or not np.any(active):
                 break
+            share = remaining * weights[active] / float(np.sum(weights[active]))
+            occupied = rydberg_occupancies[active]
+            room = np.clip(2.0 - occupied, 0.0, None)
+            addition = np.minimum(share, room)
+            rydberg_occupancies[active] += addition
+            remaining -= float(np.sum(addition))
+            active = rydberg_occupancies < 2.0 - 1.0e-10
+        residual = remaining
+
+    for (atom, _offset, vector, _weight), occupancy in zip(rydberg_candidates, rydberg_occupancies):
+        start, stop = ranges[atom]
+        orbital = NBOWavefunction(
+            index=len(wavefunctions) + 1,
+            kind="rydberg",
+            occupancy=float(occupancy),
+            centers=((atom, (0, 0, 0)),),
+            components=(
+                NBOComponent(
+                    atom,
+                    (0, 0, 0),
+                    tuple(complex(x) for x in vector[start:stop]),
+                ),
+            ),
+            hybridizations=(_hybridization(vector[start:stop], atom, shells, start),),
+        )
+        wavefunctions.append(orbital)
+        acceptors.append(orbital)
+
+    occupancy_by_index = {item.index: item.occupancy for item in wavefunctions}
+    antibond_index = {
+        int(item.paired_index): item.index
+        for item in wavefunctions
+        if item.kind == "antibond" and item.paired_index is not None
+    }
+    bond_groups: dict[tuple[tuple[str, str], float], list[NBOWavefunction]] = {}
+    for orbital in wavefunctions:
+        if orbital.kind != "bond" or orbital.distance is None:
+            continue
+        first = orbital.centers[0][0]
+        second = orbital.centers[1][0]
+        pair = tuple(
+            sorted(
+                (
+                    str(structure.atoms[first].element or structure.atoms[first].label),
+                    str(structure.atoms[second].element or structure.atoms[second].label),
+                )
+            )
+        )
+        key = (pair, round(float(orbital.distance), 4))
+        bond_groups.setdefault(key, []).append(orbital)
+    for group in bond_groups.values():
+        if len(group) < 2:
+            continue
+        average_bond = float(np.mean([item.occupancy for item in group]))
+        average_anti = float(
+            np.mean(
+                [
+                    occupancy_by_index[antibond_index[item.index]]
+                    for item in group
+                    if item.index in antibond_index
+                ]
+            )
+        )
+        for item in group:
+            occupancy_by_index[item.index] = average_bond
+            if item.index in antibond_index:
+                occupancy_by_index[antibond_index[item.index]] = average_anti
+    wavefunctions = [
+        replace(item, occupancy=float(occupancy_by_index[item.index])) for item in wavefunctions
+    ]
+    donors = [item for item in wavefunctions if item.kind in {"bond", "lone_pair"}]
+    acceptors = [item for item in wavefunctions if item.kind in {"antibond", "rydberg"}]
 
     return _SearchResult(
         wavefunctions=wavefunctions,
@@ -1073,7 +1130,7 @@ def _fock_element(
         for right in second.components:
             r0, r1 = ranges[right.atom]
             relative = tuple(right.image[index] - left.image[index] for index in range(3))
-            block = fock_blocks.get(relative)
+            block = fock_blocks.get(tuple(-value for value in relative))
             if block is None:
                 continue
             right_coefficients = np.asarray(right.coefficients, dtype=np.complex128)
@@ -1337,10 +1394,10 @@ def analyze_periodic_nbo(
     assigned_electrons = sum(item.occupancy for item in search.wavefunctions)
     if abs(assigned_electrons - total_electrons) > 1.0e-4 * max(1.0, total_electrons):
         warnings.append(
-            "the occupancy assignment does not reproduce the total electron count "
-            f"({assigned_electrons:.8f} vs {total_electrons:.8f}); the Wiberg "
-            "topology probably contains a multiple bond not represented by a "
-            "single bond/antibond pair"
+            "the NHO density projection does not reproduce the total electron count "
+            f"({assigned_electrons:.8f} vs {total_electrons:.8f}); the Rydberg "
+            "capacity or the Wiberg bond topology is insufficient for the "
+            "projected density"
         )
     if any(
         item.occupancy < -1.0e-8 or item.occupancy > 2.0 + 1.0e-8 for item in search.wavefunctions
@@ -1407,6 +1464,7 @@ def analyze_periodic_nbo(
         data_files=data_files,
         warnings=tuple(warnings),
         population_method="mulliken",
+        occupancy_method="NHO density-matrix projection",
     )
 
 

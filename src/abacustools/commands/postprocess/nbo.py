@@ -119,6 +119,7 @@ def _print_analysis(
     console.print(
         f"Electrons: {analysis.total_electrons:.8f}; "
         f"population: {analysis.population_method}; "
+        f"occupancy: {analysis.occupancy_method}; "
         f"occupation convention: {analysis.occupancy_convention}"
     )
 
