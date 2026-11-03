@@ -111,5 +111,7 @@ def test_periodic_nbo_report_serialises_complex_coefficients():
     ).to_dict()
     coefficients = report["wavefunctions"][0]["components"][0]["coefficients"]
     assert coefficients == [1.0, [0.0, 0.5]]
-    assert report["population_method"] == "mulliken"
-    assert report["occupancy_method"] == "NHO density-matrix projection"
+    assert report["population_method"] == "NPA"
+    assert report["occupancy_method"] == (
+        "periodic pre-NAO + one-/two-centre NHO projection + Rydberg completion"
+    )

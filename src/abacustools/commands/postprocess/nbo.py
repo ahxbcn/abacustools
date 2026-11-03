@@ -1,4 +1,4 @@
-"""Process approximate Periodic NBO results from an ABACUS LCAO job."""
+"""Run periodic NBO/NPA analysis on an ABACUS LCAO job."""
 
 from __future__ import annotations
 
@@ -64,12 +64,6 @@ def _register_arguments(parser: argparse.ArgumentParser) -> None:
         help="Two-centre bond occupancy threshold, default: 1.8.",
     )
     parser.add_argument(
-        "--rydberg-threshold",
-        type=float,
-        default=1.0e-3,
-        help="Minimum residual one-centre occupancy for Rydberg output.",
-    )
-    parser.add_argument(
         "--donor-acceptor",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -123,7 +117,7 @@ def _print_analysis(
         f"occupation convention: {analysis.occupancy_convention}"
     )
 
-    atoms = Table(title="Atomic populations (Mulliken)")
+    atoms = Table(title="Atomic populations (NPA)")
     atoms.add_column("#", justify="right")
     atoms.add_column("Element")
     atoms.add_column("Population (e)", justify="right")
@@ -198,7 +192,6 @@ def run(args: argparse.Namespace) -> int:
                 r_shells=args.r_shells,
                 one_center_threshold=args.threshold_one,
                 two_center_threshold=args.threshold_two,
-                rydberg_threshold=args.rydberg_threshold,
                 donor_acceptor=args.donor_acceptor,
                 e2_threshold_ev=args.e2_threshold,
                 maximum_donor_acceptor=args.max_e2,
@@ -232,7 +225,7 @@ def register_parser(subparsers) -> None:
     parser = subparsers.add_parser(
         "nbo",
         help=(
-            "Analyze approximate Periodic NBOs, Mulliken populations, lone pairs, "
+            "Analyze periodic NAO/NBO populations, lone pairs, "
             "bonds, antibonds and donor-acceptor interactions from ABACUS LCAO output."
         ),
     )

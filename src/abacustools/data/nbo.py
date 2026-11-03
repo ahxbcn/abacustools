@@ -19,7 +19,7 @@ from typing import Any, Iterable, Optional, Sequence
 import numpy as np
 
 from abacustools.core.constant import RY_TO_EV
-from abacustools.data.charge import element_numbers, valence_electrons
+from abacustools.data.charge import valence_electrons
 from abacustools.data.mayer import (
     NAOData,
     atom_ranges,
@@ -30,7 +30,6 @@ from abacustools.data.mayer import (
 from abacustools.data.population import (
     BondOrder,
     KPointDensity,
-    analyze_population,
     load_kpoint_densities_from_output,
 )
 from abacustools.io.abacus import ReadInput
@@ -102,6 +101,7 @@ class NBOWavefunction:
     distance: Optional[float] = None
     hybridizations: tuple[str, ...] = ()
     paired_index: Optional[int] = None
+    spin: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -150,8 +150,8 @@ class PeriodicNBOAnalysis:
     donor_acceptor: tuple[DonorAcceptorInteraction, ...]
     data_files: tuple[str, ...]
     warnings: tuple[str, ...] = ()
-    population_method: str = "mulliken"
-    occupancy_method: str = "NHO density-matrix projection"
+    population_method: str = "NPA"
+    occupancy_method: str = "periodic pre-NAO + one-/two-centre NHO projection + Rydberg completion"
     unit_energy: str = "eV"
 
     def to_dict(self) -> dict[str, Any]:
@@ -1262,24 +1262,59 @@ def _load_raw_fock_blocks(
     return result
 
 
+def _load_kpoint_fock_matrices(
+    output: Path,
+    kpoints: Sequence[KPointDensity],
+    nspin: int,
+    basis_size: int,
+) -> list[np.ndarray] | None:
+    """Load AO-basis Fock/Hamiltonian matrices in k space and eV."""
+
+    if nspin != 1:
+        return None
+    paths = _hamiltonian_files(output, kpoints, nspin)
+    matrices: list[np.ndarray] = []
+    for kpoint in kpoints:
+        path = paths.get((kpoint.index, 1))
+        if path is None:
+            return None
+        try:
+            if path.name.startswith("data-"):
+                matrix = read_overlap_matrix(path)
+            else:
+                matrix = read_overlap_matrix_develop(path)
+        except (OSError, ValueError):
+            return None
+        if matrix.shape != (basis_size, basis_size):
+            return None
+        matrix = matrix * RY_TO_EV
+        matrices.append(0.5 * (matrix + matrix.conj().T))
+    return matrices
+
+
 def analyze_periodic_nbo(
     job: str | Path,
     *,
     options: Optional[PeriodicNBOOptions] = None,
 ) -> PeriodicNBOAnalysis:
-    """Run a periodic NBO/NPA analysis from an ABACUS LCAO job.
+    """Run the original periodic NAO/NBO/NPA algorithm on an ABACUS LCAO job.
+
+    The pre-NAO construction follows ``pre_nao.f90`` and the NBO search follows
+    ``nbo.f90`` from Dunnington and Schmidt (2012).  ABACUS substitutes its own
+    k-resolved LCAO density and overlap matrices for the plane-wave projection
+    stage of the reference workflow.
 
     Args:
         job: ABACUS job directory.
-        options: Thresholds and neighbour-shell settings.
+        options: Search thresholds and periodic-neighbour cutoff.
 
     Returns:
-        Populations, NAOs, NBOs, antibonds, Rydberg orbitals and optional
-        periodic donor-acceptor interactions.
+        NPA populations, final NAOs, one- and two-centre NBOs, antis bonds,
+        Rydberg orbitals, and optional Fock-based donor-acceptor interactions.
 
     Raises:
-        PeriodicNBOError: If the job is not LCAO, required matrices are
-            missing, or the natural-orbital basis is singular.
+        PeriodicNBOError: If the job is not LCAO or required matrices are
+            missing or inconsistent.
     """
 
     options = options or PeriodicNBOOptions()
@@ -1311,144 +1346,145 @@ def analyze_periodic_nbo(
 
     kpoints = load_kpoint_densities_from_output(output, nspin, gamma_only)
     expected = _expected_electrons(inputs, structure, job_path)
-    density_scale, density_weighted, convention, total_electrons = _density_normalisation(
-        kpoints, expected
-    )
-    for kpoint in kpoints:
-        if kpoint.overlap.shape != (nbas, nbas):
-            raise PeriodicNBOError(
-                f"k-point {kpoint.index}: overlap dimension "
-                f"{kpoint.overlap.shape} does not match basis size {nbas}"
-            )
+    valences = valence_electrons(structure, inputs.get("pseudo_dir"), job_path)
 
-    r_blocks = list(product(range(-options.r_shells, options.r_shells + 1), repeat=3))
-    total_kpoints = [
-        (
-            kpoint.direct,
-            kpoint.weight,
-            density_scale * sum(kpoint.densities.values()),
+    from abacustools.data.nbo_search import (
+        PeriodicNBOSearchOptions,
+        search_periodic_nbos,
+    )
+    from abacustools.data.periodic_nao import build_periodic_nao
+
+    fock_matrices = _load_kpoint_fock_matrices(output, kpoints, nspin, nbas)
+    try:
+        nao = build_periodic_nao(
+            structure,
+            ranges,
+            shells,
+            kpoints,
+            r_shells=options.r_shells,
+            fock_matrices=fock_matrices,
+            valences=valences,
         )
-        for kpoint in kpoints
-    ]
-    density_blocks = kpoint_matrices_to_real_space(
-        total_kpoints,
-        r_blocks,
-        apply_weight=density_weighted,
-    )
-    overlap_kpoints = [(kpoint.direct, kpoint.weight, kpoint.overlap) for kpoint in kpoints]
-    overlap_blocks = kpoint_matrices_to_real_space(overlap_kpoints, r_blocks)
-    d0 = np.asarray(density_blocks[(0, 0, 0)].real, dtype=float)
-    s0 = np.asarray(overlap_blocks[(0, 0, 0)].real, dtype=float)
-    d0 = 0.5 * (d0 + d0.T)
-    s0 = 0.5 * (s0 + s0.T)
+    except ValueError as error:
+        raise PeriodicNBOError(str(error)) from error
 
-    valence = valence_electrons(structure, inputs.get("pseudo_dir"), job_path)
-    atomic_numbers = element_numbers([atom.element or atom.label for atom in structure.atoms])
-    natural = _natural_basis(
-        structure,
-        shells,
-        ranges,
-        d0,
-        s0,
-        atomic_numbers,
-        valence,
-    )
-    population = analyze_population(
-        job_path,
-        method="wiberg",
+    total_electrons = float(np.sum(nao.populations))
+    if expected is not None and abs(total_electrons - expected) > 1.0e-4 * max(1.0, abs(expected)):
+        raise PeriodicNBOError(
+            "the NPA electron count does not match the INPUT/pseudopotential count "
+            f"({total_electrons:.8f} vs {expected:.8f})"
+        )
+
+    search_options = PeriodicNBOSearchOptions(
+        one_center_threshold=options.one_center_threshold,
+        two_center_threshold=options.two_center_threshold,
         cutoff=options.cutoff,
-        spin="total",
     )
-    atomic_population = analyze_population(
-        job_path,
-        method="mulliken",
-        cutoff=options.cutoff,
-        spin="total",
-    )
-    atom_entries = [
-        AtomPopulation(
-            index=atom.index,
-            element=atom.element,
-            population=atom.population,
-            charge=float(atom.charge or 0.0),
-            valence_electrons=float(valence[atom.index - 1]),
-        )
-        for atom in atomic_population.atoms
-    ]
-
-    search = _search_nbos_from_population(
-        structure,
-        ranges,
-        shells,
-        natural,
-        density_blocks,
-        overlap_blocks,
-        population.bonds,
-        atom_entries,
-        atomic_numbers,
-        options,
-    )
-
-    donor_acceptor: list[DonorAcceptorInteraction] = []
-    warnings: list[str] = []
-    assigned_electrons = sum(item.occupancy for item in search.wavefunctions)
-    if abs(assigned_electrons - total_electrons) > 1.0e-4 * max(1.0, total_electrons):
-        warnings.append(
-            "the NHO density projection does not reproduce the total electron count "
-            f"({assigned_electrons:.8f} vs {total_electrons:.8f}); the Rydberg "
-            "capacity or the Wiberg bond topology is insufficient for the "
-            "projected density"
-        )
-    if any(
-        item.occupancy < -1.0e-8 or item.occupancy > 2.0 + 1.0e-8 for item in search.wavefunctions
-    ):
-        warnings.append(
-            "one or more localized orbitals have an unphysical occupancy outside [0, 2]"
-        )
-    fractional_lone_pairs = [
-        item.occupancy for item in search.wavefunctions if item.kind == "lone_pair"
-    ]
-    if any(occupancy < 1.8 for occupancy in fractional_lone_pairs):
-        warnings.append(
-            "one-centre lone-pair occupations deviate substantially from a closed-shell "
-            "value of two electrons; ionic or multicentre bonding is not represented "
-            "quantitatively by this approximate construction"
-        )
-    if options.donor_acceptor and nspin == 1:
-        fock_blocks = _load_raw_fock_blocks(output, kpoints, nspin, nbas, r_blocks)
-        if fock_blocks is None:
-            warnings.append(
-                "Fock/Hamiltonian matrices were not available; "
-                "donor-acceptor interactions were skipped"
-            )
-        else:
-            donor_acceptor = _donor_acceptor_interactions(
-                search.donors,
-                search.acceptors,
-                fock_blocks,
+    wavefunctions: list[NBOWavefunction] = []
+    assigned_electrons = 0.0
+    try:
+        if nspin == 1:
+            search = search_periodic_nbos(
+                structure,
                 ranges,
-                options,
+                shells,
+                nao,
+                nspin=1,
+                options=search_options,
             )
-    elif options.donor_acceptor:
-        warnings.append(
-            "spin-resolved donor-acceptor analysis is not implemented; "
-            "interactions were skipped for nspin=2"
-        )
+            wavefunctions.extend(search.wavefunctions)
+            assigned_electrons = search.assigned_electrons
+        else:
+            if nao.spin_density_blocks is None:
+                raise PeriodicNBOError(
+                    "spin-resolved NBO search requires both spin density channels"
+                )
+            for spin, spin_blocks in nao.spin_density_blocks.items():
+                spin_nao = replace(nao, density_blocks=spin_blocks)
+                spin_search = search_periodic_nbos(
+                    structure,
+                    ranges,
+                    shells,
+                    spin_nao,
+                    nspin=2,
+                    options=search_options,
+                )
+                wavefunctions.extend(
+                    replace(orbital, spin=spin) for orbital in spin_search.wavefunctions
+                )
+                assigned_electrons += spin_search.assigned_electrons
+    except ValueError as error:
+        raise PeriodicNBOError(str(error)) from error
 
+    atom_entries = tuple(
+        AtomPopulation(
+            index=index + 1,
+            element=str(atom.element or atom.label),
+            population=float(nao.populations[index]),
+            charge=float(nao.charges[index]),
+            valence_electrons=float(valences[index]),
+        )
+        for index, atom in enumerate(structure.atoms)
+    )
+
+    basis_atom = np.zeros(nbas, dtype=int)
+    basis_shell = np.zeros(nbas, dtype=int)
+    for atom, (start, stop) in enumerate(ranges):
+        basis_atom[start:stop] = atom
+        basis_shell[start:stop] = np.arange(stop - start)
     natural_orbitals = tuple(
         NaturalOrbital(
             index=index + 1,
-            atom=int(natural.atoms[index]) + 1,
+            atom=int(basis_atom[index]) + 1,
             element=str(
-                structure.atoms[int(natural.atoms[index])].element
-                or structure.atoms[int(natural.atoms[index])].label
+                structure.atoms[int(basis_atom[index])].element
+                or structure.atoms[int(basis_atom[index])].label
             ),
-            occupancy=float(natural.pre_occupancies[index]),
-            direction=natural.directions[index],
+            occupancy=float(nao.weights[index]),
+            direction=(
+                f"l={int(nao.basis_l[index])} "
+                f"basis={int(nao.basis_shell[index])} "
+                f"shell={int(basis_shell[index]) + 1}"
+            ),
         )
         for index in range(nbas)
     )
-    data_files = tuple(dict.fromkeys((*atomic_population.data_files, *population.data_files)))
+
+    donors = [orbital for orbital in wavefunctions if orbital.kind in {"bond", "lone_pair", "core"}]
+    acceptors = [orbital for orbital in wavefunctions if orbital.kind in {"antibond", "rydberg"}]
+    donor_acceptor: list[DonorAcceptorInteraction] = []
+    warnings: list[str] = []
+    if options.donor_acceptor and nspin == 1 and nao.fock_blocks is not None:
+        donor_acceptor = _donor_acceptor_interactions(
+            donors,
+            acceptors,
+            nao.fock_blocks,
+            ranges,
+            options,
+        )
+    elif options.donor_acceptor:
+        warnings.append(
+            "Fock/Hamiltonian matrices were unavailable; donor-acceptor interactions were skipped"
+        )
+
+    if abs(assigned_electrons - total_electrons) > 1.0e-4 * max(1.0, total_electrons):
+        warnings.append(
+            "the localized NBO occupancies do not reproduce the NPA electron count "
+            f"({assigned_electrons:.8f} vs {total_electrons:.8f})"
+        )
+    if any(item.occupancy < -1.0e-7 for item in wavefunctions):
+        warnings.append(
+            "one or more localized orbitals have a negative occupancy from numerical noise"
+        )
+
+    data_files = tuple(
+        dict.fromkeys(
+            (
+                *(file for kpoint in kpoints for file in kpoint.data_files),
+                *((str(path) for path in _hamiltonian_files(output, kpoints, nspin).values())),
+            )
+        )
+    )
     return PeriodicNBOAnalysis(
         job=str(job_path),
         nspin=nspin,
@@ -1456,15 +1492,21 @@ def analyze_periodic_nbo(
         kpoint_count=len(kpoints),
         basis_functions=nbas,
         total_electrons=total_electrons,
-        occupancy_convention=convention,
-        atoms=tuple(atom_entries),
+        occupancy_convention=(
+            "ABACUS k-weighted LCAO density; periodic Fourier blocks use the "
+            "reference exp(-2*pi*i k.R) convention"
+        ),
+        atoms=atom_entries,
         natural_orbitals=natural_orbitals,
-        wavefunctions=tuple(search.wavefunctions),
+        wavefunctions=tuple(wavefunctions),
         donor_acceptor=tuple(donor_acceptor),
         data_files=data_files,
         warnings=tuple(warnings),
-        population_method="mulliken",
-        occupancy_method="NHO density-matrix projection",
+        population_method="NPA",
+        occupancy_method=(
+            "periodic pre-NAO + one-/two-centre NHO projection + Rydberg completion"
+            + ("; spin-resolved NBO search" if nspin == 2 else "")
+        ),
     )
 
 

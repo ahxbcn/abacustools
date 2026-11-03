@@ -1,10 +1,19 @@
 """Periodic natural atomic orbitals following the original NBO algorithm.
 
-This module implements the five stages of ``pre_nao.f90`` from the original
-periodic NBO implementation.  The input is a set of ABACUS k-resolved LCAO
-density and overlap matrices.  The output contains the k-dependent AO-to-NAO
-transformations, NPA populations and real-space density blocks in the final
-orthonormal NAO basis.
+This module implements the pre-NAO construction of Dunnington and Schmidt,
+J. Chem. Theory Comput. 8, 1902 (2012), directly from ABACUS LCAO matrices.
+No plane-wave projection is required because ABACUS already supplies the
+k-resolved density and overlap matrices in the numerical-orbital basis.
+
+All matrix transformations use one convention. If ``coefficients`` maps the
+input AO basis to a new basis,
+
+    S' = coefficients^H S coefficients,
+    rho' = coefficients^H rho coefficients,
+    F' = coefficients^H F coefficients.
+
+The cumulative ``transformations`` returned by :func:`build_periodic_nao`
+are these coefficient matrices, so that the final overlap is the identity.
 """
 
 from __future__ import annotations
@@ -35,11 +44,19 @@ class PeriodicNAOResult:
     charges: np.ndarray
     density_blocks: dict[tuple[int, int, int], np.ndarray]
     fock_blocks: dict[tuple[int, int, int], np.ndarray] | None
+    spin_density_blocks: dict[int, dict[tuple[int, int, int], np.ndarray]] | None
     overlap_at_origin: np.ndarray
     basis_l: np.ndarray
     basis_shell: np.ndarray
     nmb_mask: np.ndarray
+    weights: np.ndarray
     cusp: str = "periodic-pre-nao"
+
+
+def _congruence(matrix: np.ndarray, coefficients: np.ndarray) -> np.ndarray:
+    """Transform a covariant matrix with coefficient matrix ``coefficients``."""
+
+    return coefficients.conj().T @ matrix @ coefficients
 
 
 def _inverse_sqrt_hermitian(matrix: np.ndarray) -> np.ndarray:
@@ -55,6 +72,8 @@ def _generalized_eigh(
     density: np.ndarray,
     overlap: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Solve ``density c = overlap c w`` with overlap-normalized vectors."""
+
     density = 0.5 * (density + density.conj().T)
     overlap = 0.5 * (overlap + overlap.conj().T)
     inverse = _inverse_sqrt_hermitian(overlap)
@@ -64,18 +83,29 @@ def _generalized_eigh(
     return values[order], inverse @ vectors[:, order]
 
 
-def _schmidt_orthog_matrix(overlap: np.ndarray, occupied: int) -> np.ndarray:
+def _schmidt_coefficient_matrix(overlap: np.ndarray, occupied: int) -> np.ndarray:
+    """Return the coefficient transform for partial Gram-Schmidt."""
+
     size = overlap.shape[0]
     if occupied <= 0 or occupied >= size:
         return np.eye(size, dtype=overlap.dtype)
     leading = overlap[:occupied, :occupied]
     projection = np.linalg.solve(leading, overlap[:occupied, occupied:])
-    raw = np.eye(size, dtype=overlap.dtype)
-    raw[:occupied, occupied:] = -projection
-    return raw.conj().T
+    coefficients = np.eye(size, dtype=overlap.dtype)
+    coefficients[:occupied, occupied:] = -projection
+    return coefficients
 
 
-def _symmetric_orthog_matrix(overlap: np.ndarray, weights: np.ndarray) -> np.ndarray:
+def _symmetric_orthog_coefficients(
+    overlap: np.ndarray,
+    weights: np.ndarray,
+) -> np.ndarray:
+    """Return the occupancy-weighted symmetric orthogonalizer.
+
+    For ``M = W S W`` this is ``M^(-1/2) W``.  It is the transpose of the
+    row transform ``W M^(-1/2)`` used in the reference Fortran code.
+    """
+
     diagonal = np.diag(np.asarray(weights, dtype=float))
     weighted = diagonal @ overlap @ diagonal
     return diagonal @ _inverse_sqrt_hermitian(weighted)
@@ -90,26 +120,37 @@ def _partition_basis(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return mapping, inverse
 
 
-def _remap_matrix(matrix: np.ndarray, mapping: np.ndarray) -> np.ndarray:
-    return matrix[np.ix_(mapping, mapping)]
+def _permutation_matrix(mapping: np.ndarray) -> np.ndarray:
+    matrix = np.zeros((mapping.size, mapping.size), dtype=float)
+    matrix[np.arange(mapping.size), mapping] = 1.0
+    return matrix
 
 
-def _remap_matrix_back(matrix: np.ndarray, mapping: np.ndarray) -> np.ndarray:
-    return matrix[np.ix_(mapping, mapping)]
+def _global_coefficient(
+    transform: np.ndarray,
+    outer_mapping: np.ndarray,
+    inner_mapping: np.ndarray | None = None,
+) -> np.ndarray:
+    """Embed a subspace coefficient transform in the original basis."""
+
+    outer = _permutation_matrix(outer_mapping)
+    if inner_mapping is None:
+        return outer.T @ transform @ outer
+    inner = _permutation_matrix(inner_mapping)
+    return outer.T @ inner.T @ transform @ inner @ outer
 
 
 def _build_basis_metadata(
     ranges: Sequence[tuple[int, int]],
     shells: Sequence[NBOShell],
 ) -> tuple[np.ndarray, np.ndarray]:
-    basis_l = np.zeros(ranges[-1][1], dtype=int)
-    basis_shell = np.zeros(ranges[-1][1], dtype=int)
-    shell_counter = 0
-    for shell in shells:
-        shell_counter += 1
+    nbas = ranges[-1][1]
+    basis_l = np.zeros(nbas, dtype=int)
+    basis_shell = np.zeros(nbas, dtype=int)
+    for shell_index, shell in enumerate(shells, start=1):
         for index in shell.indices:
             basis_l[index] = shell.l
-            basis_shell[index] = shell_counter
+            basis_shell[index] = shell_index
     return basis_l, basis_shell
 
 
@@ -172,13 +213,22 @@ def _pre_nao_step2(
     basis_l: np.ndarray,
     basis_shell: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Construct the block-diagonal pre-NAO transform from atom/l blocks."""
+
     nbas = rho0.shape[0]
-    transform = np.zeros((nbas, nbas), dtype=float)
+    coefficients = np.zeros((nbas, nbas), dtype=float)
     weights = np.zeros(nbas, dtype=float)
     for atom, (start, stop) in enumerate(ranges):
-        for l in range(int(np.max(basis_l[start:stop])) + 1):
+        maximum_l = int(np.max(basis_l[start:stop]))
+        for l in range(maximum_l + 1):
             rho_block, s_block, shell_starts = _load_average_block(
-                rho0, s0, ranges, basis_l, basis_shell, atom, l
+                rho0,
+                s0,
+                ranges,
+                basis_l,
+                basis_shell,
+                atom,
+                l,
             )
             if not shell_starts:
                 continue
@@ -188,8 +238,8 @@ def _pre_nao_step2(
                 for target, target_start in enumerate(shell_starts):
                     for m in range(width):
                         weights[source_start + m] = values[source]
-                        transform[source_start + m, target_start + m] = vectors[source, target]
-    return transform, weights
+                        coefficients[source_start + m, target_start + m] = vectors[source, target]
+    return coefficients, weights
 
 
 def _create_nmb_mask(
@@ -198,35 +248,33 @@ def _create_nmb_mask(
     atomic_numbers: Sequence[int],
     valences: Sequence[float],
 ) -> np.ndarray:
+    """Select the natural minimal basis using the reference threshold rule."""
+
     mask = np.zeros(weights.size, dtype=bool)
     for atom, (start, stop) in enumerate(ranges):
-        count = min(_nmb_count(int(atomic_numbers[atom]), float(valences[atom])), stop - start)
-        order = np.argsort(weights[start:stop])[::-1]
-        mask[start + order[:count]] = True
+        count = min(
+            _nmb_count(int(atomic_numbers[atom]), float(valences[atom])),
+            stop - start,
+        )
+        ordered = np.sort(weights[start:stop])[::-1]
+        threshold = ordered[count - 1]
+        mask[start:stop] = weights[start:stop] >= threshold
     return mask
-
-
-def _apply_to_kpoints(
-    matrices: list[np.ndarray],
-    transform: np.ndarray,
-) -> None:
-    for index, matrix in enumerate(matrices):
-        matrices[index] = transform @ matrix @ transform.conj().T
-
-
-def _transform_density(matrix: np.ndarray, transform: np.ndarray) -> np.ndarray:
-    return transform @ matrix @ transform.conj().T
 
 
 def _real_space_block(
     kpoints: Sequence[KPointDensity],
     matrices: Sequence[np.ndarray],
     block: tuple[int, int, int],
+    *,
+    apply_weight: bool = True,
 ) -> np.ndarray:
+    """Fourier-transform k-resolved matrices to one periodic G block."""
+
     total = np.zeros_like(matrices[0], dtype=np.complex128)
     for kpoint, matrix in zip(kpoints, matrices):
         phase = np.exp(
-            2j
+            -2j
             * np.pi
             * (
                 kpoint.direct[0] * block[0]
@@ -234,8 +282,37 @@ def _real_space_block(
                 + kpoint.direct[2] * block[2]
             )
         )
-        total += kpoint.weight * phase * matrix
+        factor = kpoint.weight if apply_weight else 1.0
+        total += factor * phase * matrix
     return total
+
+
+def _normalise_density(
+    kpoints: Sequence[KPointDensity],
+    expected: float,
+) -> tuple[float, bool]:
+    """Find the ABACUS density weighting and spin/occupation scale."""
+
+    candidates: list[tuple[float, float, bool]] = []
+    for apply_weight in (False, True):
+        for scale in (0.5, 1.0, 2.0):
+            total = 0.0
+            for kpoint in kpoints:
+                factor = kpoint.weight if apply_weight else 1.0
+                trace = sum(
+                    float(np.real(np.trace(density @ kpoint.overlap)))
+                    for density in kpoint.densities.values()
+                )
+                total += factor * scale * trace
+            candidates.append((abs(total - expected), scale, apply_weight))
+    error, scale, apply_weight = min(candidates)
+    if error > 1.0e-4 * max(1.0, abs(expected)) + 1.0e-6:
+        raise ValueError("cannot match the declared electron count with the LCAO density matrices")
+    return scale, apply_weight
+
+
+def _renormalize_origin(matrix: np.ndarray) -> np.ndarray:
+    return 0.5 * (matrix + matrix.conj().T)
 
 
 def build_periodic_nao(
@@ -248,142 +325,197 @@ def build_periodic_nao(
     fock_matrices: Sequence[np.ndarray] | None = None,
     valences: Sequence[float] | None = None,
 ) -> PeriodicNAOResult:
-    """Construct periodic NAOs and NPA populations using the original steps."""
+    """Construct periodic NAOs and NPA populations from ABACUS LCAO data."""
 
     if not kpoints:
         raise ValueError("periodic pre-NAO requires at least one k-point")
-    nbas = kpoints[0].overlap.shape[0]
-    atomic_numbers = element_numbers([atom.element or atom.label for atom in structure.atoms])
     if valences is None:
         raise ValueError("valences are required for periodic pre-NAO construction")
+    if r_shells < 0:
+        raise ValueError("r_shells must be non-negative")
+    if fock_matrices is not None and len(fock_matrices) != len(kpoints):
+        raise ValueError("fock_matrices and kpoints must have the same length")
+
+    nbas = kpoints[0].overlap.shape[0]
+    atomic_numbers = element_numbers([atom.element or atom.label for atom in structure.atoms])
     atom_valences = np.asarray(valences, dtype=float)
+    density_scale, density_weighted = _normalise_density(kpoints, float(np.sum(atom_valences)))
     basis_l, basis_shell = _build_basis_metadata(ranges, shells)
 
     density_k: list[np.ndarray] = []
     overlap_k: list[np.ndarray] = []
     for kpoint in kpoints:
-        total_density = sum(kpoint.densities.values())
         overlap = np.asarray(kpoint.overlap, dtype=np.complex128)
+        total_density = sum(
+            density_scale * np.asarray(matrix, dtype=np.complex128)
+            for matrix in kpoint.densities.values()
+        )
+        if overlap.shape != (nbas, nbas) or total_density.shape != (nbas, nbas):
+            raise ValueError("all k-point matrices must have the same square shape")
         density_k.append(overlap @ total_density @ overlap)
         overlap_k.append(overlap)
     transformations = [np.eye(nbas, dtype=np.complex128) for _ in kpoints]
 
-    rho_origin = _real_space_block(kpoints, density_k, (0, 0, 0)).real
-    s_origin = _real_space_block(kpoints, overlap_k, (0, 0, 0)).real
-    rho_origin = 0.5 * (rho_origin + rho_origin.T)
-    s_origin = 0.5 * (s_origin + s_origin.T)
-
-    transform, weights = _pre_nao_step2(rho_origin, s_origin, ranges, basis_l, basis_shell)
-    for index, matrix in enumerate(density_k):
-        density_k[index] = _transform_density(matrix, transform.astype(np.complex128))
-    _apply_to_kpoints(overlap_k, transform.astype(np.complex128))
-    for index, matrix in enumerate(transformations):
-        transformations[index] = matrix @ transform
-
-    nmb_mask = _create_nmb_mask(weights, ranges, atomic_numbers, atom_valences)
-    ordering, inverse = _partition_basis(nmb_mask)
-    weights = weights[ordering]
-    nvalence = int(np.count_nonzero(nmb_mask))
-    for kpoint_index, (density, overlap) in enumerate(zip(density_k, overlap_k)):
-        density_r = _remap_matrix(density, ordering)
-        overlap_r = _remap_matrix(overlap, ordering)
-        os_matrix = _schmidt_orthog_matrix(overlap_r, nvalence)
-        density_r = _transform_density(density_r, os_matrix)
-        overlap_r = os_matrix @ overlap_r @ os_matrix.T
-        global_transform = np.eye(nbas, dtype=np.complex128)
-        global_transform[np.ix_(ordering, ordering)] = os_matrix
-        transformations[kpoint_index] = transformations[kpoint_index] @ global_transform
-        density_k[kpoint_index] = _remap_matrix_back(density_r, inverse)
-        overlap_k[kpoint_index] = _remap_matrix_back(overlap_r, inverse)
-    weights = weights[inverse]
+    rho_origin = _renormalize_origin(
+        _real_space_block(kpoints, density_k, (0, 0, 0), apply_weight=density_weighted).real
+    )
+    s_origin = _renormalize_origin(_real_space_block(kpoints, overlap_k, (0, 0, 0)).real)
+    pre_coefficients, weights = _pre_nao_step2(
+        rho_origin,
+        s_origin,
+        ranges,
+        basis_l,
+        basis_shell,
+    )
+    pre_coefficients_c = pre_coefficients.astype(np.complex128)
+    for index in range(len(kpoints)):
+        density_k[index] = _congruence(density_k[index], pre_coefficients_c)
+        overlap_k[index] = _congruence(overlap_k[index], pre_coefficients_c)
+        transformations[index] = transformations[index] @ pre_coefficients_c
 
     nmb_mask = _create_nmb_mask(weights, ranges, atomic_numbers, atom_valences)
     ordering, inverse = _partition_basis(nmb_mask)
-    weights = weights[ordering]
     nvalence = int(np.count_nonzero(nmb_mask))
-    rydberg_mask = weights > W_THRESHOLD
+    ordered_weights = weights[ordering]
+    for index in range(len(kpoints)):
+        density_ordered = density_k[index][np.ix_(ordering, ordering)]
+        overlap_ordered = overlap_k[index][np.ix_(ordering, ordering)]
+        schmidt = _schmidt_coefficient_matrix(overlap_ordered, nvalence)
+        global_transform = _global_coefficient(schmidt, ordering)
+        density_k[index] = _congruence(density_k[index], global_transform)
+        overlap_k[index] = _congruence(overlap_k[index], global_transform)
+        transformations[index] = transformations[index] @ global_transform
+    weights = ordered_weights[inverse]
+
+    nmb_mask = _create_nmb_mask(weights, ranges, atomic_numbers, atom_valences)
+    ordering, inverse = _partition_basis(nmb_mask)
+    nvalence = int(np.count_nonzero(nmb_mask))
+    ordered_weights = weights[ordering]
+    rydberg_mask = ordered_weights > W_THRESHOLD
     rydberg_mask[:nvalence] = True
     rydberg_ordering, rydberg_inverse = _partition_basis(rydberg_mask)
-    weights = weights[rydberg_ordering]
+    occupied_weights = ordered_weights[rydberg_ordering].copy()
     nhiryd = int(np.count_nonzero(rydberg_mask))
-    weights[nhiryd:] = 1.0
-    for kpoint_index, (density, overlap) in enumerate(zip(density_k, overlap_k)):
-        density_r = _remap_matrix(density, ordering)
-        overlap_r = _remap_matrix(overlap, ordering)
-        density_r = _remap_matrix(density_r, rydberg_ordering)
-        overlap_r = _remap_matrix(overlap_r, rydberg_ordering)
-        transform_r = np.eye(nbas, dtype=np.complex128)
+    occupied_weights[nhiryd:] = 1.0
 
-        ow = _symmetric_orthog_matrix(overlap_r[:nvalence, :nvalence], weights[:nvalence])
-        block = np.eye(nbas, dtype=np.complex128)
-        block[:nvalence, :nvalence] = ow
-        transform_r = transform_r @ block
-        density_r = _transform_density(density_r, block)
-        overlap_r = block.T @ overlap_r @ block
+    for index in range(len(kpoints)):
+        density_ordered = density_k[index][np.ix_(ordering, ordering)]
+        overlap_ordered = overlap_k[index][np.ix_(ordering, ordering)]
+        density_ryd = density_ordered[np.ix_(rydberg_ordering, rydberg_ordering)]
+        overlap_ryd = overlap_ordered[np.ix_(rydberg_ordering, rydberg_ordering)]
 
-        ow_high = _symmetric_orthog_matrix(
-            overlap_r[nvalence:nhiryd, nvalence:nhiryd],
-            weights[nvalence:nhiryd],
+        coefficient_steps: list[np.ndarray] = []
+        nmb_transform = np.eye(nbas, dtype=np.complex128)
+        nmb_transform[:nvalence, :nvalence] = _symmetric_orthog_coefficients(
+            overlap_ryd[:nvalence, :nvalence],
+            occupied_weights[:nvalence],
         )
-        block = np.eye(nbas, dtype=np.complex128)
-        block[nvalence:nhiryd, nvalence:nhiryd] = ow_high
-        transform_r = transform_r @ block
-        density_r = _transform_density(density_r, block)
-        overlap_r = block.T @ overlap_r @ block
+        coefficient_steps.append(nmb_transform)
+        density_ryd = _congruence(density_ryd, nmb_transform)
+        overlap_ryd = _congruence(overlap_ryd, nmb_transform)
 
-        os_low = _schmidt_orthog_matrix(overlap_r, nhiryd)
-        transform_r = transform_r @ os_low
-        density_r = _transform_density(density_r, os_low)
-        overlap_r = os_low.T @ overlap_r @ os_low
+        high_transform = np.eye(nbas, dtype=np.complex128)
+        if nhiryd > nvalence:
+            high_transform[nvalence:nhiryd, nvalence:nhiryd] = _symmetric_orthog_coefficients(
+                overlap_ryd[nvalence:nhiryd, nvalence:nhiryd],
+                occupied_weights[nvalence:nhiryd],
+            )
+        coefficient_steps.append(high_transform)
+        density_ryd = _congruence(density_ryd, high_transform)
+        overlap_ryd = _congruence(overlap_ryd, high_transform)
 
-        ow_low = _symmetric_orthog_matrix(overlap_r[nhiryd:, nhiryd:], weights[nhiryd:])
-        block = np.eye(nbas, dtype=np.complex128)
-        block[nhiryd:, nhiryd:] = ow_low
-        transform_r = transform_r @ block
-        density_r = _transform_density(density_r, block)
-        overlap_r = block.T @ overlap_r @ block
+        schmidt_low = _schmidt_coefficient_matrix(overlap_ryd, nhiryd)
+        coefficient_steps.append(schmidt_low)
+        density_ryd = _congruence(density_ryd, schmidt_low)
+        overlap_ryd = _congruence(overlap_ryd, schmidt_low)
 
-        density_r = _remap_matrix_back(density_r, rydberg_inverse)
-        overlap_r = _remap_matrix_back(overlap_r, rydberg_inverse)
-        density_k[kpoint_index] = _remap_matrix_back(density_r, inverse)
-        overlap_k[kpoint_index] = _remap_matrix_back(overlap_r, inverse)
-        transform_global = np.eye(nbas, dtype=np.complex128)
-        transform_global[np.ix_(ordering, ordering)] = transform_r
-        transformations[kpoint_index] = transformations[kpoint_index] @ transform_global
-    weights = weights[rydberg_inverse]
+        low_transform = np.eye(nbas, dtype=np.complex128)
+        if nhiryd < nbas:
+            low_transform[nhiryd:, nhiryd:] = _symmetric_orthog_coefficients(
+                overlap_ryd[nhiryd:, nhiryd:],
+                occupied_weights[nhiryd:],
+            )
+        coefficient_steps.append(low_transform)
+        density_ryd = _congruence(density_ryd, low_transform)
+        overlap_ryd = _congruence(overlap_ryd, low_transform)
+
+        ordered_transform = np.eye(nbas, dtype=np.complex128)
+        for step in coefficient_steps:
+            ordered_transform = ordered_transform @ step
+        global_transform = _global_coefficient(
+            ordered_transform,
+            ordering,
+            rydberg_ordering,
+        )
+        density_k[index] = _congruence(density_k[index], global_transform)
+        overlap_k[index] = _congruence(overlap_k[index], global_transform)
+        transformations[index] = transformations[index] @ global_transform
+    weights = ordered_weights[rydberg_inverse]
     weights = weights[inverse]
 
-    for index in range(len(overlap_k)):
-        overlap_k[index] = np.eye(nbas, dtype=np.complex128)
-    rho_origin = _real_space_block(kpoints, density_k, (0, 0, 0)).real
-    rho_origin = 0.5 * (rho_origin + rho_origin.T)
-    transform2, weights2 = _pre_nao_step2(
+    rho_origin = _renormalize_origin(
+        _real_space_block(kpoints, density_k, (0, 0, 0), apply_weight=density_weighted).real
+    )
+    final_rotation, final_weights = _pre_nao_step2(
         rho_origin,
         np.eye(nbas),
         ranges,
         basis_l,
         basis_shell,
     )
-    for index, matrix in enumerate(density_k):
-        density_k[index] = _transform_density(matrix, transform2.astype(np.complex128))
-    for index, matrix in enumerate(transformations):
-        transformations[index] = matrix @ transform2
+    final_rotation_c = final_rotation.astype(np.complex128)
+    for index in range(len(kpoints)):
+        density_k[index] = _congruence(density_k[index], final_rotation_c)
+        overlap_k[index] = _congruence(overlap_k[index], final_rotation_c)
+        transformations[index] = transformations[index] @ final_rotation_c
 
     blocks = list(product(range(-r_shells, r_shells + 1), repeat=3))
-    density_blocks = {block: _real_space_block(kpoints, density_k, block) for block in blocks}
+    density_blocks = {
+        block: _real_space_block(kpoints, density_k, block, apply_weight=density_weighted)
+        for block in blocks
+    }
+
+    spin_density_blocks: dict[int, dict[tuple[int, int, int], np.ndarray]] | None = None
+    spin_values = sorted(kpoints[0].densities)
+    if len(spin_values) > 1:
+        spin_density_blocks = {}
+        for spin in spin_values:
+            transformed_spin: list[np.ndarray] = []
+            for kpoint, transform in zip(kpoints, transformations):
+                overlap = np.asarray(kpoint.overlap, dtype=np.complex128)
+                density = np.asarray(kpoint.densities[spin], dtype=np.complex128)
+                transformed_spin.append(
+                    _congruence(
+                        overlap @ (density_scale * density) @ overlap,
+                        transform,
+                    )
+                )
+            spin_density_blocks[spin] = {
+                block: _real_space_block(
+                    kpoints, transformed_spin, block, apply_weight=density_weighted
+                )
+                for block in blocks
+            }
+
     fock_blocks = None
     if fock_matrices is not None:
-        fock_k = [matrix.astype(np.complex128) for matrix in fock_matrices]
-        for kpoint_index, matrix in enumerate(fock_k):
-            transform_k = transformations[kpoint_index]
-            fock_k[kpoint_index] = transform_k.T @ matrix @ transform_k
-        fock_blocks = {block: _real_space_block(kpoints, fock_k, block) for block in blocks}
+        transformed_fock = [
+            _congruence(
+                np.asarray(matrix, dtype=np.complex128),
+                transformations[index],
+            )
+            for index, matrix in enumerate(fock_matrices)
+        ]
+        fock_blocks = {
+            block: _real_space_block(kpoints, transformed_fock, block) for block in blocks
+        }
 
-    rho_origin = _real_space_block(kpoints, density_k, (0, 0, 0)).real
-    rho_origin = 0.5 * (rho_origin + rho_origin.T)
-    occupancies = np.diag(rho_origin).real
+    rho_origin = _renormalize_origin(
+        _real_space_block(kpoints, density_k, (0, 0, 0), apply_weight=density_weighted).real
+    )
+    occupancies = np.real(np.diag(rho_origin))
     populations = np.asarray(
-        [float(np.trace(rho_origin[start:stop, start:stop])) for start, stop in ranges]
+        [float(np.real(np.trace(rho_origin[start:stop, start:stop]))) for start, stop in ranges]
     )
     charges = atom_valences - populations
     return PeriodicNAOResult(
@@ -394,10 +526,17 @@ def build_periodic_nao(
         charges=charges,
         density_blocks=density_blocks,
         fock_blocks=fock_blocks,
+        spin_density_blocks=spin_density_blocks,
         overlap_at_origin=np.eye(nbas),
         basis_l=basis_l,
         basis_shell=basis_shell,
-        nmb_mask=_create_nmb_mask(weights2, ranges, atomic_numbers, atom_valences),
+        nmb_mask=_create_nmb_mask(
+            final_weights,
+            ranges,
+            atomic_numbers,
+            atom_valences,
+        ),
+        weights=final_weights,
     )
 
 

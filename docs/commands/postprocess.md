@@ -386,8 +386,8 @@ crystallographic one - cannot be expanded; the analyzer says so and asks for a
 
 ## postprocess nbo
 
-An approximate Periodic NBO analysis is available for LCAO jobs that provide
-k-resolved density, overlap and Fock matrices:
+A periodic NBO/NPA analysis is available for LCAO jobs that provide
+k-resolved density and overlap matrices:
 
 ```bash
 abacustools postprocess nbo -j JOB
@@ -395,36 +395,26 @@ abacustools postprocess nbo -j JOB --cutoff 3.0 --json -o nbo.json
 abacustools postprocess nbo -j JOB --threshold-one 1.8 --threshold-two 1.8
 ```
 
-The command constructs atom-centred natural-orbital blocks from the periodic
-density and overlap matrices, finds one-centre lone pairs, and builds periodic
-two-centre bond and antibond orbitals. Periodic atom pairs come from the Wiberg
-bond-order analysis. Every periodic image of a pair inside the cutoff is
-expanded before constructing orbitals, which is required for high-coordination
-crystals such as rocksalt MgO. For each atom pair, the periodic density matrix
-is projected into orthonormal natural-hybrid subspaces on the two atoms and the
-generalized two-orbital eigenproblem is solved. The projected density eigenvalues
-determine the bond/antibond splitting; the pair is then scaled to its
-two-electron Wiberg bond budget. One-centre natural hybrids provide lone pairs,
-and the remaining electron density is assigned to Rydberg candidates. Results
-include Mulliken atomic populations and charges, NAO occupations, bond centres
-and periodic images, occupancies, hybridisations and distances.
-Donor-acceptor interactions are evaluated from the real-space Fock matrix when
-it is available.
+The implementation follows the original periodic NBO construction of
+Dunnington and Schmidt (J. Chem. Theory Comput. 2012, 8, 1902). It forms the
+k-resolved density operator, constructs occupancy-weighted periodic NAOs,
+performs the NMB/NRB orthogonalizations, and reports NPA populations. The NBO
+search then follows the reference one-centre, two-centre and Rydberg sequence:
+high-occupancy atomic eigenvectors are projected from the density, periodic
+two-atom blocks within the neighbour cutoff are searched for polarized
+two-centre hybrids, and the residual atomic blocks complete the NBO basis.
+Antibonds are the out-of-phase partners of accepted bonds.
 
 The develop layout reads dmk*_nao.txt, sk*_nao.txt and hk*_nao.txt; the LTS
-layout reads WFC_NAO_K*.txt, data-*-S and data-*-H. For develop output write
-out_dmk 1 and out_hsk 1. For LTS write out_wfc_lcao 1 and out_mat_hs 1.
-The analysis supports nspin=1 and nspin=2; spin-resolved donor-acceptor
-perturbation is currently restricted to nspin=1.
+layout reads WFC_NAO_K*.txt, data-*-S and data-*-H. Write out_dmk 1 and
+out_hsk 1 for the develop layout, or out_wfc_lcao 1 and out_mat_hs 1 for the
+LTS layout. Fock-based donor-acceptor interactions are evaluated when the
+Hamiltonian/Fock files are available.
 
-This ABACUS-native implementation is deliberately approximate and is not a
-wrapper around the historical VASP NBO.out format. It does not perform the
-full NBO deletion sequence, natural-population analysis, or a complete
-occupancy-weighted NAO orthogonalisation. The reported charges are Mulliken
-populations, not NPA charges. A multiple bond detected as one Wiberg pair, an
-electron-count mismatch, or an occupancy outside [0, 2] is reported as a
-warning; such a result should be checked against a standard NBO implementation
-before publication.
+The reported atomic populations and charges are NPA values from the final
+orthogonal NAO density matrix, not Mulliken populations. Occupancies and
+hybridizations depend on the numerical-orbital basis and pseudopotential; they
+should be compared with the original paper using the same basis and functional.
 
 ## postprocess bader
 
