@@ -33,6 +33,11 @@ _LAZY_EXPORTS: dict[str, str] = {
     "MoldenShell": "abacustools.io.molden",
     "MoldenAtom": "abacustools.io.molden",
     "MoldenOrbital": "abacustools.io.molden",
+    # Periodic NBO
+    "PeriodicNBOAnalysis": "abacustools.data.nbo",
+    "PeriodicNBOOptions": "abacustools.data.nbo",
+    "PeriodicNBOError": "abacustools.data.nbo",
+    "analyze_periodic_nbo": "abacustools.data.nbo",
 }
 
 

@@ -377,6 +377,43 @@ def _load_density_data(output: Path, nspin: int, gamma_only: bool) -> list[KPoin
     )
 
 
+def load_kpoint_densities_from_output(
+    output: str | Path,
+    nspin: int,
+    gamma_only: bool,
+) -> list[KPointDensity]:
+    """Load k-resolved density and overlap matrices from an ABACUS output.
+
+    This public entry point is shared by population, COHP and Periodic NBO
+    analyses so that all consumers use the same LTS/develop filename handling
+    and k-point ordering.
+
+    Args:
+        output: ABACUS ``OUT.<suffix>`` directory.
+        nspin: Number of spin channels, either 1 or 2.
+        gamma_only: Whether the run used the Gamma-only LCAO layout.
+
+    Returns:
+        One :class:`KPointDensity` per computed k-point.
+
+    Raises:
+        PopulationAnalysisError: If the output layout cannot be interpreted.
+    """
+
+    if int(nspin) not in (1, 2):
+        raise PopulationAnalysisError(f"LCAO density loading supports nspin=1 or 2, got {nspin}")
+    return _load_density_data(Path(output), int(nspin), bool(gamma_only))
+
+
+def normalise_kpoint_densities(
+    kpoints: Sequence[KPointDensity],
+    expected_electrons: Optional[float],
+) -> tuple[list[KPointDensity], str, float]:
+    """Normalise an LCAO occupation convention against an electron count."""
+
+    return _normalise_density_data(kpoints, expected_electrons)
+
+
 def _trace_electrons(
     kpoints: Sequence[KPointDensity],
     *,
@@ -801,8 +838,7 @@ def analyze_population(
     }
     if nspin == 2:
         pair_population = {
-            pair: float(value * spin_factor)
-            for pair, value in pair_population.items()
+            pair: float(value * spin_factor) for pair, value in pair_population.items()
         }
 
     valences = None

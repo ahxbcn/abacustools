@@ -384,6 +384,37 @@ magnetic `symmetry 2`/`symmetry 3` run whose reduction is not the
 crystallographic one - cannot be expanded; the analyzer says so and asks for a
 `symmetry 0` or `symmetry -1` calculation instead.
 
+## postprocess nbo
+
+Periodic NBO analysis is available for LCAO jobs that provide k-resolved
+density, overlap and Fock matrices:
+
+```bash
+abacustools postprocess nbo -j JOB
+abacustools postprocess nbo -j JOB --cutoff 3.0 --json -o nbo.json
+abacustools postprocess nbo -j JOB --threshold-one 1.8 --threshold-two 1.8
+```
+
+The command constructs atom-centred natural-orbital blocks from the periodic
+density and overlap matrices, finds one-centre lone pairs, and builds periodic
+two-centre bond and antibond orbitals. Periodic atom pairs come from the Wiberg
+bond-order analysis and their electron occupations are calibrated as twice the
+Wiberg bond order. Results include populations, charges, NAO occupations, bond
+centres and periodic images, occupancies, hybridisations and distances.
+Donor-acceptor interactions are evaluated from the real-space Fock matrix when
+it is available.
+
+The develop layout reads dmk*_nao.txt, sk*_nao.txt and hk*_nao.txt; the LTS
+layout reads WFC_NAO_K*.txt, data-*-S and data-*-H. For develop output write
+out_dmk 1 and out_hsk 1. For LTS write out_wfc_lcao 1 and out_mat_hs 1.
+The analysis supports nspin=1 and nspin=2; spin-resolved donor-acceptor
+perturbation is currently restricted to nspin=1.
+
+This ABACUS-native implementation is not a wrapper around the historical VASP
+NBO.out format. It uses the ABACUS numerical-orbital block and periodic Wiberg
+bond order to make the two-centre NBO construction stable without an external
+NBO executable.
+
 ## postprocess bader
 
 Bader charges are integrated over the Bader volumes of a job with the external

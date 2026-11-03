@@ -9,7 +9,8 @@ postprocessing ABACUS DFT calculations.
 - Prepare complete ABACUS job directories from pseudopotential/orbital libraries.
 - Monitor SCF, relaxation, cell-relaxation, and MD jobs.
 - Postprocess bands, DOS/PDOS, charge densities, trajectories, COHP/COOP,
-  Mayer and DDEC bond orders, Bader/Hirshfeld charges, and Molden orbitals.
+  Mayer, DDEC and Periodic NBO bond analyses, Bader/Hirshfeld charges, and
+  Molden orbitals.
 - Run multi-step workflows for convergence, elastic, phonon, dielectric,
   piezoelectric, BSSE, DFT+U, magnetic exchange, and related calculations.
 - Search and download structures through OPTIMADE and the Materials Project.
